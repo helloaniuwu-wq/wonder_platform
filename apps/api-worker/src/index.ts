@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import { cors } from "hono/cors";
+import { trimTrailingSlash } from "hono/trailing-slash";
 import { adminRouter } from "./routes/admin";
 import { authRouter } from "./routes/auth";
 import { clientsRouter } from "./routes/clients";
@@ -14,6 +15,9 @@ import { Env, Variables } from "./types";
 import { HttpError } from "./utils/auth";
 
 const app = new Hono<{ Bindings: Env; Variables: Variables }>();
+
+// ── Trim Trailing Slashes (/companies/ -> /companies) ──────────────────────
+app.use(trimTrailingSlash());
 
 // ── Global CORS Middleware ─────────────────────────────────────────────────
 app.use(

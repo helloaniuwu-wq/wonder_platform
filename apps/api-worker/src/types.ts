@@ -3,7 +3,8 @@ export interface Env {
   BUCKET: R2Bucket;
   APP_NAME: string;
   ENVIRONMENT: string;
-  SECRET_KEY: string;
+  SECRET_KEY?: string;
+  JWT_SECRET?: string;
   ACCESS_TOKEN_EXPIRE_MINUTES: string;
   OPENROUTER_API_KEY: string;
   OPENROUTER_BASE_URL: string;

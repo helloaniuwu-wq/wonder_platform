@@ -8,7 +8,7 @@ export type AppContext = Context<{ Bindings: Env; Variables: Variables }>;
 const DEFAULT_SECRET = "wonder-platform-cloudflare-secret-key-change-in-prod";
 
 function getSecretKey(env: Env): Uint8Array {
-  return new TextEncoder().encode(env.SECRET_KEY || DEFAULT_SECRET);
+  return new TextEncoder().encode(env.JWT_SECRET || env.SECRET_KEY || DEFAULT_SECRET);
 }
 
 export async function verifyPassword(plain: string, hashed: string): Promise<boolean> {
