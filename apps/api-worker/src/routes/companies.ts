@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { Env, Variables } from "../types";
 import { assertCompanyAccess, generateUuid, HttpError, requireUser } from "../utils/auth";
+import { getDashboardStats } from "./invoices";
 
 export const companiesRouter = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -75,6 +76,8 @@ companiesRouter.post("/", async (c) => {
   const created = await c.env.DB.prepare("SELECT * FROM companies WHERE id = ?").bind(id).first();
   return c.json({ ...created, is_active: true }, 201);
 });
+
+companiesRouter.get("/:company_id/dashboard", getDashboardStats);
 
 companiesRouter.get("/:company_id", async (c) => {
   const user = await requireUser(c);

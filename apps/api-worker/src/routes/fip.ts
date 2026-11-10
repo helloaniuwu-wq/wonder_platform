@@ -246,24 +246,44 @@ fipRouter.get("/report/history/:id", async (c) => {
     .bind(id)
     .first<any>();
 
+  // 初始投入本金 = 最新净值 - 累计盈亏 (不额外重复叠加现金分红)
   const initialCost = cache
-    ? Math.max(0, Number(cache.total_nav || 0) - Number(cache.total_pnl || 0) + Number(cache.total_divs || 0))
+    ? Math.max(0, Number(cache.total_nav || 0) - Number(cache.total_pnl || 0))
     : 100000;
 
-  // 2. 从 portfolio_history 查询真实历史每日/月度净值
+  // 2. 从 portfolio_history 查询去重后的真实历史净值 (按 date 分组取 MAX 消除重复定时任务及单日报价缺失)
   const { results } = await c.env.DB.prepare(
-    "SELECT date, total_nav, wallet_balance FROM portfolio_history WHERE portfolio_id = ? ORDER BY date ASC"
+    `SELECT date, MAX(total_nav) as total_nav, MAX(wallet_balance) as wallet_balance
+     FROM portfolio_history
+     WHERE portfolio_id = ?
+     GROUP BY date
+     ORDER BY date ASC`
   )
     .bind(id)
     .all<any>();
 
-  let chartPoints = (results || []).map((r) => ({
+  const rawPoints = (results || []).map((r) => ({
     date: r.date,
     value: Number(r.total_nav || 0),
     wallet_balance: Number(r.wallet_balance || 0),
   }));
 
-  // 3. 确保图表从建仓日（startDate）开始绘制
+  // 3. 过滤单日 API 超时导致的异常闪崩毛刺 (例如单日暴跌超 25% 且次日立即反弹回升的情况)
+  const filteredPoints: Array<{ date: string; value: number; wallet_balance: number }> = [];
+  for (let i = 0; i < rawPoints.length; i++) {
+    const curr = { ...rawPoints[i] };
+    const prev = filteredPoints[filteredPoints.length - 1];
+    const next = rawPoints[i + 1];
+
+    if (prev && next && curr.value < prev.value * 0.75 && next.value > curr.value * 1.25) {
+      curr.value = Math.round(((prev.value + next.value) / 2) * 100) / 100;
+    }
+    filteredPoints.push(curr);
+  }
+
+  let chartPoints = filteredPoints;
+
+  // 4. 确保图表从建仓日（startDate）平滑锚定开始绘制
   if (chartPoints.length > 0) {
     const firstHistDate = chartPoints[0].date;
     if (startDate < firstHistDate) {
@@ -309,7 +329,7 @@ fipRouter.get("/report/history/:id", async (c) => {
     });
   }
 
-  // 4. 追加今日最新数据点（如果尚未包含）
+  // 5. 追加今日最新数据点（如果尚未包含）
   if (cache && chartPoints.length > 0 && chartPoints[chartPoints.length - 1].date !== todayStr) {
     chartPoints.push({
       date: todayStr,
@@ -448,42 +468,38 @@ fipRouter.delete("/dividends/manual/:div_id", async (c) => {
 
 // ── Strategy Lab Endpoints ─────────────────────────────────────────────────
 fipRouter.post("/lab/analyze", async (c) => {
-  const body = await c.req.json<{ isins: string[]; weights: Record<string, number>; days_back?: number }>();
-  const isins = body.isins || [];
-  if (isins.length === 0) throw new HttpError(400, "請選擇至少一項資產");
-
-  const lab = new StrategyLab(c.env.DB);
-  const { returnsMatrix } = await lab.alignHistoricalData(isins, body.days_back || 1825);
-  const stats = lab.computeStats(isins, returnsMatrix, body.weights || {});
-
-  return c.json(stats);
-});
-
-fipRouter.post("/lab/optimize", async (c) => {
-  const body = await c.req.json<{ isins: string[]; risk_free_rate?: number }>();
-  const isins = body.isins || [];
-  if (isins.length === 0) throw new HttpError(400, "請選擇至少一項資產");
-
-  const lab = new StrategyLab(c.env.DB);
-  const { returnsMatrix } = await lab.alignHistoricalData(isins);
-  const result = lab.optimizeFrontier(isins, returnsMatrix, body.risk_free_rate || 0.04);
-
-  return c.json(result);
-});
-
-fipRouter.post("/lab/monte-carlo", async (c) => {
   const body = await c.req.json<any>();
+  const isins: string[] = body.isins || [];
+  if (isins.length === 0) throw new HttpError(400, "請選擇至少一項資產進行分析");
+
   const lab = new StrategyLab(c.env.DB);
-  const result = lab.runMonteCarlo({
-    initialNav: Number(body.initial_nav || 1000000),
-    years: Number(body.years || 20),
-    simulations: Number(body.simulations || 1000),
-    annualReturn: Number(body.annual_return || 8),
-    annualVol: Number(body.annual_vol || 12),
-    annualContribution: Number(body.annual_contribution || 0),
-    annualWithdrawal: Number(body.annual_withdrawal || 0),
-    ilpFeeRate: Number(body.ilp_fee_rate || 0),
-  });
+  const result = await lab.runAnalysis(
+    isins,
+    Number(body.days_back || 1825),
+    Number(body.max_weight || 0.35),
+    body.custom_weights,
+    {
+      capital: Number(body.mc_capital || 1000000),
+      years: Number(body.mc_years || 15),
+      contribution: Number(body.mc_contribution || 0),
+      contribution_start: Number(body.mc_contribution_start || 1),
+      contribution_years: Number(body.mc_contribution_years || 100),
+      withdrawal: Number(body.mc_withdrawal || 0),
+      withdrawal_start: Number(body.mc_withdrawal_start || 1),
+      withdrawal_end: Number(body.mc_withdrawal_end || 100),
+      withdrawal_inflation: Boolean(body.mc_withdrawal_inflation),
+      withdrawal_2: Number(body.mc_withdrawal_2 || 0),
+      withdrawal_start_2: Number(body.mc_withdrawal_start_2 || 1),
+      withdrawal_end_2: Number(body.mc_withdrawal_end_2 || 100),
+      target: Number(body.mc_target || 0),
+      inflation: Number(body.mc_inflation || 0),
+      stress: Boolean(body.mc_stress),
+      insurance_plan: body.insurance_plan,
+      insurance_alpha_low: body.insurance_alpha_low,
+      insurance_alpha_high: body.insurance_alpha_high,
+    },
+    Number(body.risk_free_rate || 0.04)
+  );
 
   return c.json(result);
 });
@@ -512,8 +528,44 @@ fipRouter.get("/lab/scenarios", async (c) => {
       weights: JSON.parse(s.weights_json || "{}"),
       settings: JSON.parse(s.settings_json || "{}"),
       summary: JSON.parse(s.summary_json || "{}"),
+      chart: JSON.parse(s.chart_json || "{}"),
     }))
   );
+});
+
+fipRouter.get("/lab/scenarios/:id", async (c) => {
+  const id = parseInt(c.req.param("id"), 10);
+  const s = await c.env.DB.prepare("SELECT * FROM lab_scenarios WHERE id = ?").bind(id).first<any>();
+  if (!s) throw new HttpError(404, "Scenario not found");
+  return c.json({
+    id: s.id,
+    name: s.name,
+    created_at: s.created_at,
+    assets: JSON.parse(s.assets_json || "[]"),
+    weights: JSON.parse(s.weights_json || "{}"),
+    settings: JSON.parse(s.settings_json || "{}"),
+    summary: JSON.parse(s.summary_json || "{}"),
+    chart: JSON.parse(s.chart_json || "{}"),
+  });
+});
+
+fipRouter.put("/lab/scenarios/:id", async (c) => {
+  const id = parseInt(c.req.param("id"), 10);
+  const body = await c.req.json<any>();
+  await c.env.DB.prepare(
+    `UPDATE lab_scenarios SET name = ?, assets_json = ?, weights_json = ?, settings_json = ?, summary_json = ?, chart_json = ? WHERE id = ?`
+  )
+    .bind(
+      String(body.name || "未命名方案"),
+      JSON.stringify(body.assets || []),
+      JSON.stringify(body.weights || {}),
+      JSON.stringify(body.settings || {}),
+      JSON.stringify(body.summary || {}),
+      JSON.stringify(body.chart || {}),
+      id
+    )
+    .run();
+  return c.json({ success: true, id });
 });
 
 fipRouter.post("/lab/scenarios/save", async (c) => {

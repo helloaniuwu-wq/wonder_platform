@@ -74,13 +74,21 @@ export async function assertCompanyAccess(
   companyId: string,
   userId: string
 ): Promise<Record<string, unknown>> {
-  const access = await db
-    .prepare("SELECT id, role FROM user_company_access WHERE company_id = ? AND user_id = ?")
-    .bind(companyId, userId)
-    .first();
-  if (!access) {
-    throw new HttpError(403, "無此公司訪問權限");
+  const user = await db
+    .prepare("SELECT role FROM users WHERE id = ?")
+    .bind(userId)
+    .first<{ role: string }>();
+
+  if (user?.role !== "admin") {
+    const access = await db
+      .prepare("SELECT id, role FROM user_company_access WHERE company_id = ? AND user_id = ?")
+      .bind(companyId, userId)
+      .first();
+    if (!access) {
+      throw new HttpError(403, "無此公司訪問權限");
+    }
   }
+
   const company = await db
     .prepare("SELECT * FROM companies WHERE id = ? AND is_active = 1")
     .bind(companyId)

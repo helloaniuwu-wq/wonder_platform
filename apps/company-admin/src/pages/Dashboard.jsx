@@ -326,7 +326,9 @@ export default function Dashboard() {
     setLoading(true)
     invoicesApi.dashboard(currentCompany.id, selectedFY)
       .then(r => setStats(r.data))
-      .catch(() => {})
+      .catch((err) => {
+        console.error("Failed to load dashboard stats:", err)
+      })
       .finally(() => setLoading(false))
   }, [currentCompany?.id, selectedFY])
 
