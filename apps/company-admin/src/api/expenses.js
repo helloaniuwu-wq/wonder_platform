@@ -6,7 +6,7 @@ export const expensesApi = {
   categories: () => api.get('/expenses/categories'),
 
   // 支出列表（多维筛选）
-  list: (params) => api.get('/expenses/', { params }),
+  list: (params) => api.get('/expenses', { params }),
 
   // 单条详情
   get: (id) => api.get(`/expenses/${id}`),

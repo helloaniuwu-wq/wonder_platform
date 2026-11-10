@@ -1,6 +1,7 @@
 import axios from 'axios'
 
-const api = axios.create({ baseURL: import.meta.env.VITE_API_BASE_URL || '/api' })
+const DEFAULT_API_BASE = 'https://wonder-api-worker.helloaniuwu.workers.dev'
+const api = axios.create({ baseURL: import.meta.env.VITE_API_BASE_URL || DEFAULT_API_BASE })
 
 api.interceptors.request.use((config) => {
   const token = localStorage.getItem('token')
@@ -33,8 +34,8 @@ export const authApi = {
 
 // ── Companies ─────────────────────────────────────────────────────────────
 export const companiesApi = {
-  list: () => api.get('/companies/'),
-  create: (data) => api.post('/companies/', data),
+  list: () => api.get('/companies'),
+  create: (data) => api.post('/companies', data),
   get: (id) => api.get(`/companies/${id}`),
   update: (id, data) => api.put(`/companies/${id}`, data),
   getTaxProfile: (id) => api.get(`/companies/${id}/tax-profile`),
@@ -43,8 +44,8 @@ export const companiesApi = {
 
 // ── Clients ───────────────────────────────────────────────────────────────
 export const clientsApi = {
-  list: (companyId, params) => api.get(`/companies/${companyId}/clients/`, { params }),
-  create: (companyId, data) => api.post(`/companies/${companyId}/clients/`, data),
+  list: (companyId, params) => api.get(`/companies/${companyId}/clients`, { params }),
+  create: (companyId, data) => api.post(`/companies/${companyId}/clients`, data),
   update: (companyId, id, data) => api.put(`/companies/${companyId}/clients/${id}`, data),
   delete: (companyId, id) => api.delete(`/companies/${companyId}/clients/${id}`),
 }

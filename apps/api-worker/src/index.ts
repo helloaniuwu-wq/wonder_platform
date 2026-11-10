@@ -1,6 +1,5 @@
 import { Hono } from "hono";
 import { cors } from "hono/cors";
-import { trimTrailingSlash } from "hono/trailing-slash";
 import { adminRouter } from "./routes/admin";
 import { authRouter } from "./routes/auth";
 import { clientsRouter } from "./routes/clients";
@@ -16,8 +15,16 @@ import { HttpError } from "./utils/auth";
 
 const app = new Hono<{ Bindings: Env; Variables: Variables }>();
 
-// ── Trim Trailing Slashes (/companies/ -> /companies) ──────────────────────
-app.use(trimTrailingSlash());
+// ── Internal Trailing Slash Rewrite (Transparent, No 301 Redirect) ───────────
+app.use("*", async (c, next) => {
+  if (c.req.path !== "/" && c.req.path.endsWith("/")) {
+    const cleanPath = c.req.path.slice(0, -1);
+    const newUrl = new URL(c.req.url);
+    newUrl.pathname = cleanPath;
+    return app.fetch(new Request(newUrl.toString(), c.req.raw), c.env, c.executionCtx);
+  }
+  await next();
+});
 
 // ── Global CORS Middleware ─────────────────────────────────────────────────
 app.use(

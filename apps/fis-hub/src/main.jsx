@@ -5,7 +5,7 @@ import App from './App.jsx'
 import { LangProvider } from './i18n/LangContext.jsx'
 import { ThemeProvider } from './theme/ThemeContext.jsx'
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL || '';
+const API_BASE = import.meta.env.VITE_API_BASE_URL || 'https://wonder-api-worker.helloaniuwu.workers.dev';
 if (API_BASE) {
   const originalFetch = window.fetch;
   window.fetch = (url, options) => {
