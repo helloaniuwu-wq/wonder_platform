@@ -217,15 +217,6 @@ export function TopNav({ currentPath }: { currentPath?: string }) {
             >
               专业洞察
             </Link>
-            <Link
-              href="/assessment"
-              className={cn(
-                "hover:text-foreground transition-colors",
-                currentPath === "assessment" && "text-foreground"
-              )}
-            >
-              财务诊断
-            </Link>
             <a
               href="/fr"
               target="_blank"
@@ -235,6 +226,15 @@ export function TopNav({ currentPath }: { currentPath?: string }) {
               <span>分红实现率</span>
               <span className="text-[10px] px-1.5 py-0.2 bg-primary/10 text-primary rounded-full font-mono">GL16</span>
             </a>
+            <Link
+              href="/xhs-creator"
+              className={cn(
+                "hover:text-foreground transition-colors",
+                currentPath === "xhs-creator" && "text-foreground"
+              )}
+            >
+              小红书工坊
+            </Link>
           </div>
 
 
@@ -266,22 +266,21 @@ export function TopNav({ currentPath }: { currentPath?: string }) {
                       </p>
                     </div>
                     <a
-                      href="http://fis.wonderwisdom.online"
+                      href="https://fis.wonderwisdom.online"
                       target="_blank"
-                      rel="noopener"
+                      rel="noopener noreferrer"
                       className="block px-4 py-2.5 text-foreground/70 hover:text-foreground hover:bg-muted/50 transition-colors"
                     >
                       FIS 组合管理 →
                     </a>
-                    {user.role === "admin" && (
-                      <Link
-                        href="/blog/admin"
-                        className="block px-4 py-2.5 text-foreground/70 hover:text-foreground hover:bg-muted/50 transition-colors"
-                        onClick={() => setMenuOpen(false)}
-                      >
-                        📝 文章管理
-                      </Link>
-                    )}
+                    <a
+                      href="https://company.wonderwisdom.online"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="block px-4 py-2.5 text-foreground/70 hover:text-foreground hover:bg-muted/50 transition-colors"
+                    >
+                      企业行政系统 →
+                    </a>
                     <button
                       onClick={handleLogout}
                       className="w-full text-left px-4 py-2.5 text-destructive/80 hover:text-destructive hover:bg-destructive/5 transition-colors"

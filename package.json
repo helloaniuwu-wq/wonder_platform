@@ -4,7 +4,10 @@
   "private": true,
   "scripts": {
     "dev": "NODE_OPTIONS='--max-old-space-size=4096' npx pnpm exec turbo run dev",
+    "dev:worker": "cd apps/api-worker && npx wrangler dev",
     "build": "npx pnpm exec turbo run build",
+    "deploy:worker": "cd apps/api-worker && npx wrangler deploy",
+    "export:d1": "python3 apps/api-worker/scripts/export-d1.py",
     "start": "npx pnpm exec turbo run start",
     "lint": "npx pnpm exec turbo run lint"
   },

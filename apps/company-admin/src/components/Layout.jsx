@@ -11,8 +11,6 @@ const ALL_NAV = [
   { to: '/clients',    icon: '👥', label: '客戶管理',  modes: ['trading_sme'] },
   { to: '/expenses',   icon: '💰', label: '支出憑證',  modes: ['insurance_agent', 'trading_sme', 'freelancer', 'holding'] },
   { to: '/commissions',icon: '📋', label: '佣金台賬',  modes: ['insurance_agent'] },
-  { to: '/hr',         icon: '👨‍💼', label: '員工管理',  modes: ['insurance_agent', 'trading_sme', 'freelancer', 'holding'] },
-  { to: '/leases',     icon: '🏢', label: '租約管理',  modes: ['insurance_agent', 'trading_sme', 'freelancer', 'holding'] },
 ]
 
 function getNavItems(businessMode) {

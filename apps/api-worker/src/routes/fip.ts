@@ -1,0 +1,408 @@
+import { Hono } from "hono";
+import { PortfolioEngine } from "../services/fip/portfolioEngine";
+import { generateWealthReportDocx } from "../services/fip/reportGenerator";
+import { StrategyLab } from "../services/fip/strategyLab";
+import { Env, Variables } from "../types";
+import { generateUuid, getOptionalUser, HttpError, requireUser } from "../utils/auth";
+
+export const fipRouter = new Hono<{ Bindings: Env; Variables: Variables }>();
+
+// ── Portfolios List & Management ───────────────────────────────────────────
+fipRouter.get("/portfolios", async (c) => {
+  const user = await getOptionalUser(c);
+  let sql = "SELECT * FROM portfolios WHERE is_public = 1";
+  const params: unknown[] = [];
+
+  if (user) {
+    if (user.role === "admin") {
+      sql = "SELECT * FROM portfolios";
+    } else {
+      sql = "SELECT * FROM portfolios WHERE is_public = 1 OR user_id = ?";
+      params.push(user.id);
+    }
+  }
+
+  sql += " ORDER BY sort_order ASC, created_at DESC";
+  const { results } = await c.env.DB.prepare(sql).bind(...params).all<any>();
+
+  return c.json(
+    (results || []).map((p) => ({
+      id: p.id,
+      name: p.name,
+      base_currency: p.base_currency || "USD",
+      dividend_strategy: p.dividend_strategy || "CASH",
+      target_allocations: p.target_allocations ? JSON.parse(p.target_allocations) : {},
+      is_public: Boolean(p.is_public),
+      sort_order: p.sort_order || 0,
+      user_id: p.user_id,
+      created_at: p.created_at,
+    }))
+  );
+});
+
+fipRouter.post("/portfolios/new", async (c) => {
+  const user = await requireUser(c);
+  const body = await c.req.json<any>();
+  const name = String(body.name || "").trim();
+  if (!name) throw new HttpError(400, "請輸入組合名稱");
+
+  const baseCurrency = String(body.base_currency || "USD").toUpperCase();
+  const divStrategy = String(body.dividend_strategy || "CASH").toUpperCase();
+  const targetAllocations = body.target_allocations ? JSON.stringify(body.target_allocations) : "{}";
+  const now = new Date().toISOString();
+
+  const maxOrder = await c.env.DB.prepare("SELECT MAX(sort_order) as m FROM portfolios").first<{ m: number }>();
+  const sortOrder = (maxOrder?.m || 0) + 1;
+
+  const res = await c.env.DB.prepare(
+    `INSERT INTO portfolios (name, base_currency, dividend_strategy, target_allocations, user_id, is_public, sort_order, created_at)
+     VALUES (?, ?, ?, ?, ?, 0, ?, ?)`
+  )
+    .bind(name, baseCurrency, divStrategy, targetAllocations, user.id, sortOrder, now)
+    .run();
+
+  const id = res.meta.last_row_id;
+  return c.json({ id, name, base_currency: baseCurrency, dividend_strategy: divStrategy });
+});
+
+fipRouter.get("/portfolios/:id", async (c) => {
+  const id = parseInt(c.req.param("id"), 10);
+  const row = await c.env.DB.prepare("SELECT * FROM portfolios WHERE id = ?").bind(id).first<any>();
+  if (!row) throw new HttpError(404, "組合不存在");
+
+  return c.json({
+    id: row.id,
+    name: row.name,
+    base_currency: row.base_currency || "USD",
+    dividend_strategy: row.dividend_strategy || "CASH",
+    target_allocations: row.target_allocations ? JSON.parse(row.target_allocations) : {},
+    is_public: Boolean(row.is_public),
+    sort_order: row.sort_order || 0,
+    user_id: row.user_id,
+    created_at: row.created_at,
+  });
+});
+
+fipRouter.put("/portfolios/:id", async (c) => {
+  const user = await requireUser(c);
+  const id = parseInt(c.req.param("id"), 10);
+  const body = await c.req.json<any>();
+
+  const updates: string[] = [];
+  const values: unknown[] = [];
+
+  if (body.name !== undefined) {
+    updates.push("name = ?");
+    values.push(body.name);
+  }
+  if (body.base_currency !== undefined) {
+    updates.push("base_currency = ?");
+    values.push(String(body.base_currency).toUpperCase());
+  }
+  if (body.dividend_strategy !== undefined) {
+    updates.push("dividend_strategy = ?");
+    values.push(String(body.dividend_strategy).toUpperCase());
+  }
+  if (body.target_allocations !== undefined) {
+    updates.push("target_allocations = ?");
+    values.push(JSON.stringify(body.target_allocations));
+  }
+  if (body.is_public !== undefined) {
+    updates.push("is_public = ?");
+    values.push(body.is_public ? 1 : 0);
+  }
+
+  if (updates.length > 0) {
+    values.push(id);
+    await c.env.DB.prepare(`UPDATE portfolios SET ${updates.join(", ")} WHERE id = ?`)
+      .bind(...values)
+      .run();
+  }
+
+  return c.json({ success: true, id });
+});
+
+fipRouter.delete("/portfolios/:id", async (c) => {
+  const user = await requireUser(c);
+  const id = parseInt(c.req.param("id"), 10);
+
+  await c.env.DB.prepare("DELETE FROM transactions WHERE portfolio_id = ?").bind(id).run();
+  await c.env.DB.prepare("DELETE FROM manual_dividends WHERE portfolio_id = ?").bind(id).run();
+  await c.env.DB.prepare("DELETE FROM portfolio_stats_cache WHERE portfolio_id = ?").bind(id).run();
+  await c.env.DB.prepare("DELETE FROM portfolios WHERE id = ?").bind(id).run();
+
+  return c.json({ success: true, id });
+});
+
+fipRouter.post("/portfolios/reorder", async (c) => {
+  const user = await requireUser(c);
+  const body = await c.req.json<{ ids: number[] }>();
+  if (Array.isArray(body.ids)) {
+    for (let i = 0; i < body.ids.length; i++) {
+      await c.env.DB.prepare("UPDATE portfolios SET sort_order = ? WHERE id = ?")
+        .bind(i + 1, body.ids[i])
+        .run();
+    }
+  }
+  return c.json({ success: true });
+});
+
+// ── Portfolio Report & Stats ───────────────────────────────────────────────
+fipRouter.get("/report/:id", async (c) => {
+  const id = parseInt(c.req.param("id"), 10);
+  const engine = new PortfolioEngine(c.env.DB, id);
+  await engine.init();
+  const navData = await engine.calculateNav();
+
+  return c.json({
+    id,
+    name: engine.meta.name,
+    base_currency: engine.meta.base_currency,
+    dividend_strategy: engine.meta.dividend_strategy,
+    created_at: engine.meta.created_at,
+    ...navData,
+  });
+});
+
+fipRouter.get("/report/history/:id", async (c) => {
+  const id = parseInt(c.req.param("id"), 10);
+  const engine = new PortfolioEngine(c.env.DB, id);
+  await engine.init();
+  const navData = await engine.calculateNav();
+
+  // Return formatted chart points
+  const today = new Date().toISOString().slice(0, 10);
+  const chartPoints = [
+    { date: engine.meta.created_at, total_nav: navData.total_cost, wallet_balance: navData.wallet_balance },
+    { date: today, total_nav: navData.total_nav, wallet_balance: navData.wallet_balance },
+  ];
+
+  return c.json(chartPoints);
+});
+
+fipRouter.get("/heartbeat/:id", async (c) => {
+  const id = parseInt(c.req.param("id"), 10);
+  const cache = await c.env.DB.prepare(
+    "SELECT total_nav, last_updated FROM portfolio_stats_cache WHERE portfolio_id = ?"
+  )
+    .bind(id)
+    .first<any>();
+
+  return c.json({
+    id,
+    total_nav: cache?.total_nav || 0,
+    last_updated: cache?.last_updated || new Date().toISOString(),
+  });
+});
+
+// ── Transactions ───────────────────────────────────────────────────────────
+fipRouter.get("/portfolios/transactions/:id", async (c) => {
+  const id = parseInt(c.req.param("id"), 10);
+  const { results } = await c.env.DB.prepare(
+    "SELECT * FROM transactions WHERE portfolio_id = ? ORDER BY date DESC, id DESC"
+  )
+    .bind(id)
+    .all<any>();
+
+  return c.json(results || []);
+});
+
+fipRouter.post("/portfolios/transactions/:id", async (c) => {
+  const user = await requireUser(c);
+  const id = parseInt(c.req.param("id"), 10);
+  const body = await c.req.json<any>();
+
+  const date = body.date || new Date().toISOString().slice(0, 10);
+  const isin = String(body.isin || "").trim();
+  const type = String(body.type || "BUY").toUpperCase();
+  const shares = Number(body.shares || 0);
+  const price = Number(body.price || 0);
+
+  await c.env.DB.prepare(
+    "INSERT INTO transactions (portfolio_id, date, isin, type, shares, price) VALUES (?, ?, ?, ?, ?, ?)"
+  )
+    .bind(id, date, isin, type, shares, price)
+    .run();
+
+  return c.json({ success: true });
+});
+
+fipRouter.delete("/portfolios/transactions/:tx_id", async (c) => {
+  const user = await requireUser(c);
+  const txId = parseInt(c.req.param("tx_id"), 10);
+  await c.env.DB.prepare("DELETE FROM transactions WHERE id = ?").bind(txId).run();
+  return c.json({ success: true, id: txId });
+});
+
+// ── Manual Dividends ───────────────────────────────────────────────────────
+fipRouter.post("/portfolios/dividend/manual/:id", async (c) => {
+  const user = await requireUser(c);
+  const id = parseInt(c.req.param("id"), 10);
+  const body = await c.req.json<any>();
+
+  await c.env.DB.prepare(
+    "INSERT INTO manual_dividends (portfolio_id, isin, date, amount_per_share, currency) VALUES (?, ?, ?, ?, ?)"
+  )
+    .bind(id, body.isin, body.date || new Date().toISOString().slice(0, 10), Number(body.amount || 0), body.currency || "USD")
+    .run();
+
+  return c.json({ success: true });
+});
+
+fipRouter.delete("/dividends/manual/:div_id", async (c) => {
+  const user = await requireUser(c);
+  const divId = parseInt(c.req.param("div_id"), 10);
+  await c.env.DB.prepare("DELETE FROM manual_dividends WHERE id = ?").bind(divId).run();
+  return c.json({ success: true, id: divId });
+});
+
+// ── Strategy Lab Endpoints ─────────────────────────────────────────────────
+fipRouter.post("/lab/analyze", async (c) => {
+  const body = await c.req.json<{ isins: string[]; weights: Record<string, number>; days_back?: number }>();
+  const isins = body.isins || [];
+  if (isins.length === 0) throw new HttpError(400, "請選擇至少一項資產");
+
+  const lab = new StrategyLab(c.env.DB);
+  const { returnsMatrix } = await lab.alignHistoricalData(isins, body.days_back || 1825);
+  const stats = lab.computeStats(isins, returnsMatrix, body.weights || {});
+
+  return c.json(stats);
+});
+
+fipRouter.post("/lab/optimize", async (c) => {
+  const body = await c.req.json<{ isins: string[]; risk_free_rate?: number }>();
+  const isins = body.isins || [];
+  if (isins.length === 0) throw new HttpError(400, "請選擇至少一項資產");
+
+  const lab = new StrategyLab(c.env.DB);
+  const { returnsMatrix } = await lab.alignHistoricalData(isins);
+  const result = lab.optimizeFrontier(isins, returnsMatrix, body.risk_free_rate || 0.04);
+
+  return c.json(result);
+});
+
+fipRouter.post("/lab/monte-carlo", async (c) => {
+  const body = await c.req.json<any>();
+  const lab = new StrategyLab(c.env.DB);
+  const result = lab.runMonteCarlo({
+    initialNav: Number(body.initial_nav || 1000000),
+    years: Number(body.years || 20),
+    simulations: Number(body.simulations || 1000),
+    annualReturn: Number(body.annual_return || 8),
+    annualVol: Number(body.annual_vol || 12),
+    annualContribution: Number(body.annual_contribution || 0),
+    annualWithdrawal: Number(body.annual_withdrawal || 0),
+    ilpFeeRate: Number(body.ilp_fee_rate || 0),
+  });
+
+  return c.json(result);
+});
+
+fipRouter.post("/lab/generate-report", async (c) => {
+  const body = await c.req.json<any>();
+  const docxBytes = await generateWealthReportDocx(body, c.env);
+
+  return new Response(docxBytes, {
+    headers: {
+      "Content-Type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "Content-Disposition": `attachment; filename="Wealth_Report_${new Date().toISOString().slice(0, 10)}.docx"`,
+    },
+  });
+});
+
+// ── Lab Scenarios ──────────────────────────────────────────────────────────
+fipRouter.get("/lab/scenarios", async (c) => {
+  const { results } = await c.env.DB.prepare("SELECT * FROM lab_scenarios ORDER BY created_at DESC").all<any>();
+  return c.json(
+    (results || []).map((s) => ({
+      id: s.id,
+      name: s.name,
+      created_at: s.created_at,
+      assets: JSON.parse(s.assets_json || "[]"),
+      weights: JSON.parse(s.weights_json || "{}"),
+      settings: JSON.parse(s.settings_json || "{}"),
+      summary: JSON.parse(s.summary_json || "{}"),
+    }))
+  );
+});
+
+fipRouter.post("/lab/scenarios/save", async (c) => {
+  const user = await getOptionalUser(c);
+  const body = await c.req.json<any>();
+  const name = String(body.name || "未命名方案");
+  const now = new Date().toISOString();
+
+  const res = await c.env.DB.prepare(
+    `INSERT INTO lab_scenarios (name, assets_json, weights_json, settings_json, summary_json, chart_json, user_id, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+  )
+    .bind(
+      name,
+      JSON.stringify(body.assets || []),
+      JSON.stringify(body.weights || {}),
+      JSON.stringify(body.settings || {}),
+      JSON.stringify(body.summary || {}),
+      JSON.stringify(body.chart || {}),
+      user?.id || null,
+      now
+    )
+    .run();
+
+  return c.json({ success: true, id: res.meta.last_row_id });
+});
+
+fipRouter.delete("/lab/scenarios/:id", async (c) => {
+  const id = parseInt(c.req.param("id"), 10);
+  await c.env.DB.prepare("DELETE FROM lab_scenarios WHERE id = ?").bind(id).run();
+  return c.json({ success: true, id });
+});
+
+// ── ILP Config ─────────────────────────────────────────────────────────────
+fipRouter.get("/ilp/config", async (c) => {
+  const user = await requireUser(c);
+  const row = await c.env.DB.prepare("SELECT * FROM user_ilp_config WHERE user_id = ?").bind(user.id).first<any>();
+
+  if (!row) {
+    return c.json({
+      age: 35,
+      gender: "M",
+      smoker: 0,
+      premium: 100000,
+      currency: "USD",
+      enrollment_rate: 0.05,
+    });
+  }
+
+  return c.json({
+    age: row.age,
+    gender: row.gender,
+    smoker: row.smoker,
+    premium: row.premium,
+    currency: row.currency,
+    enrollment_rate: row.enrollment_rate,
+  });
+});
+
+fipRouter.put("/ilp/config", async (c) => {
+  const user = await requireUser(c);
+  const body = await c.req.json<any>();
+  const now = new Date().toISOString();
+
+  await c.env.DB.prepare(
+    `INSERT OR REPLACE INTO user_ilp_config (user_id, age, gender, smoker, premium, currency, enrollment_rate, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+  )
+    .bind(
+      user.id,
+      Number(body.age || 35),
+      body.gender || "M",
+      body.smoker ? 1 : 0,
+      Number(body.premium || 100000),
+      body.currency || "USD",
+      Number(body.enrollment_rate || 0.05),
+      now
+    )
+    .run();
+
+  return c.json({ success: true });
+});

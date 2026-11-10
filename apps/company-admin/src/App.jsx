@@ -48,8 +48,6 @@ function ProtectedRoutes() {
         <Route path="/commissions" element={<CommissionsPage />} />
         <Route path="/financials" element={<FinancialsPage />} />
         <Route path="/compliance" element={<CompliancePage />} />
-        <Route path="/hr" element={<HRPage />} />
-        <Route path="/leases" element={<LeasesPage />} />
         <Route path="/admin" element={user.role === 'admin' ? <AdminPanel /> : <Navigate to="/" />} />
         <Route path="/companies/new" element={<CompanyEditPage />} />
         <Route path="/companies/:id/edit" element={<CompanyEditPage />} />

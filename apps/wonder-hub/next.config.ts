@@ -1,18 +1,36 @@
 import type { NextConfig } from "next";
 
-const nextConfig: any = {
+const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+
+const nextConfig: NextConfig = {
   typescript: { ignoreBuildErrors: true },
   eslint: { ignoreDuringBuilds: true },
   skipTrailingSlashRedirect: true,
-  output: "standalone",           // 生成独立服务器，不依赖 node_modules
-  images: { unoptimized: true },  // 禁用 sharp（macOS 二进制无法在 Linux 运行）
+  output: "standalone",
+  images: { unoptimized: true },
   async rewrites() {
     return [
       {
-        source: "/api/:path*",
-        destination: "http://localhost:8000/:path*",
+        source: "/fr",
+        destination: "/fr/index.html",
       },
-    ]
+      {
+        source: "/fr/",
+        destination: "/fr/index.html",
+      },
+      {
+        source: "/fr/internal",
+        destination: "/fr/internal/index.html",
+      },
+      {
+        source: "/fr/internal/",
+        destination: "/fr/internal/index.html",
+      },
+      {
+        source: "/api/:path*",
+        destination: `${API_URL}/:path*`,
+      },
+    ];
   },
 };
 

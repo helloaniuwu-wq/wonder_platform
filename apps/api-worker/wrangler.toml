@@ -1,0 +1,30 @@
+name = "wonder-api-worker"
+main = "src/index.ts"
+compatibility_date = "2024-11-01"
+compatibility_flags = ["nodejs_compat"]
+
+[vars]
+APP_NAME = "香港小公司行政管理系統 (Cloudflare Serverless)"
+ENVIRONMENT = "production"
+ACCESS_TOKEN_EXPIRE_MINUTES = "10080"
+OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+OPENROUTER_VISION_MODEL = "google/gemini-2.0-flash-001"
+OPENROUTER_DEEPSEEK_MODEL = "deepseek/deepseek-chat"
+DEEPSEEK_BASE_URL = "https://api.deepseek.com"
+DEEPSEEK_MODEL = "deepseek-chat"
+CORS_ORIGINS = "https://wonderwisdom.online,https://www.wonderwisdom.online,https://company.wonderwisdom.online,https://fis.wonderwisdom.online,http://localhost:3000,http://localhost:5174,http://localhost:5175"
+
+# ── Cloudflare D1 Serverless SQLite 绑定 ──────────────────────────
+[[d1_databases]]
+binding = "DB"
+database_name = "wonder-db"
+database_id = "b76be6c3-b0b7-4100-a417-dcbb0a08bf17"
+
+# ── Cloudflare R2 对象存储绑定（收据与佣金月结单归档）──────────
+[[r2_buckets]]
+binding = "BUCKET"
+bucket_name = "wonder-platform-files"
+
+# ── Cloudflare Cron Triggers（每日行情与净值缓存更新）────────────
+[triggers]
+crons = ["0 22 * * 1-5"]
