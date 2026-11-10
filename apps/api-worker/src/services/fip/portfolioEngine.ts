@@ -3,9 +3,9 @@ import {
   getDividendHistory,
   getDividendMetrics,
   getFxRate,
+  getHistoricalPrice,
   getHistoricalSeries,
   getMarketData,
-  getRealtimePrice,
   guessCurrencyFromIsin,
 } from "./dataProvider";
 
@@ -104,7 +104,11 @@ export class PortfolioEngine {
     }));
   }
 
-  async getCurrentPortfolio(): Promise<{
+  /**
+   * 步骤一：仅根据 transactions 重建持仓与现金（不含任何分红派发）。
+   * 单独拆出来，供 getDividendDetails 反查建仓时使用，避免与 getCurrentPortfolio 相互递归。
+   */
+  async buildBaseHoldings(): Promise<{
     portfolio: Record<string, { shares: number; avg_cost: number; total_cost: number; total_div_cash: number }>;
     cashBalances: Record<string, number>;
   }> {
@@ -159,26 +163,8 @@ export class PortfolioEngine {
       }
     }
 
-    // Manual dividends from manual_dividends table
-    const manDivs = await this.db
-      .prepare(
-        "SELECT isin, amount_per_share, currency FROM manual_dividends WHERE portfolio_id = ?"
-      )
-      .bind(this.portfolioId)
-      .all<any>();
-
-    for (const md of manDivs.results || []) {
-      const isin = String(md.isin);
-      if (portfolio[isin]) {
-        const divAmt = portfolio[isin].shares * Number(md.amount_per_share || 0);
-        portfolio[isin].total_div_cash += divAmt;
-        const curr = md.currency || guessCurrencyFromIsin(isin);
-        const cKey = `CASH_${curr}`;
-        cashBalances[cKey] = (cashBalances[cKey] || 0) + divAmt;
-      }
-    }
-
-    // Filter active holdings
+    // 注意：手动/自动分红统一在 applyDividends() 里按「派发日持股数」入账，
+    // 此处不再叠加，否则会与 getDividendDetails 的计算重复。
     const activeHoldings: Record<string, any> = {};
     for (const [isin, data] of Object.entries(portfolio)) {
       if (data.shares > 0 || data.total_div_cash > 0) {
@@ -188,6 +174,67 @@ export class PortfolioEngine {
     }
 
     return { portfolio: activeHoldings, cashBalances };
+  }
+
+  /**
+   * 步骤二：把「已发生」的分红派发按派发日持股数入账。
+   *
+   * 与迁移前 Python 版 portfolio_engine 保持一致：
+   * - Manual / CASH 策略：分红进现金账户，并累计进 total_div_cash（用于 Total Dividends 与 PnL）
+   * - REINVEST 策略：按派发日收盘价折算为份额，不足 1 股部分留现金；
+   *   分红已通过份额体现为市值，故不再重复计入 total_div_cash，避免 PnL 双计。
+   *
+   * 这是迁移到 TypeScript 时唯一漏掉的环节 —— 之前 total_divs 恒为 0、净值曲线末端跳空，
+   * 根因都在这里。
+   */
+  async applyDividends(base: {
+    portfolio: Record<string, { shares: number; avg_cost: number; total_cost: number; total_div_cash: number }>;
+    cashBalances: Record<string, number>;
+  }) {
+    const { portfolio, cashBalances } = base;
+    const divs = await this.getDividendDetails(base);
+
+    for (const d of divs) {
+      // DIV_CASH 交易在 buildBaseHoldings 里已经入账，这里跳过避免重复
+      if (d.type === "Recorded") continue;
+
+      const holding = portfolio[d.isin];
+      if (!holding) continue;
+      const amount = Number(d.total_amount || 0);
+      if (!(amount > 0)) continue;
+
+      const ccy = d.currency || guessCurrencyFromIsin(d.isin);
+      const cKey = `CASH_${ccy}`;
+
+      if (d.type === "Manual" || this.meta.dividend_strategy !== "REINVEST") {
+        holding.total_div_cash += amount;
+        cashBalances[cKey] = (cashBalances[cKey] || 0) + amount;
+        continue;
+      }
+
+      const px = await getHistoricalPrice(this.db, d.isin, d.date);
+      if (px > 0) {
+        const buyShares = Math.floor(amount / px);
+        holding.shares += buyShares;
+        cashBalances[cKey] = (cashBalances[cKey] || 0) + (amount - buyShares * px);
+      } else {
+        // 拿不到历史价时退化为现金分红，避免整笔丢失
+        holding.total_div_cash += amount;
+        cashBalances[cKey] = (cashBalances[cKey] || 0) + amount;
+      }
+    }
+
+    for (const data of Object.values(portfolio)) {
+      data.total_cost = data.shares * data.avg_cost;
+    }
+
+    return base;
+  }
+
+  /** 对外统一入口：基础持仓 + 分红入账 */
+  async getCurrentPortfolio() {
+    const base = await this.buildBaseHoldings();
+    return this.applyDividends(base);
   }
 
   async calculateNav(): Promise<{
@@ -301,16 +348,35 @@ export class PortfolioEngine {
       }
     }
 
-    const totalPnl = totalNav - totalCost + totalDivs;
+    // 投入本金口径：净入金 = Σ CASH_IN − Σ CASH_OUT（按当时币种折算到基准币）。
+    // 不能用「持仓成本 + 现金余额」，否则累计在账上的分红现金会被误当成新增本金，
+    // 从而把 ROI / CAGR 系统性低估。
+    let investedCapital = 0;
+    let hasCashFlow = false;
+    for (const tx of this.transactions) {
+      if (tx.type !== "CASH_IN" && tx.type !== "CASH_OUT") continue;
+      hasCashFlow = true;
+      const ccy = tx.isin.startsWith("CASH_") ? tx.isin.slice(5) : baseCcy;
+      const fx = ccy && ccy !== baseCcy ? await getFxRate(this.db, ccy, baseCcy) : 1.0;
+      // CASH_OUT 的 price 本身已为负数，直接累加即可
+      investedCapital += tx.price * fx;
+    }
+    // 无入金记录时退回持仓成本，避免除零
+    if (!hasCashFlow || investedCapital <= 0) {
+      investedCapital = totalCost;
+    }
+
+    totalCost = investedCapital;
+    const totalPnl = totalNav - totalCost;
     const cumulativeRoi = totalCost > 0 ? (totalPnl / totalCost) * 100 : 0;
 
-    // CAGR
+    // CAGR：净值已包含分红现金，不再二次叠加
     const firstTxDate = this.transactions[0]?.date ? new Date(this.transactions[0].date) : new Date();
     const daysElapsed = Math.max(1, (Date.now() - firstTxDate.getTime()) / (1000 * 3600 * 24));
     const yearsElapsed = daysElapsed / 365.25;
     let cagr = 0;
-    if (yearsElapsed >= 0.1 && totalCost > 0 && totalNav + totalDivs > 0) {
-      cagr = (Math.pow((totalNav + totalDivs) / totalCost, 1 / yearsElapsed) - 1) * 100;
+    if (yearsElapsed >= 0.1 && totalCost > 0 && totalNav > 0) {
+      cagr = (Math.pow(totalNav / totalCost, 1 / yearsElapsed) - 1) * 100;
     } else {
       cagr = cumulativeRoi;
     }
@@ -328,8 +394,8 @@ export class PortfolioEngine {
       .prepare(
         `INSERT OR REPLACE INTO portfolio_stats_cache (
           portfolio_id, total_nav, wallet_balance, total_pnl, total_divs,
-          cumulative_roi, annualized_return, details, last_updated
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          cumulative_roi, annualized_return, details, total_cost, last_updated
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .bind(
         this.portfolioId,
@@ -340,6 +406,7 @@ export class PortfolioEngine {
         Math.round(cumulativeRoi * 100) / 100,
         Math.round(cagr * 100) / 100,
         JSON.stringify(details),
+        Math.round(totalCost * 100) / 100,
         new Date().toISOString()
       )
       .run();
@@ -369,13 +436,16 @@ export class PortfolioEngine {
     return Math.max(0, shares);
   }
 
-  async getDividendDetails(): Promise<
+  async getDividendDetails(baseHoldings?: {
+    portfolio: Record<string, { shares: number; avg_cost: number; total_cost: number; total_div_cash: number }>;
+    cashBalances: Record<string, number>;
+  }): Promise<
     Array<{
       id?: number | null;
       isin: string;
       name?: string;
       date: string;
-      type: "Manual" | "Auto";
+      type: "Manual" | "Auto" | "Recorded";
       amount_per_share: number;
       shares_held: number;
       total_amount: number;
@@ -383,7 +453,7 @@ export class PortfolioEngine {
     }>
   > {
     const list: Array<any> = [];
-    const { portfolio } = await this.getCurrentPortfolio();
+    const { portfolio } = baseHoldings ?? (await this.buildBaseHoldings());
     const isins = Object.keys(portfolio).filter((i) => !i.startsWith("CASH_") && portfolio[i].shares > 0);
 
     // 1. 手动分红 (Manual Dividends)
@@ -416,11 +486,13 @@ export class PortfolioEngine {
         shares_held: shares,
         amount_per_share: amtPerShare,
         total_amount: total,
+        currency: r.currency || guessCurrencyFromIsin(isin),
       });
     }
 
     // 2. 自动分红 (Automatic Dividends from dividend_cache / Yahoo)
     const firstTxDate = this.transactions[0]?.date || "2020-01-01";
+    const todayStr = new Date().toISOString().slice(0, 10);
     for (const isin of isins) {
       const blockedDates = manualDatesByIsin[isin] || new Set();
       const meta = await getAssetMetadata(this.db, isin);
@@ -429,6 +501,8 @@ export class PortfolioEngine {
       for (const [dateStr, amt] of Object.entries(divHistory)) {
         if (blockedDates.has(dateStr)) continue;
         if (amt <= 0) continue;
+        // 未来派发日尚未发生，不计入当期资产
+        if (dateStr > todayStr) continue;
 
         const sharesAtTime = this.getSharesOnDate(isin, dateStr);
         if (sharesAtTime > 0) {
@@ -442,6 +516,7 @@ export class PortfolioEngine {
             shares_held: sharesAtTime,
             amount_per_share: amt,
             total_amount: total,
+            currency: guessCurrencyFromIsin(isin),
           });
         }
       }
@@ -460,6 +535,7 @@ export class PortfolioEngine {
           amount_per_share: tx.price,
           shares_held: tx.shares,
           total_amount: Math.round(tx.shares * tx.price * 100) / 100,
+          currency: guessCurrencyFromIsin(tx.isin),
         });
       }
     }

@@ -933,6 +933,8 @@ const StrategyLabView = ({
                   const lastObj = labData.monte_carlo.chart[labData.monte_carlo.chart.length - 1];
                   const hasInflation = labMcSettings.inflation > 0;
                   const insuranceIsActive = insuranceEnabled && insurancePlan && (labData.monte_carlo.chart?.length > 1 ? labData.monte_carlo.chart[1].ins_cv_p50 !== undefined : false);
+                  // 保险相关字段从 year 1 起才有（year 0 是期初本金），判定要看第 1 年而不是第 0 年
+                  const probeRow = labData.monte_carlo.chart.length > 1 ? labData.monte_carlo.chart[1] : lastObj;
                   
                   const mcLines = [];
                   
@@ -957,11 +959,11 @@ const StrategyLabView = ({
                   }
                   
                     if (hasInflation) {
-                      if (insuranceIsActive && labData.monte_carlo.chart[0].combined_real_p50 !== undefined) {
+                      if (insuranceIsActive && probeRow.combined_real_p50 !== undefined) {
                         mcLines.push(
                           <Line key="rp50" type="monotone" dataKey="combined_real_p50" stroke="#f59e0b" strokeWidth={2} strokeDasharray="3 3" dot={false} name={`合并资产真实购买力 (Real Value @${labMcSettings.inflation}%)`} />
                         );
-                      } else if (labData.monte_carlo.chart[0].real_p50 !== undefined) {
+                      } else if (probeRow.real_p50 !== undefined) {
                         mcLines.push(
                           <Line key="rp50" type="monotone" dataKey="real_p50" stroke="#f59e0b" strokeWidth={2} strokeDasharray="3 3" dot={false} name={`真实购买力 (Real Value @${labMcSettings.inflation}%)`} />
                         );

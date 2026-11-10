@@ -250,12 +250,9 @@ export default async function BlogPost({
           </>
         )}
 
-        <footer className="mt-24 pt-10 border-t border-border flex items-center justify-between">
+        <footer className="mt-24 pt-10 border-t border-border">
           <Link href="/blog" className="flex items-center gap-3 text-primary hover:text-primary/70 text-base font-medium transition-colors">
             <span>←</span><span>返回研究列表</span>
-          </Link>
-          <Link href="/assessment" className="flex items-center gap-3 text-foreground/60 hover:text-primary text-base font-medium transition-colors">
-            <span>开启财务诊断</span><span>→</span>
           </Link>
         </footer>
       </article>

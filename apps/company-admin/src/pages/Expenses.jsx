@@ -54,7 +54,6 @@ export default function ExpensesPage() {
   const [total, setTotal]             = useState(0)
   const [page, setPage]               = useState(1)
   const [loading, setLoading]         = useState(false)
-  const [scanning, setScanning]       = useState(false)
   const [categories, setCategories]   = useState([])
   const [fiscalYears, setFiscalYears] = useState([])
 
@@ -121,24 +120,6 @@ export default function ExpensesPage() {
       setFiscalYears(r.data.map(x => x.fiscal_year))
     }).catch(() => {})
   }, [currentCompany])
-
-  // ── Inbox 扫描 ────────────────────────────────────────────────────────
-  async function handleScanInbox() {
-    if (!currentCompany?.id) {
-      alert('操作失败：未识别到当前公司，请尝试刷新页面或重新选择公司')
-      return
-    }
-    setScanning(true)
-    try {
-      const res = await expensesApi.scanInbox(currentCompany.id)
-      alert(`扫描完成：${res.data.success}/${res.data.total} 成功`)
-      loadExpenses()
-    } catch (e) {
-      alert('扫描失败：' + (e.response?.data?.detail || e.message))
-    } finally {
-      setScanning(false)
-    }
-  }
 
   // ── 上传 ─────────────────────────────────────────────────────────────
   async function handleUpload() {
@@ -213,14 +194,6 @@ export default function ExpensesPage() {
             id="btn-upload-toggle"
           >
             📤 上传收据
-          </button>
-          <button
-            className="btn btn-primary"
-            onClick={handleScanInbox}
-            disabled={scanning}
-            id="btn-scan-inbox"
-          >
-            {scanning ? <><span className="spinner" /> 扫描中…</> : '🔍 扫描 Inbox'}
           </button>
 
           {/* 导出按钮（下拉选 Excel / CSV） */}

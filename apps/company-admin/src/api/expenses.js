@@ -21,13 +21,6 @@ export const expensesApi = {
     })
   },
 
-  // 触发 inbox 扫描
-  scanInbox: (companyId) => {
-    const form = new FormData()
-    if (companyId) form.append('company_id', companyId)
-    return api.post('/expenses/scan-inbox', form)
-  },
-
   // 人工修正字段
   update: (id, data) => {
     const form = new FormData()

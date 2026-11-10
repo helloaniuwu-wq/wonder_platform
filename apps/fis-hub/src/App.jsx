@@ -1,7 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useLang } from './i18n/LangContext';
-import BrokerSync from './components/BrokerSync';
-import BrokerImport from './components/BrokerImport';
 import WealthReport from './components/WealthReport';
 import ClientBriefReport from './components/ClientBriefReport';
 import Sidebar from './components/Sidebar';
@@ -185,8 +183,6 @@ function App() {
   const [divLoading, setDivLoading] = useState(false);
   const [taxRate, setTaxRate] = useState(0.0);
   const [dripMode, setDripMode] = useState(false);
-  const [showBrokerSync, setShowBrokerSync] = useState(false);
-  const [showBrokerImport, setShowBrokerImport] = useState(false);
 
   // Manage Dividends State
   const [showManageDivModal, setShowManageDivModal] = useState(false);
@@ -1168,7 +1164,9 @@ function App() {
         mc_years: Number(labMcSettings.years),
         mc_target: Number(labMcSettings.target),
         mc_stress: labMcSettings.stress,
-        mc_inflation: Number(labMcSettings.inflation) / 100,
+        // 通胀按「百分数」透传（2.5 表示 2.5%），后端统一除以 100；
+        // 之前这里也除了一次，等于按 0.025% 折现，真实购买力曲线失真。
+        mc_inflation: Number(labMcSettings.inflation),
         _ts: Date.now() // Bust cache
       };
       
@@ -1357,7 +1355,7 @@ function App() {
       <Sidebar
         activeTab={activeTab} setActiveTab={setActiveTab}
         portfolios={portfolios} setPortfolios={setPortfolios} activeId={activeId} setActiveId={setActiveId}
-        setShowModal={setShowModal} setShowBrokerImport={setShowBrokerImport} setShowBrokerSync={setShowBrokerSync}
+        setShowModal={setShowModal}
         setDeleteCandidate={setDeleteCandidate} setShowDeleteModal={setShowDeleteModal}
         savedScenarios={savedScenarios} handleLoadScenario={handleLoadScenario} handleDeleteScenario={handleDeleteScenario} handleRenameScenario={handleRenameScenario}
         currentUser={currentUser} canEditPortfolio={canEditPortfolio}
@@ -1522,8 +1520,6 @@ function App() {
           onSwitchProfessional={() => { setBriefReportOpen(false); setReportModalOpen(true); }}
         />
       )}
-      <BrokerSync show={showBrokerSync} onClose={() => setShowBrokerSync(false)} onImported={fetchPortfolios} />
-      <BrokerImport show={showBrokerImport} onClose={() => setShowBrokerImport(false)} onImported={fetchPortfolios} />
       <ILPEnrollmentBonusModal
         open={ilpEnrollmentModalOpen}
         onClose={() => setIlpEnrollmentModalOpen(false)}

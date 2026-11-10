@@ -81,9 +81,6 @@ export const commissionsApi = {
     api.post(`/companies/${companyId}/commissions/upload`, formData, {
       headers: { 'Content-Type': 'multipart/form-data' },
     }),
-  /** 触发 statements_inbox/ 扫描 */
-  scanInbox: (companyId) =>
-    api.post(`/companies/${companyId}/commissions/scan-inbox`),
   /** 人工修正字段 */
   update: (companyId, id, data) =>
     api.put(`/companies/${companyId}/commissions/${id}`, data),
@@ -164,28 +161,6 @@ export const complianceApi = {
   /** Dashboard 摘要：逾期/即将到期数量 */
   summary: (companyId, year) =>
     api.get(`/companies/${companyId}/compliance/summary`, { params: year ? { year } : {} }),
-}
-
-// ── Leases (物业租约) ────────────────────────────────────────────────────────
-export const leasesApi = {
-  list: (companyId, params) => api.get(`/companies/${companyId}/leases/`, { params }),
-  summary: (companyId) => api.get(`/companies/${companyId}/leases/summary`),
-  get: (companyId, id) => api.get(`/companies/${companyId}/leases/${id}`),
-  create: (companyId, data) => api.post(`/companies/${companyId}/leases/`, data),
-  update: (companyId, id, data) => api.put(`/companies/${companyId}/leases/${id}`, data),
-  delete: (companyId, id) => api.delete(`/companies/${companyId}/leases/${id}`),
-  generatePayments: (companyId, id, months) => 
-    api.post(`/companies/${companyId}/leases/${id}/generate-payments`, null, { params: { months_to_generate: months } }),
-  updatePayment: (companyId, paymentId, data) => 
-    api.put(`/companies/${companyId}/leases/payments/${paymentId}`, data),
-  deletePayment: (companyId, paymentId) => 
-    api.delete(`/companies/${companyId}/leases/payments/${paymentId}`),
-  createMiscFee: (companyId, id, data) => 
-    api.post(`/companies/${companyId}/leases/${id}/misc`, data),
-  updateMiscFee: (companyId, feeId, data) => 
-    api.put(`/companies/${companyId}/leases/misc/${feeId}`, data),
-  deleteMiscFee: (companyId, feeId) => 
-    api.delete(`/companies/${companyId}/leases/misc/${feeId}`),
 }
 
 // ── Admin (系統管理) ──────────────────────────────────────────

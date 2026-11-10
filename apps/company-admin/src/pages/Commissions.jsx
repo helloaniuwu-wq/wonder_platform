@@ -38,7 +38,6 @@ export default function Commissions() {
   const [profit, setProfit]           = useState(null)
   const [loading, setLoading]         = useState(false)
   const [uploading, setUploading]     = useState(false)
-  const [scanning, setScanning]       = useState(false)
   const [selectedStmt, setSelectedStmt] = useState(null)
   const [detailOpen, setDetailOpen]   = useState(false)
   const [editMonth, setEditMonth]     = useState('')
@@ -75,20 +74,6 @@ export default function Commissions() {
   }, [companyId, fiscalYear])
 
   useEffect(() => { loadAll() }, [loadAll])
-
-  // ── 扫描 Inbox ────────────────────────────────────────────────────────
-  const handleScanInbox = async () => {
-    setScanning(true)
-    try {
-      const res = await commissionsApi.scanInbox(companyId)
-      showToast(`Inbox 扫描完成：${res.data.success}/${res.data.total} 成功`)
-      loadAll()
-    } catch (e) {
-      showToast('扫描失败：' + (e.response?.data?.detail || e.message), 'error')
-    } finally {
-      setScanning(false)
-    }
-  }
 
   const handleConfirmIR56M = async (id) => {
     setConfirmingId(id)
@@ -188,15 +173,6 @@ export default function Commissions() {
                 <option key={fy} value={fy}>{fy} 财年</option>
               ))}
             </select>
-
-            {/* 扫描 Inbox */}
-            <button
-              className="btn btn-ghost btn-sm"
-              onClick={handleScanInbox}
-              disabled={scanning || !companyId}
-            >
-              {scanning ? '⏳ 扫描中...' : '📂 扫描 Inbox'}
-            </button>
 
             {/* 手动新增额外收入 */}
             <button

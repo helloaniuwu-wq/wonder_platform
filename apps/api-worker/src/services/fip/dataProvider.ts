@@ -377,7 +377,12 @@ export async function fetchStooqHistorical(isin: string): Promise<Record<string,
   const url = `https://stooq.com/q/d/l/?s=${encodeURIComponent(ticker)}&i=d`;
   const results: Record<string, number> = {};
   try {
-    const res = await fetch(url, { headers: { "User-Agent": USER_AGENT } });
+    const res = await fetch(url, {
+      headers: { "User-Agent": USER_AGENT },
+      // 没有超时保护时，无效/退市代码会让 Stooq 请求长时间挂起，
+      // 单个坏 ISIN 就能把 /lab/analyze 拖到 80s+ 并撞上 Worker 的墙钟上限。
+      signal: AbortSignal.timeout(3000),
+    });
     if (!res.ok) return results;
     const text = await res.text();
     if (!text || text.length < 50) return results;

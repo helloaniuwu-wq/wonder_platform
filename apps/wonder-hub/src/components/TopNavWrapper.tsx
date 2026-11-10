@@ -5,8 +5,6 @@ import { TopNav } from "./TopNav";
 
 export function TopNavWrapper() {
   const pathname = usePathname();
-  const current = pathname.startsWith("/blog") ? "blog"
-    : pathname.startsWith("/assessment") ? "assessment"
-    : undefined;
+  const current = pathname.startsWith("/blog") ? "blog" : undefined;
   return <TopNav currentPath={current} />;
 }

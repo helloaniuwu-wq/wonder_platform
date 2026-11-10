@@ -109,7 +109,7 @@ If you are unsure whether your asset structure meets official standards or want 
 
 > **Next Steps**
 
-Book your 1-on-1 eligibility assessment. We will tailor your application strategy based on the latest official details. → [Book Now](/immigration#form)
+Book your 1-on-1 eligibility assessment. We will tailor your application strategy based on the latest official details. → [Book Now](mailto:hello@wonderwisdom.online)
 
 ---
 

@@ -115,7 +115,7 @@ ILI gives you a compliant container, transparent fees, free switching, HK$1.62M 
 
 ---
 
-> **Learn More** — Schedule a one-on-one consultation with our wealth management advisors. → [Book a Consultation](/immigration#form)
+> **Learn More** — Schedule a one-on-one consultation with our wealth management advisors. → [Book a Consultation](mailto:hello@wonderwisdom.online)
 
 ---
 

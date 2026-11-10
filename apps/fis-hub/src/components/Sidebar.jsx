@@ -9,7 +9,7 @@ import { useLang } from '../i18n/LangContext';
 const Sidebar = ({
   activeTab, setActiveTab,
   portfolios, setPortfolios, activeId, setActiveId,
-  setShowModal, setShowBrokerImport, setShowBrokerSync,
+  setShowModal,
   setDeleteCandidate, setShowDeleteModal,
   savedScenarios, handleLoadScenario, handleDeleteScenario, handleRenameScenario,
   currentUser, canEditPortfolio,

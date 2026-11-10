@@ -122,6 +122,7 @@ const InsurancePlanPanel = ({
                   <div style={{ color: '#10b981', fontWeight: 'bold' }}>✓ 已加载: {insurancePlan.policy_name}</div>
                   <div style={{ color: 'rgba(255,255,255,0.6)', fontSize: '0.85rem', marginTop: '4px' }}>
                     包含 {insurancePlan.total_years} 年现金流数据
+                    {insurancePlan.sheet_name ? ` · 解析页签「${insurancePlan.sheet_name}」` : ''}
                   </div>
                 </div>
                 <button 

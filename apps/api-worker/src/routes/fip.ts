@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import { PortfolioEngine } from "../services/fip/portfolioEngine";
+import { parseInsurancePlan } from "../services/fip/insuranceParser";
 import { generateWealthReportDocx } from "../services/fip/reportGenerator";
 import { StrategyLab } from "../services/fip/strategyLab";
 import { Env, Variables } from "../types";
@@ -183,7 +184,11 @@ fipRouter.get("/report/:id", async (c) => {
       const totalNav = Number(cache.total_nav || 0);
       const totalPnl = Number(cache.total_pnl || 0);
       const totalDivs = Number(cache.total_divs || 0);
-      const totalCost = Math.round((totalNav - totalPnl + totalDivs) * 100) / 100;
+      const totalCost =
+        cache.total_cost != null
+          ? Number(cache.total_cost)
+          : // 兼容尚未回填 total_cost 的旧缓存行
+            Math.round((totalNav - totalPnl + totalDivs) * 100) / 100;
       const startDate = (portfolio.created_at || "").slice(0, 10);
       const reportDate = (cache.last_updated || new Date().toISOString()).slice(0, 10);
       const walletBal = Number(cache.wallet_balance || 0);
@@ -380,29 +385,41 @@ fipRouter.delete("/portfolios/transactions/:tx_id", async (c) => {
   return c.json({ success: true, id: txId });
 });
 
-// ── Manual Dividends ───────────────────────────────────────────────────────
-fipRouter.post("/portfolios/dividend/manual/:id", async (c) => {
-  const user = await requireUser(c);
-  const id = parseInt(c.req.param("id"), 10);
-  const body = await c.req.json<any>();
-
-  await c.env.DB.prepare(
-    "INSERT INTO manual_dividends (portfolio_id, isin, date, amount_per_share, currency) VALUES (?, ?, ?, ?, ?)"
-  )
-    .bind(id, body.isin, body.date || new Date().toISOString().slice(0, 10), Number(body.amount || 0), body.currency || "USD")
-    .run();
-
-  return c.json({ success: true });
-});
-
-fipRouter.delete("/dividends/manual/:div_id", async (c) => {
-  const user = await requireUser(c);
-  const divId = parseInt(c.req.param("div_id"), 10);
-  await c.env.DB.prepare("DELETE FROM manual_dividends WHERE id = ?").bind(divId).run();
-  return c.json({ success: true, id: divId });
-});
+// ── Manual Dividends 的 POST / DELETE 已在上方「Dividends Projections & Management」
+//    段内注册，此处不再重复注册（Hono 只会命中先注册的那一条，重复注册属于死代码）。
+//    前端 DividendModal 提交的是 amount_per_share，故保留上方版本。
 
 // ── Strategy Lab Endpoints ─────────────────────────────────────────────────
+/**
+ * 保险计划书 Excel 解析。
+ * 迁移时整条端点缺失，导致「储蓄分红险配置」上传即 404，实验室的保险叠加功能完全不可用。
+ * Worker 无法运行 openpyxl，改用 SheetJS 复用同一套表头识别规则。
+ */
+fipRouter.post("/lab/insurance/parse", async (c) => {
+  let form: FormData;
+  try {
+    form = await c.req.formData();
+  } catch {
+    throw new HttpError(400, "请以 multipart/form-data 上传计划书文件");
+  }
+
+  const file = form.get("file");
+  if (!file || typeof file === "string") {
+    throw new HttpError(400, "未收到文件");
+  }
+
+  const buf = await (file as File).arrayBuffer();
+  if (buf.byteLength > 10 * 1024 * 1024) {
+    throw new HttpError(400, "文件过大（上限 10MB）");
+  }
+
+  const result = parseInsurancePlan(buf, (file as File).name || "保险计划书");
+  if (!result.ok) {
+    throw new HttpError(422, result.error || "解析失败");
+  }
+  return c.json(result);
+});
+
 fipRouter.post("/lab/analyze", async (c) => {
   const body = await c.req.json<any>();
   const isins: string[] = body.isins || [];
