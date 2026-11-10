@@ -248,11 +248,12 @@ export async function getFxRate(
     // ignore
   }
 
-  // 2. Fetch from Yahoo Finance v8 chart API
+  // 2. Fetch from Yahoo Finance v8 chart API (with strict 1.5s timeout)
   try {
     const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ticker)}?interval=1d&range=5d`;
     const res = await fetch(url, {
       headers: { "User-Agent": USER_AGENT, Accept: "application/json" },
+      signal: AbortSignal.timeout(1500),
     });
     if (res.ok) {
       const json: any = await res.json();
@@ -318,6 +319,7 @@ async function fetchYahooChart(
     )}?interval=1d&range=${rangeStr}${eventsParam}`;
     const res = await fetch(url, {
       headers: { "User-Agent": USER_AGENT, Accept: "application/json" },
+      signal: AbortSignal.timeout(2500),
     });
     if (!res.ok) return null;
     const json: any = await res.json();
@@ -589,9 +591,8 @@ export async function getHistoricalSeries(
     // ignore
   }
 
-  // If D1 already has plenty of data points covering the period, return early or supplement with Yahoo
-  const expectedMinPoints = Math.min(daysBack * 0.45, 900);
-  if (Object.keys(results).length < expectedMinPoints && !isin.startsWith("CASH_")) {
+  // If D1 already has price data points covering the asset, return immediately
+  if (Object.keys(results).length === 0 && !isin.startsWith("CASH_")) {
     const meta = await getAssetMetadata(db, isin);
     const yahooTicker = normalizeForYahoo(meta.ticker || isin);
     const rangeStr =
@@ -636,8 +637,8 @@ export async function getHistoricalSeries(
     }
   }
 
-  // Fallback to Stooq if still sparse
-  if (Object.keys(results).length < expectedMinPoints && !isin.startsWith("CASH_")) {
+  // Fallback to Stooq if still completely empty
+  if (Object.keys(results).length === 0 && !isin.startsWith("CASH_")) {
     const stooq = await fetchStooqHistorical(isin);
     for (const [d, p] of Object.entries(stooq)) {
       if (d >= startStr && d <= endStr && p > 0 && results[d] === undefined) {

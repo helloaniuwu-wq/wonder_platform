@@ -234,111 +234,47 @@ fipRouter.get("/report/:id", async (c) => {
 
 fipRouter.get("/report/history/:id", async (c) => {
   const id = parseInt(c.req.param("id"), 10);
+  const refresh = c.req.query("refresh") === "true";
 
-  // 1. 获取组合建仓元数据及缓存统计
-  const todayStr = new Date().toISOString().slice(0, 10);
-  const p = await c.env.DB.prepare("SELECT created_at FROM portfolios WHERE id = ?").bind(id).first<any>();
-  const startDate = (p?.created_at || todayStr).slice(0, 10);
+  // 1. Check cache first for instant sub-millisecond response
+  if (!refresh) {
+    try {
+      const cache = await c.env.DB.prepare(
+        "SELECT historical_chart FROM portfolio_stats_cache WHERE portfolio_id = ?"
+      )
+        .bind(id)
+        .first<{ historical_chart: string }>();
 
-  const cache = await c.env.DB.prepare(
-    "SELECT total_nav, wallet_balance, total_pnl, total_divs FROM portfolio_stats_cache WHERE portfolio_id = ?"
-  )
-    .bind(id)
-    .first<any>();
-
-  // 初始投入本金 = 最新净值 - 累计盈亏 (不额外重复叠加现金分红)
-  const initialCost = cache
-    ? Math.max(0, Number(cache.total_nav || 0) - Number(cache.total_pnl || 0))
-    : 100000;
-
-  // 2. 从 portfolio_history 查询去重后的真实历史净值 (按 date 分组取 MAX 消除重复定时任务及单日报价缺失)
-  const { results } = await c.env.DB.prepare(
-    `SELECT date, MAX(total_nav) as total_nav, MAX(wallet_balance) as wallet_balance
-     FROM portfolio_history
-     WHERE portfolio_id = ?
-     GROUP BY date
-     ORDER BY date ASC`
-  )
-    .bind(id)
-    .all<any>();
-
-  const rawPoints = (results || []).map((r) => ({
-    date: r.date,
-    value: Number(r.total_nav || 0),
-    wallet_balance: Number(r.wallet_balance || 0),
-  }));
-
-  // 3. 过滤单日 API 超时导致的异常闪崩毛刺 (例如单日暴跌超 25% 且次日立即反弹回升的情况)
-  const filteredPoints: Array<{ date: string; value: number; wallet_balance: number }> = [];
-  for (let i = 0; i < rawPoints.length; i++) {
-    const curr = { ...rawPoints[i] };
-    const prev = filteredPoints[filteredPoints.length - 1];
-    const next = rawPoints[i + 1];
-
-    if (prev && next && curr.value < prev.value * 0.75 && next.value > curr.value * 1.25) {
-      curr.value = Math.round(((prev.value + next.value) / 2) * 100) / 100;
-    }
-    filteredPoints.push(curr);
-  }
-
-  let chartPoints = filteredPoints;
-
-  // 4. 确保图表从建仓日（startDate）平滑锚定开始绘制
-  if (chartPoints.length > 0) {
-    const firstHistDate = chartPoints[0].date;
-    if (startDate < firstHistDate) {
-      const startVal = initialCost > 0 ? initialCost : chartPoints[0].value;
-      const endVal = chartPoints[0].value;
-      const startTime = new Date(startDate).getTime();
-      const endTime = new Date(firstHistDate).getTime();
-      const totalSpan = Math.max(1, endTime - startTime);
-
-      const prependedPoints: Array<{ date: string; value: number; wallet_balance: number }> = [];
-      prependedPoints.push({
-        date: startDate,
-        value: Math.round(startVal * 100) / 100,
-        wallet_balance: 0,
-      });
-
-      // 生成建仓日至首条记录之间的月末锚点
-      let cur = new Date(startDate);
-      cur = new Date(cur.getFullYear(), cur.getMonth() + 1, 0); // 本月末
-
-      while (cur.getTime() < endTime - 10 * 86400000) {
-        const curStr = cur.toISOString().slice(0, 10);
-        if (curStr > startDate && curStr < firstHistDate) {
-          const progress = (cur.getTime() - startTime) / totalSpan;
-          const interpVal = startVal + (endVal - startVal) * progress;
-          prependedPoints.push({
-            date: curStr,
-            value: Math.round(interpVal * 100) / 100,
-            wallet_balance: 0,
-          });
+      if (cache && cache.historical_chart) {
+        const parsed = JSON.parse(cache.historical_chart);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return c.json(parsed);
         }
-        cur = new Date(cur.getFullYear(), cur.getMonth() + 2, 0); // 下一个月末
       }
-
-      chartPoints = [...prependedPoints, ...chartPoints];
+    } catch {
+      // ignore
     }
-  } else if (cache) {
-    // 尚无 history 记录时，至少绘制建仓日与今日两个基准点
-    chartPoints.push({
-      date: startDate,
-      value: initialCost,
-      wallet_balance: 0,
-    });
   }
 
-  // 5. 追加今日最新数据点（如果尚未包含）
-  if (cache && chartPoints.length > 0 && chartPoints[chartPoints.length - 1].date !== todayStr) {
-    chartPoints.push({
-      date: todayStr,
-      value: Number(cache.total_nav || 0),
-      wallet_balance: Number(cache.wallet_balance || 0),
-    });
+  // 2. Compute via portfolio engine
+  const engine = new PortfolioEngine(c.env.DB, id);
+  await engine.init();
+  const hist = await engine.getHistoricalChartData();
+
+  // 3. Persist to cache
+  if (Array.isArray(hist) && hist.length > 0) {
+    try {
+      await c.env.DB.prepare(
+        "UPDATE portfolio_stats_cache SET historical_chart = ? WHERE portfolio_id = ?"
+      )
+        .bind(JSON.stringify(hist), id)
+        .run();
+    } catch {
+      // ignore
+    }
   }
 
-  return c.json(chartPoints);
+  return c.json(hist);
 });
 
 // ── Dividends Projections & Management ────────────────────────────────────

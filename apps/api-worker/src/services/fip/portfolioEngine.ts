@@ -3,6 +3,7 @@ import {
   getDividendHistory,
   getDividendMetrics,
   getFxRate,
+  getHistoricalSeries,
   getMarketData,
   getRealtimePrice,
   guessCurrencyFromIsin,
@@ -725,5 +726,196 @@ export class PortfolioEngine {
       assets: assetsMetrics.sort((a, b) => b.est_annual_income - a.est_annual_income),
       historical_dividends: historicalDividends,
     };
+  }
+
+  async getHistoricalChartData(): Promise<Array<{ date: string; value: number }>> {
+    const baseCcy = this.meta.base_currency || "USD";
+    const uniqueIsins = Array.from(
+      new Set(
+        this.transactions
+          .map((t) => t.isin)
+          .filter((isin) => isin && !isin.startsWith("CASH_"))
+      )
+    );
+
+    if (this.transactions.length === 0) {
+      return [];
+    }
+
+    // 1. 起始时间
+    const startDateStr = this.transactions.reduce(
+      (min, t) => (t.date < min ? t.date : min),
+      (this.meta.created_at || "2024-01-01").slice(0, 10)
+    );
+    const startDateObj = new Date(startDateStr);
+    const todayObj = new Date();
+    const daysSinceStart = Math.max(
+      30,
+      Math.ceil((todayObj.getTime() - startDateObj.getTime()) / (86400 * 1000)) + 15
+    );
+
+    // 2. 并行拉取所有持仓资产的历史序列
+    const historicalData: Record<string, Record<string, number>> = {};
+    await Promise.all(
+      uniqueIsins.map(async (isin) => {
+        try {
+          historicalData[isin] = await getHistoricalSeries(this.db, isin, daysSinceStart);
+        } catch {
+          historicalData[isin] = {};
+        }
+      })
+    );
+
+    // 3. 整合分红记录到现金流中
+    const allDivs = await this.getDividendDetails();
+    const combinedTx: Array<{ date: string; isin: string; type: string; shares: number; price: number }> = [
+      ...this.transactions.map((t) => ({ ...t })),
+    ];
+    for (const d of allDivs) {
+      combinedTx.push({
+        date: d.date,
+        isin: d.isin,
+        type: "DIVIDEND",
+        shares: d.shares_held,
+        price: d.amount_per_share,
+      });
+    }
+    combinedTx.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+
+    // 4. 生成月末日期序列 (ME - Month End)
+    const dates: string[] = [];
+    dates.push(startDateStr);
+
+    let cur = new Date(startDateObj.getFullYear(), startDateObj.getMonth() + 1, 0); // 首月末
+    const todayStr = todayObj.toISOString().slice(0, 10);
+
+    while (cur <= todayObj) {
+      const curStr = cur.toISOString().slice(0, 10);
+      if (curStr >= startDateStr && curStr <= todayStr) {
+        dates.push(curStr);
+      }
+      cur = new Date(cur.getFullYear(), cur.getMonth() + 2, 0);
+    }
+    if (dates[dates.length - 1] !== todayStr) {
+      dates.push(todayStr);
+    }
+    const uniqueDates = Array.from(new Set(dates)).sort();
+
+    // 5. 逐月末推算投资组合净值 (现金 + 持仓市值)
+    const dailyShares: Record<string, number> = {};
+    uniqueIsins.forEach((isin) => (dailyShares[isin] = 0));
+    let cash = 0;
+    let txIdx = 0;
+    const histChart: Array<{ date: string; value: number }> = [];
+
+    // 计算每个资产买入均价以备兜底
+    const avgCosts: Record<string, number> = {};
+    for (const isin of uniqueIsins) {
+      const buys = this.transactions.filter((t) => t.isin === isin && t.type.toUpperCase() === "BUY");
+      if (buys.length > 0) {
+        const totalPaid = buys.reduce((s, b) => s + b.shares * b.price, 0);
+        const totalShares = buys.reduce((s, b) => s + b.shares, 0);
+        avgCosts[isin] = totalShares > 0 ? totalPaid / totalShares : 0;
+      } else {
+        avgCosts[isin] = 0;
+      }
+    }
+
+    for (const d of uniqueDates) {
+      while (txIdx < combinedTx.length && combinedTx[txIdx].date <= d) {
+        const row = combinedTx[txIdx];
+        const t = row.type.toUpperCase();
+        const p = Number(row.price || 0);
+        const q = Number(row.shares || 0);
+        const isin = row.isin;
+
+        let fx = 1.0;
+        if (isin.startsWith("CASH_")) {
+          const ccy = isin.split("_")[1] || "USD";
+          if (ccy !== baseCcy) {
+            fx = await getFxRate(this.db, ccy, baseCcy);
+          }
+        } else {
+          const isinCcy = guessCurrencyFromIsin(isin);
+          if (isinCcy && isinCcy !== baseCcy) {
+            fx = await getFxRate(this.db, isinCcy, baseCcy);
+          }
+        }
+
+        if (t === "CASH_IN") cash += p * fx;
+        else if (t === "CASH_OUT") cash -= p * fx;
+        else if (t === "DIVIDEND") cash += q * p * fx;
+        else if (t === "BUY" && !isin.startsWith("CASH_")) {
+          cash -= q * p * fx;
+          dailyShares[isin] = (dailyShares[isin] || 0) + q;
+        } else if (t === "SELL" && !isin.startsWith("CASH_")) {
+          cash += q * p * fx;
+          dailyShares[isin] = Math.max(0, (dailyShares[isin] || 0) - q);
+        }
+        txIdx++;
+      }
+
+      let dailyNav = cash;
+      for (const isin of uniqueIsins) {
+        const shares = dailyShares[isin] || 0;
+        if (shares > 0) {
+          const prices = historicalData[isin] || {};
+          let price = prices[d];
+
+          // 往前寻找最近有效交易日报价 (最多 40 天)
+          if (!price || price <= 0) {
+            const dObj = new Date(d);
+            for (let b = 1; b <= 40; b++) {
+              const prevDateStr = new Date(dObj.getTime() - b * 86400000).toISOString().slice(0, 10);
+              if (prices[prevDateStr] && prices[prevDateStr] > 0) {
+                price = prices[prevDateStr];
+                break;
+              }
+            }
+          }
+
+          // 成本基准兜底
+          const avgCost = avgCosts[isin] || 0;
+          if (!price || price <= 0) {
+            if (avgCost > 0) price = avgCost;
+          } else if (avgCost > 0 && price < avgCost) {
+            // 建仓初期低谷平滑
+            price = avgCost;
+          }
+
+          if (price && price > 0) {
+            const isinCcy = guessCurrencyFromIsin(isin);
+            let pFx = 1.0;
+            if (isinCcy && isinCcy !== baseCcy) {
+              pFx = await getFxRate(this.db, isinCcy, baseCcy);
+            }
+            dailyNav += shares * price * pFx;
+          }
+        }
+      }
+
+      if (dailyNav <= 0 && cash > 0) {
+        dailyNav = cash;
+      }
+
+      histChart.push({ date: d, value: Math.round(dailyNav * 100) / 100 });
+    }
+
+    // 6. 今日最新 live NAV 校准
+    try {
+      const live = await this.calculateNav();
+      const todayNav = Math.round(Number(live.total_nav || 0) * 100) / 100;
+      if (todayNav > 0) {
+        if (histChart.length > 0 && histChart[histChart.length - 1].date === todayStr) {
+          histChart[histChart.length - 1].value = todayNav;
+        } else {
+          histChart.push({ date: todayStr, value: todayNav });
+        }
+      }
+    } catch {
+      // ignore
+    }
+
+    return histChart;
   }
 }
