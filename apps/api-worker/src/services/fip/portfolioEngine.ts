@@ -357,64 +357,108 @@ export class PortfolioEngine {
     };
   }
 
+  getSharesOnDate(isin: string, targetDate: string): number {
+    let shares = 0;
+    for (const tx of this.transactions) {
+      if (tx.isin === isin && tx.date <= targetDate) {
+        if (tx.type === "BUY") shares += tx.shares;
+        else if (tx.type === "SELL") shares -= tx.shares;
+      }
+    }
+    return Math.max(0, shares);
+  }
+
   async getDividendDetails(): Promise<
     Array<{
-      id?: number;
+      id?: number | null;
       isin: string;
       name?: string;
       date: string;
+      type: "Manual" | "Auto";
       amount_per_share: number;
       shares_held: number;
       total_amount: number;
-      currency: string;
-      source: string;
+      currency?: string;
     }>
   > {
     const list: Array<any> = [];
+    const { portfolio } = await this.getCurrentPortfolio();
+    const isins = Object.keys(portfolio).filter((i) => !i.startsWith("CASH_") && portfolio[i].shares > 0);
 
-    // 1. Manual dividends
+    // 1. 手动分红 (Manual Dividends)
     const manRows = await this.db
       .prepare(
-        "SELECT id, isin, date, amount_per_share, currency FROM manual_dividends WHERE portfolio_id = ? ORDER BY date DESC"
+        "SELECT id, isin, date, amount_per_share, currency FROM manual_dividends WHERE portfolio_id = ? ORDER BY date ASC"
       )
       .bind(this.portfolioId)
       .all<any>();
 
-    const holdingsMap: Record<string, number> = {};
-    for (const tx of this.transactions) {
-      if (tx.type === "BUY") holdingsMap[tx.isin] = (holdingsMap[tx.isin] || 0) + tx.shares;
-      else if (tx.type === "SELL") holdingsMap[tx.isin] = Math.max(0, (holdingsMap[tx.isin] || 0) - tx.shares);
-    }
+    const manualDatesByIsin: Record<string, Set<string>> = {};
 
     for (const r of manRows.results || []) {
-      const shares = holdingsMap[r.isin] || 0;
-      const meta = await getAssetMetadata(this.db, r.isin);
+      const isin = r.isin;
+      if (!manualDatesByIsin[isin]) manualDatesByIsin[isin] = new Set();
+      manualDatesByIsin[isin].add(r.date);
+
+      const sharesAtTime = this.getSharesOnDate(isin, r.date);
+      const shares = sharesAtTime > 0 ? sharesAtTime : portfolio[isin]?.shares || 0;
+      const meta = await getAssetMetadata(this.db, isin);
+      const amtPerShare = Number(r.amount_per_share || 0);
+      const total = Math.round(shares * amtPerShare * 100) / 100;
+
       list.push({
         id: r.id,
-        isin: r.isin,
-        name: meta.name || r.isin,
         date: r.date,
-        amount_per_share: Number(r.amount_per_share || 0),
+        isin,
+        name: meta.name || isin,
+        type: "Manual",
         shares_held: shares,
-        total_amount: Math.round(shares * Number(r.amount_per_share || 0) * 100) / 100,
-        currency: r.currency || guessCurrencyFromIsin(r.isin),
-        source: "Manual",
+        amount_per_share: amtPerShare,
+        total_amount: total,
       });
     }
 
-    // 2. Recorded dividend transactions
+    // 2. 自动分红 (Automatic Dividends from dividend_cache / Yahoo)
+    const firstTxDate = this.transactions[0]?.date || "2020-01-01";
+    for (const isin of isins) {
+      const blockedDates = manualDatesByIsin[isin] || new Set();
+      const meta = await getAssetMetadata(this.db, isin);
+      const divHistory = await getDividendHistory(this.db, isin, firstTxDate);
+
+      for (const [dateStr, amt] of Object.entries(divHistory)) {
+        if (blockedDates.has(dateStr)) continue;
+        if (amt <= 0) continue;
+
+        const sharesAtTime = this.getSharesOnDate(isin, dateStr);
+        if (sharesAtTime > 0) {
+          const total = Math.round(sharesAtTime * amt * 100) / 100;
+          list.push({
+            id: null,
+            date: dateStr,
+            isin,
+            name: meta.name || isin,
+            type: "Auto",
+            shares_held: sharesAtTime,
+            amount_per_share: amt,
+            total_amount: total,
+          });
+        }
+      }
+    }
+
+    // 3. 显式交易记录中类型为 DIV_CASH 的分红
     for (const tx of this.transactions) {
       if (tx.type === "DIV_CASH") {
         const meta = await getAssetMetadata(this.db, tx.isin);
         list.push({
+          id: null,
           isin: tx.isin,
           name: meta.name || tx.isin,
           date: tx.date,
+          type: "Recorded",
           amount_per_share: tx.price,
           shares_held: tx.shares,
           total_amount: Math.round(tx.shares * tx.price * 100) / 100,
-          currency: guessCurrencyFromIsin(tx.isin),
-          source: "Recorded",
         });
       }
     }
