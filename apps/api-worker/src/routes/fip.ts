@@ -150,6 +150,62 @@ fipRouter.post("/portfolios/reorder", async (c) => {
 // ── Portfolio Report & Stats ───────────────────────────────────────────────
 fipRouter.get("/report/:id", async (c) => {
   const id = parseInt(c.req.param("id"), 10);
+  const refresh = c.req.query("refresh") === "true";
+
+  // 1. 如果没有要求强制刷新，优先从 portfolio_stats_cache 毫秒级读取历史快照
+  if (!refresh) {
+    const cache = await c.env.DB.prepare(
+      "SELECT * FROM portfolio_stats_cache WHERE portfolio_id = ?"
+    )
+      .bind(id)
+      .first<any>();
+
+    const portfolio = await c.env.DB.prepare(
+      "SELECT name, base_currency, dividend_strategy, created_at FROM portfolios WHERE id = ?"
+    )
+      .bind(id)
+      .first<any>();
+
+    if (cache && portfolio && cache.details) {
+      let details = [];
+      try {
+        details = JSON.parse(cache.details);
+      } catch {}
+
+      const sectorMap: Record<string, number> = {};
+      const countryMap: Record<string, number> = {};
+      for (const d of details) {
+        if (d.sector) sectorMap[d.sector] = Math.round(((sectorMap[d.sector] || 0) + (d.market_value || 0)) * 100) / 100;
+        if (d.country) countryMap[d.country] = Math.round(((countryMap[d.country] || 0) + (d.market_value || 0)) * 100) / 100;
+      }
+
+      const totalNav = Number(cache.total_nav || 0);
+      const totalPnl = Number(cache.total_pnl || 0);
+      const totalDivs = Number(cache.total_divs || 0);
+      const totalCost = Math.round((totalNav - totalPnl + totalDivs) * 100) / 100;
+
+      return c.json({
+        id,
+        name: portfolio.name,
+        base_currency: portfolio.base_currency || "USD",
+        dividend_strategy: portfolio.dividend_strategy || "CASH",
+        created_at: portfolio.created_at,
+        total_nav: totalNav,
+        wallet_balance: Number(cache.wallet_balance || 0),
+        total_cost: totalCost,
+        total_pnl: totalPnl,
+        total_divs: totalDivs,
+        cumulative_roi: Number(cache.cumulative_roi || 0),
+        annualized_return: Number(cache.annualized_return || 0),
+        details,
+        sector_allocation: sectorMap,
+        country_allocation: countryMap,
+        last_updated: cache.last_updated,
+      });
+    }
+  }
+
+  // 2. 无缓存或指定刷新时执行完整计算
   const engine = new PortfolioEngine(c.env.DB, id);
   await engine.init();
   const navData = await engine.calculateNav();
@@ -166,16 +222,47 @@ fipRouter.get("/report/:id", async (c) => {
 
 fipRouter.get("/report/history/:id", async (c) => {
   const id = parseInt(c.req.param("id"), 10);
-  const engine = new PortfolioEngine(c.env.DB, id);
-  await engine.init();
-  const navData = await engine.calculateNav();
 
-  // Return formatted chart points
-  const today = new Date().toISOString().slice(0, 10);
-  const chartPoints = [
-    { date: engine.meta.created_at, total_nav: navData.total_cost, wallet_balance: navData.wallet_balance },
-    { date: today, total_nav: navData.total_nav, wallet_balance: navData.wallet_balance },
-  ];
+  // 1. 从 portfolio_history 查询真实历史每日/月度净值
+  const { results } = await c.env.DB.prepare(
+    "SELECT date, total_nav, wallet_balance FROM portfolio_history WHERE portfolio_id = ? ORDER BY date ASC"
+  )
+    .bind(id)
+    .all<any>();
+
+  let chartPoints = (results || []).map((r) => ({
+    date: r.date,
+    value: Number(r.total_nav || 0),
+    wallet_balance: Number(r.wallet_balance || 0),
+  }));
+
+  // 2. 如果历史表中尚无今日或历史为空，追加最新快照
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const cache = await c.env.DB.prepare(
+    "SELECT total_nav, wallet_balance FROM portfolio_stats_cache WHERE portfolio_id = ?"
+  )
+    .bind(id)
+    .first<any>();
+
+  if (cache) {
+    if (chartPoints.length === 0) {
+      const p = await c.env.DB.prepare("SELECT created_at FROM portfolios WHERE id = ?").bind(id).first<any>();
+      const createdStr = (p?.created_at || todayStr).slice(0, 10);
+      chartPoints.push({
+        date: createdStr,
+        value: Number(cache.total_nav || 0),
+        wallet_balance: Number(cache.wallet_balance || 0),
+      });
+    }
+
+    if (chartPoints[chartPoints.length - 1].date !== todayStr) {
+      chartPoints.push({
+        date: todayStr,
+        value: Number(cache.total_nav || 0),
+        wallet_balance: Number(cache.wallet_balance || 0),
+      });
+    }
+  }
 
   return c.json(chartPoints);
 });
