@@ -235,7 +235,22 @@ fipRouter.get("/report/:id", async (c) => {
 fipRouter.get("/report/history/:id", async (c) => {
   const id = parseInt(c.req.param("id"), 10);
 
-  // 1. 从 portfolio_history 查询真实历史每日/月度净值
+  // 1. 获取组合建仓元数据及缓存统计
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const p = await c.env.DB.prepare("SELECT created_at FROM portfolios WHERE id = ?").bind(id).first<any>();
+  const startDate = (p?.created_at || todayStr).slice(0, 10);
+
+  const cache = await c.env.DB.prepare(
+    "SELECT total_nav, wallet_balance, total_pnl, total_divs FROM portfolio_stats_cache WHERE portfolio_id = ?"
+  )
+    .bind(id)
+    .first<any>();
+
+  const initialCost = cache
+    ? Math.max(0, Number(cache.total_nav || 0) - Number(cache.total_pnl || 0) + Number(cache.total_divs || 0))
+    : 100000;
+
+  // 2. 从 portfolio_history 查询真实历史每日/月度净值
   const { results } = await c.env.DB.prepare(
     "SELECT date, total_nav, wallet_balance FROM portfolio_history WHERE portfolio_id = ? ORDER BY date ASC"
   )
@@ -248,35 +263,111 @@ fipRouter.get("/report/history/:id", async (c) => {
     wallet_balance: Number(r.wallet_balance || 0),
   }));
 
-  // 2. 如果历史表中尚无今日或历史为空，追加最新快照
-  const todayStr = new Date().toISOString().slice(0, 10);
-  const cache = await c.env.DB.prepare(
-    "SELECT total_nav, wallet_balance FROM portfolio_stats_cache WHERE portfolio_id = ?"
-  )
-    .bind(id)
-    .first<any>();
+  // 3. 确保图表从建仓日（startDate）开始绘制
+  if (chartPoints.length > 0) {
+    const firstHistDate = chartPoints[0].date;
+    if (startDate < firstHistDate) {
+      const startVal = initialCost > 0 ? initialCost : chartPoints[0].value;
+      const endVal = chartPoints[0].value;
+      const startTime = new Date(startDate).getTime();
+      const endTime = new Date(firstHistDate).getTime();
+      const totalSpan = Math.max(1, endTime - startTime);
 
-  if (cache) {
-    if (chartPoints.length === 0) {
-      const p = await c.env.DB.prepare("SELECT created_at FROM portfolios WHERE id = ?").bind(id).first<any>();
-      const createdStr = (p?.created_at || todayStr).slice(0, 10);
-      chartPoints.push({
-        date: createdStr,
-        value: Number(cache.total_nav || 0),
-        wallet_balance: Number(cache.wallet_balance || 0),
+      const prependedPoints: Array<{ date: string; value: number; wallet_balance: number }> = [];
+      prependedPoints.push({
+        date: startDate,
+        value: Math.round(startVal * 100) / 100,
+        wallet_balance: 0,
       });
-    }
 
-    if (chartPoints[chartPoints.length - 1].date !== todayStr) {
-      chartPoints.push({
-        date: todayStr,
-        value: Number(cache.total_nav || 0),
-        wallet_balance: Number(cache.wallet_balance || 0),
-      });
+      // 生成建仓日至首条记录之间的月末锚点
+      let cur = new Date(startDate);
+      cur = new Date(cur.getFullYear(), cur.getMonth() + 1, 0); // 本月末
+
+      while (cur.getTime() < endTime - 10 * 86400000) {
+        const curStr = cur.toISOString().slice(0, 10);
+        if (curStr > startDate && curStr < firstHistDate) {
+          const progress = (cur.getTime() - startTime) / totalSpan;
+          const interpVal = startVal + (endVal - startVal) * progress;
+          prependedPoints.push({
+            date: curStr,
+            value: Math.round(interpVal * 100) / 100,
+            wallet_balance: 0,
+          });
+        }
+        cur = new Date(cur.getFullYear(), cur.getMonth() + 2, 0); // 下一个月末
+      }
+
+      chartPoints = [...prependedPoints, ...chartPoints];
     }
+  } else if (cache) {
+    // 尚无 history 记录时，至少绘制建仓日与今日两个基准点
+    chartPoints.push({
+      date: startDate,
+      value: initialCost,
+      wallet_balance: 0,
+    });
+  }
+
+  // 4. 追加今日最新数据点（如果尚未包含）
+  if (cache && chartPoints.length > 0 && chartPoints[chartPoints.length - 1].date !== todayStr) {
+    chartPoints.push({
+      date: todayStr,
+      value: Number(cache.total_nav || 0),
+      wallet_balance: Number(cache.wallet_balance || 0),
+    });
   }
 
   return c.json(chartPoints);
+});
+
+// ── Dividends Projections & Management ────────────────────────────────────
+fipRouter.get("/portfolios/dividends/projections/:id", async (c) => {
+  const id = parseInt(c.req.param("id"), 10);
+  const taxRate = parseFloat(c.req.query("tax_rate") || "0.0") || 0.0;
+  const drip = c.req.query("drip") === "true";
+
+  const engine = new PortfolioEngine(c.env.DB, id);
+  await engine.init();
+  const proj = await engine.getDividendProjections(taxRate, drip);
+
+  return c.json(proj);
+});
+
+fipRouter.get("/portfolios/dividends/export/:id", async (c) => {
+  const id = parseInt(c.req.param("id"), 10);
+  const engine = new PortfolioEngine(c.env.DB, id);
+  await engine.init();
+  const list = await engine.getDividendDetails();
+
+  return c.json(list);
+});
+
+fipRouter.post("/portfolios/dividend/manual/:id", async (c) => {
+  const user = await requireUser(c);
+  const id = parseInt(c.req.param("id"), 10);
+  const body = await c.req.json<any>();
+
+  const isin = String(body.isin || "").trim();
+  const date = String(body.date || new Date().toISOString().slice(0, 10)).trim();
+  const amount = Number(body.amount_per_share || 0);
+  const currency = String(body.currency || "USD").toUpperCase();
+
+  await c.env.DB.prepare(
+    "INSERT INTO manual_dividends (portfolio_id, isin, date, amount_per_share, currency) VALUES (?, ?, ?, ?, ?)"
+  )
+    .bind(id, isin, date, amount, currency)
+    .run();
+
+  return c.json({ success: true });
+});
+
+fipRouter.delete("/dividends/manual/:div_id", async (c) => {
+  const user = await requireUser(c);
+  const divId = parseInt(c.req.param("div_id"), 10);
+
+  await c.env.DB.prepare("DELETE FROM manual_dividends WHERE id = ?").bind(divId).run();
+  return c.json({ success: true });
 });
 
 fipRouter.get("/heartbeat/:id", async (c) => {

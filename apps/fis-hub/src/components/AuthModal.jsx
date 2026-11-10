@@ -85,7 +85,6 @@ export default function AuthModal({ onSuccess, onClose }) {
   /* ── 校验 ── */
   const validateLogin = () => {
     if (!loginEmail.trim())      return t('auth.errEmailReq');
-    if (!/\S+@\S+\.\S+/.test(loginEmail)) return t('auth.errEmailInvalid');
     if (!loginPwd)               return t('auth.errPwdReq');
     return null;
   };

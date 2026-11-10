@@ -81,15 +81,16 @@ authRouter.post("/register", async (c) => {
 });
 
 authRouter.post("/login", async (c) => {
-  const body = await c.req.json<{ email: string; password: string }>();
+  const body = await c.req.json<{ email?: string; username?: string; password: string }>();
+  const identifier = String(body.email || body.username || "").trim();
   const user = await c.env.DB.prepare(
-    "SELECT id, email, name, password_hash, is_active, created_at, role, is_verified FROM users WHERE email = ? AND is_active = 1"
+    "SELECT id, email, name, password_hash, is_active, created_at, role, is_verified FROM users WHERE (LOWER(email) = LOWER(?) OR LOWER(name) = LOWER(?)) AND is_active = 1"
   )
-    .bind(body.email)
+    .bind(identifier, identifier)
     .first();
 
   if (!user || !(await verifyPassword(body.password, String(user.password_hash)))) {
-    throw new HttpError(401, "電郵或密碼錯誤");
+    throw new HttpError(401, "電郵/用戶名或密碼錯誤");
   }
 
   const token = await createAccessToken(

@@ -1,4 +1,12 @@
-import { getAssetMetadata, getFxRate, getMarketData, getRealtimePrice, guessCurrencyFromIsin } from "./dataProvider";
+import {
+  getAssetMetadata,
+  getDividendHistory,
+  getDividendMetrics,
+  getFxRate,
+  getMarketData,
+  getRealtimePrice,
+  guessCurrencyFromIsin,
+} from "./dataProvider";
 
 export interface Transaction {
   date: string;
@@ -346,6 +354,332 @@ export class PortfolioEngine {
       details,
       sector_allocation: sectorMap,
       country_allocation: countryMap,
+    };
+  }
+
+  async getDividendDetails(): Promise<
+    Array<{
+      id?: number;
+      isin: string;
+      name?: string;
+      date: string;
+      amount_per_share: number;
+      shares_held: number;
+      total_amount: number;
+      currency: string;
+      source: string;
+    }>
+  > {
+    const list: Array<any> = [];
+
+    // 1. Manual dividends
+    const manRows = await this.db
+      .prepare(
+        "SELECT id, isin, date, amount_per_share, currency FROM manual_dividends WHERE portfolio_id = ? ORDER BY date DESC"
+      )
+      .bind(this.portfolioId)
+      .all<any>();
+
+    const holdingsMap: Record<string, number> = {};
+    for (const tx of this.transactions) {
+      if (tx.type === "BUY") holdingsMap[tx.isin] = (holdingsMap[tx.isin] || 0) + tx.shares;
+      else if (tx.type === "SELL") holdingsMap[tx.isin] = Math.max(0, (holdingsMap[tx.isin] || 0) - tx.shares);
+    }
+
+    for (const r of manRows.results || []) {
+      const shares = holdingsMap[r.isin] || 0;
+      const meta = await getAssetMetadata(this.db, r.isin);
+      list.push({
+        id: r.id,
+        isin: r.isin,
+        name: meta.name || r.isin,
+        date: r.date,
+        amount_per_share: Number(r.amount_per_share || 0),
+        shares_held: shares,
+        total_amount: Math.round(shares * Number(r.amount_per_share || 0) * 100) / 100,
+        currency: r.currency || guessCurrencyFromIsin(r.isin),
+        source: "Manual",
+      });
+    }
+
+    // 2. Recorded dividend transactions
+    for (const tx of this.transactions) {
+      if (tx.type === "DIV_CASH") {
+        const meta = await getAssetMetadata(this.db, tx.isin);
+        list.push({
+          isin: tx.isin,
+          name: meta.name || tx.isin,
+          date: tx.date,
+          amount_per_share: tx.price,
+          shares_held: tx.shares,
+          total_amount: Math.round(tx.shares * tx.price * 100) / 100,
+          currency: guessCurrencyFromIsin(tx.isin),
+          source: "Recorded",
+        });
+      }
+    }
+
+    return list.sort((a, b) => b.date.localeCompare(a.date));
+  }
+
+  async getDividendProjections(taxRate: number = 0.0, drip: boolean = false) {
+    const { portfolio } = await this.getCurrentPortfolio();
+    const isins = Object.keys(portfolio).filter((i) => !i.startsWith("CASH_") && portfolio[i].shares > 0);
+    const baseCcy = this.meta.base_currency || "USD";
+
+    // 12 months buckets
+    const now = new Date();
+    const projectionMonths: Record<string, number> = {};
+    for (let i = 1; i <= 12; i++) {
+      const future = new Date(now.getFullYear(), now.getMonth() + i, 1);
+      const mKey = `${future.getFullYear()}-${String(future.getMonth() + 1).padStart(2, "0")}`;
+      projectionMonths[mKey] = 0;
+    }
+
+    // Manual dividends by ISIN
+    const manDivs = await this.db
+      .prepare(
+        "SELECT id, isin, date, amount_per_share, currency FROM manual_dividends WHERE portfolio_id = ? ORDER BY date ASC"
+      )
+      .bind(this.portfolioId)
+      .all<any>();
+    const manByIsin: Record<string, Array<{ date: string; amount: number }>> = {};
+    for (const r of manDivs.results || []) {
+      if (!manByIsin[r.isin]) manByIsin[r.isin] = [];
+      manByIsin[r.isin].push({ date: r.date, amount: Number(r.amount_per_share || 0) });
+    }
+
+    let totalAnnualIncome = 0;
+    let totalMarketValue = 0;
+    let totalCostBasis = 0;
+    const assetsMetrics: any[] = [];
+    const oneYearAgoStr = new Date(Date.now() - 365 * 86400 * 1000).toISOString().slice(0, 10);
+    const todayStr = new Date().toISOString().slice(0, 10);
+
+    for (const isin of isins) {
+      const item = portfolio[isin];
+      const initialShares = item.shares;
+      const avgCost = item.avg_cost;
+
+      const mData = await getMarketData(this.db, isin);
+      const currPrice = mData.price || avgCost || 0;
+      const assetCcy = mData.currency || guessCurrencyFromIsin(isin);
+      const fx = await getFxRate(this.db, assetCcy, baseCcy);
+      const basePrice = currPrice * fx;
+
+      totalMarketValue += initialShares * basePrice;
+      totalCostBasis += initialShares * avgCost * fx;
+
+      const divMetrics = await getDividendMetrics(this.db, isin);
+      let trailingSum = divMetrics.trailing_sum || 0;
+
+      const histDivs = await getDividendHistory(this.db, isin, oneYearAgoStr);
+
+      let isManual = false;
+      let manualGrowthRate = 0;
+      let manualFreqLabel = "";
+
+      let events: Array<{ date: string; amount_per_share: number; type: string }> = [];
+      const processedSlots = new Set<string>();
+
+      if (divMetrics.next_date && divMetrics.next_amount) {
+        const mKey = divMetrics.next_date.slice(0, 7);
+        events.push({
+          date: divMetrics.next_date,
+          amount_per_share: divMetrics.next_amount,
+          type: "Official",
+        });
+        processedSlots.add(mKey);
+      }
+
+      for (const [d, amt] of Object.entries(histDivs)) {
+        if (amt > 0) {
+          const dObj = new Date(d);
+          dObj.setFullYear(dObj.getFullYear() + 1);
+          const shiftedDate = dObj.toISOString().slice(0, 10);
+          const mKey = shiftedDate.slice(0, 7);
+          if (shiftedDate > todayStr && projectionMonths[mKey] !== undefined && !processedSlots.has(mKey)) {
+            events.push({
+              date: shiftedDate,
+              amount_per_share: amt,
+              type: "Projected",
+            });
+          }
+        }
+      }
+
+      if (manByIsin[isin] && manByIsin[isin].length > 0) {
+        isManual = true;
+        const manList = manByIsin[isin];
+        if (trailingSum === 0) {
+          trailingSum = manList.reduce((sum, x) => sum + x.amount, 0);
+        }
+
+        const avgGap =
+          manList.length > 1
+            ? (new Date(manList[manList.length - 1].date).getTime() - new Date(manList[0].date).getTime()) /
+              ((manList.length - 1) * 86400000)
+            : 365;
+
+        let freqDays = 365;
+        if (avgGap <= 45) {
+          freqDays = 30;
+          manualFreqLabel = "Monthly";
+        } else if (avgGap <= 120) {
+          freqDays = 91;
+          manualFreqLabel = "Quarterly";
+        } else if (avgGap <= 250) {
+          freqDays = 182;
+          manualFreqLabel = "Semi-Annual";
+        } else {
+          freqDays = 365;
+          manualFreqLabel = "Annual";
+        }
+
+        if (manList.length >= 2) {
+          const rates: number[] = [];
+          for (let k = 0; k < manList.length - 1; k++) {
+            if (manList[k].amount > 0) {
+              rates.push((manList[k + 1].amount - manList[k].amount) / manList[k].amount);
+            }
+          }
+          if (rates.length > 0) {
+            manualGrowthRate = Math.max(-0.5, Math.min(0.5, rates.reduce((a, b) => a + b, 0) / rates.length));
+          }
+        }
+
+        let lastDate = new Date(manList[manList.length - 1].date);
+        let currAmt = manList[manList.length - 1].amount * (1 + manualGrowthRate);
+        const oneYearOut = new Date(Date.now() + 365 * 86400000);
+
+        const manualFutureByMonth: Record<string, { date: string; amount_per_share: number; type: string }> = {};
+        lastDate = new Date(lastDate.getTime() + freqDays * 86400000);
+        while (lastDate <= oneYearOut) {
+          const dStr = lastDate.toISOString().slice(0, 10);
+          if (dStr > todayStr) {
+            const mKey = dStr.slice(0, 7);
+            if (projectionMonths[mKey] !== undefined) {
+              manualFutureByMonth[mKey] = {
+                date: dStr,
+                amount_per_share: currAmt,
+                type: "Manual Extrapolation",
+              };
+            }
+          }
+          currAmt *= 1 + manualGrowthRate;
+          lastDate = new Date(lastDate.getTime() + freqDays * 86400000);
+        }
+
+        if (Object.keys(manualFutureByMonth).length > 0) {
+          const eventsByMonth: Record<string, any> = {};
+          for (const ev of events) eventsByMonth[ev.date.slice(0, 7)] = ev;
+          Object.assign(eventsByMonth, manualFutureByMonth);
+          events = Object.values(eventsByMonth);
+        }
+      }
+
+      events.sort((a, b) => a.date.localeCompare(b.date));
+
+      let currentShares = initialShares;
+      let assetProjectedAnnualIncome = 0;
+      const projectedIndividual: any[] = [];
+
+      for (const ev of events) {
+        const netAmtPerShare = ev.amount_per_share * (1 - taxRate) * fx;
+        const payout = netAmtPerShare * currentShares;
+        const mKey = ev.date.slice(0, 7);
+        if (projectionMonths[mKey] !== undefined) {
+          projectionMonths[mKey] += payout;
+        }
+
+        projectedIndividual.push({
+          date: ev.date,
+          amount: Math.round(payout * 100) / 100,
+          type: ev.type,
+        });
+        assetProjectedAnnualIncome += payout;
+
+        if (drip && currPrice > 0) {
+          const localPayout = ev.amount_per_share * (1 - taxRate) * currentShares;
+          currentShares += localPayout / currPrice;
+        }
+      }
+
+      totalAnnualIncome += assetProjectedAnnualIncome;
+
+      const localTrailingSum = trailingSum * (1 - taxRate);
+      const currentYield = currPrice > 0 ? (localTrailingSum / currPrice) * 100 : 0;
+      const yoc = avgCost > 0 ? (localTrailingSum / avgCost) * 100 : 0;
+
+      const meta = await getAssetMetadata(this.db, isin);
+      assetsMetrics.push({
+        isin,
+        name: meta.name || mData.name || isin,
+        shares: Math.round((drip ? currentShares : initialShares) * 100) / 100,
+        avg_cost: Math.round(avgCost * 100) / 100,
+        curr_price: Math.round(currPrice * 100) / 100,
+        trailing_div_per_share: Math.round(localTrailingSum * 10000) / 10000,
+        current_yield: Math.round(currentYield * 100) / 100,
+        yoc: Math.round(yoc * 100) / 100,
+        est_annual_income: Math.round(assetProjectedAnnualIncome * 100) / 100,
+        next_date: divMetrics.next_date,
+        projections: projectedIndividual,
+        source: isManual ? "manual_extrapolation" : trailingSum > 0 ? "auto" : "none",
+        manual_freq: manualFreqLabel,
+        manual_growth_pct: isManual ? Math.round(manualGrowthRate * 10000) / 100 : null,
+      });
+    }
+
+    const chartData = Object.keys(projectionMonths)
+      .sort()
+      .map((m) => ({
+        month: m,
+        amount: Math.round(projectionMonths[m] * 100) / 100,
+      }));
+
+    // Historical past 5 years & 12 months dividends
+    const historicalDividends: { monthly: any[]; annual: any[] } = { monthly: [], annual: [] };
+    const histMonthlyMap: Record<string, number> = {};
+    const histAnnualMap: Record<string, number> = {};
+
+    const fiveYearsAgoStr = new Date(Date.now() - 5 * 365 * 86400000).toISOString().slice(0, 10);
+    for (const isin of isins) {
+      const shares = portfolio[isin].shares;
+      const assetCcy = guessCurrencyFromIsin(isin);
+      const fx = await getFxRate(this.db, assetCcy, baseCcy);
+      const divs = await getDividendHistory(this.db, isin, fiveYearsAgoStr);
+
+      for (const [d, amt] of Object.entries(divs)) {
+        const amtBase = amt * shares * fx;
+        const yr = parseInt(d.slice(0, 4), 10);
+        if (yr < now.getFullYear()) {
+          histAnnualMap[yr] = (histAnnualMap[yr] || 0) + amtBase;
+        }
+        if (d >= oneYearAgoStr) {
+          const mk = d.slice(0, 7);
+          histMonthlyMap[mk] = (histMonthlyMap[mk] || 0) + amtBase;
+        }
+      }
+    }
+
+    historicalDividends.monthly = Object.keys(histMonthlyMap)
+      .sort()
+      .map((k) => ({ month: k, amount: Math.round(histMonthlyMap[k] * 100) / 100 }));
+
+    historicalDividends.annual = Object.keys(histAnnualMap)
+      .sort((a, b) => Number(b) - Number(a))
+      .map((k) => ({ year: parseInt(k, 10), amount: Math.round(histAnnualMap[k] * 100) / 100 }));
+
+    return {
+      portfolio_metrics: {
+        total_annual_income: Math.round(totalAnnualIncome * 100) / 100,
+        portfolio_current_yield:
+          totalMarketValue > 0 ? Math.round((totalAnnualIncome / totalMarketValue) * 10000) / 100 : 0,
+        portfolio_yoc: totalCostBasis > 0 ? Math.round((totalAnnualIncome / totalCostBasis) * 10000) / 100 : 0,
+      },
+      chart_data: chartData,
+      assets: assetsMetrics.sort((a, b) => b.est_annual_income - a.est_annual_income),
+      historical_dividends: historicalDividends,
     };
   }
 }
