@@ -1,4 +1,4 @@
-import { Hono } from "hono";
+import { Context, Hono } from "hono";
 import { PDFDocument, rgb, StandardFonts } from "pdf-lib";
 import { Env, Variables } from "../types";
 import { assertCompanyAccess, generateUuid, HttpError, requireUser } from "../utils/auth";
@@ -86,7 +86,7 @@ async function getFullInvoice(
 }
 
 // ── Dashboard Stats ────────────────────────────────────────────────────────
-invoicesRouter.get("/dashboard", async (c) => {
+export async function getDashboardStats(c: Context<{ Bindings: Env; Variables: Variables }>) {
   const user = await requireUser(c);
   const companyId = c.req.param("company_id") || "";
   const company = await assertCompanyAccess(c.env.DB, companyId, user.id);
@@ -210,7 +210,9 @@ invoicesRouter.get("/dashboard", async (c) => {
     expense_ytd: Number(expenseYtdRow?.total || 0),
     fiscal_year: targetFy,
   });
-});
+}
+
+invoicesRouter.get("/dashboard", getDashboardStats);
 
 // ── Invoices CRUD ──────────────────────────────────────────────────────────
 invoicesRouter.get("/invoices", async (c) => {

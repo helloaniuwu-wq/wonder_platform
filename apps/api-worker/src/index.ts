@@ -9,7 +9,7 @@ import { complianceRouter } from "./routes/compliance";
 import { expensesRouter } from "./routes/expenses";
 import { fipRouter } from "./routes/fip";
 import { financialsRouter } from "./routes/financials";
-import { invoicesRouter } from "./routes/invoices";
+import { getDashboardStats, invoicesRouter } from "./routes/invoices";
 import { Env, Variables } from "./types";
 import { HttpError } from "./utils/auth";
 
@@ -104,6 +104,7 @@ const api = new Hono<{ Bindings: Env; Variables: Variables }>();
 api.route("/auth", authRouter);
 api.route("/admin", adminRouter);
 api.route("/companies", companiesRouter);
+api.get("/companies/:company_id/dashboard", getDashboardStats);
 api.route("/companies/:company_id/clients", clientsRouter);
 api.route("/companies/:company_id/invoices", invoicesRouter);
 api.route("/companies/:company_id/commissions", commissionsRouter);
