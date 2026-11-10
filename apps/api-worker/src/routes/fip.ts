@@ -36,6 +36,7 @@ fipRouter.get("/portfolios", async (c) => {
       sort_order: p.sort_order || 0,
       user_id: p.user_id,
       created_at: p.created_at,
+      start_date: (p.created_at || "").slice(0, 10),
     }))
   );
 });
@@ -183,6 +184,9 @@ fipRouter.get("/report/:id", async (c) => {
       const totalPnl = Number(cache.total_pnl || 0);
       const totalDivs = Number(cache.total_divs || 0);
       const totalCost = Math.round((totalNav - totalPnl + totalDivs) * 100) / 100;
+      const startDate = (portfolio.created_at || "").slice(0, 10);
+      const reportDate = (cache.last_updated || new Date().toISOString()).slice(0, 10);
+      const walletBal = Number(cache.wallet_balance || 0);
 
       return c.json({
         id,
@@ -190,8 +194,11 @@ fipRouter.get("/report/:id", async (c) => {
         base_currency: portfolio.base_currency || "USD",
         dividend_strategy: portfolio.dividend_strategy || "CASH",
         created_at: portfolio.created_at,
+        start_date: startDate,
+        report_date: reportDate,
         total_nav: totalNav,
-        wallet_balance: Number(cache.wallet_balance || 0),
+        total_market_value: Math.round((totalNav - walletBal) * 100) / 100,
+        wallet_balance: walletBal,
         total_cost: totalCost,
         total_pnl: totalPnl,
         total_divs: totalDivs,
@@ -209,6 +216,8 @@ fipRouter.get("/report/:id", async (c) => {
   const engine = new PortfolioEngine(c.env.DB, id);
   await engine.init();
   const navData = await engine.calculateNav();
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const startDate = (engine.meta.created_at || todayStr).slice(0, 10);
 
   return c.json({
     id,
@@ -216,6 +225,9 @@ fipRouter.get("/report/:id", async (c) => {
     base_currency: engine.meta.base_currency,
     dividend_strategy: engine.meta.dividend_strategy,
     created_at: engine.meta.created_at,
+    start_date: startDate,
+    report_date: todayStr,
+    total_market_value: Math.round((navData.total_nav - navData.wallet_balance) * 100) / 100,
     ...navData,
   });
 });
