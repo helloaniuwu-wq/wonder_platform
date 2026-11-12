@@ -1,0 +1,49 @@
+name: Deploy wonder-hub to Cloudflare Pages
+
+# 推送到 main 且只动到 wonder-hub 时才触发，避免无关提交（如 api-worker）浪费构建
+on:
+  push:
+    branches: [main]
+    paths:
+      - "apps/wonder-hub/**"
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-wonder-hub
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # 关键：NEXT_STATIC_EXPORT=1 让 next build 走静态导出，产物落到 out/
+      - name: Build wonder-hub (static export)
+        working-directory: apps/wonder-hub
+        env:
+          NEXT_STATIC_EXPORT: "1"
+        run: pnpm run build
+
+      - name: Deploy to Cloudflare Pages
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: apps/wonder-hub
+          command: pages deploy out --project-name wonder-hub
