@@ -6,6 +6,7 @@ import { Download, RefreshCw, Settings, Type, Quote, List, ListOrdered, Eraser, 
 import { ThemeType, themes } from '@/components/xhs-creator/XhsTheme';
 import { XhsCard } from '@/components/xhs-creator/XhsCard';
 import { parseXhsMarkdown } from '@/lib/xhs-parser';
+import { API_BASE } from '@/lib/api';
 
 const DEFAULT_MARKDOWN = `## 这是一张更适合专业顾问的小红书图
 
@@ -79,7 +80,7 @@ export default function XhsCreatorPage() {
     
     setIsGenerating(true);
     try {
-      const response = await fetch('/xhs-creator/api', {
+      const response = await fetch(`${API_BASE}/api/xhs-generate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ url: importUrl })

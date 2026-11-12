@@ -2,31 +2,17 @@ import Link from "next/link";
 import { getAllSlugs, getPostBySlug } from "@/lib/blog";
 import { MDXRemote } from "next-mdx-remote/rsc";
 import { notFound } from "next/navigation";
-import { cookies, headers } from "next/headers";
 import { RESTRICTED_CATEGORY } from "@/lib/constants";
-import { ArticleLoginGate } from "./ArticleLoginGate";
 import remarkGfm from "remark-gfm";
 import remarkBreaks from "remark-breaks";
 
-// 微信通行证密钥（与公众号文章链接使用同一 secret）
-// 生产环境请移至 .env.local → WECHAT_TOKEN_SECRET
-const WECHAT_SECRET = process.env.WECHAT_TOKEN_SECRET ?? "wonder-wechat-2024";
-
 /**
- * 验证微信通行 token（永久有效，无月份限制）
- * 格式: base64url(slug::secret)
+ * 静态导出版文章页
+ *
+ * 2026-11-12 用户决定：客户通讯全文暂时放开，全部文章统一静态预渲染。
+ * 分类标签仍保留「客户通讯」用于列表分组与视觉区分，但不再做访问控制。
+ * 口令/微信 token 的 Worker 接口与数据表保留，日后需要收紧可直接恢复。
  */
-function verifyWechatToken(token: string, slug: string): boolean {
-  try {
-    const decoded = Buffer.from(token, "base64url").toString("utf-8");
-    // 格式: slug::secret  或旧格式 slug::secret::YYYYMM（兼容旧 token）
-    const parts = decoded.split("::");
-    const [tSlug, tSecret] = parts;
-    return tSlug === slug && tSecret === WECHAT_SECRET;
-  } catch {
-    return false;
-  }
-}
 
 // 用于 Next.js 静态导出：预生成所有文章路径
 export async function generateStaticParams() {
@@ -34,7 +20,6 @@ export async function generateStaticParams() {
   return slugs.map((slug) => ({ slug }));
 }
 
-// 动态页面 metadata
 export async function generateMetadata({
   params,
 }: {
@@ -94,81 +79,18 @@ const mdxComponents = {
   ),
 };
 
-// 有权阅读受限文章的角色（与 fis-hub / company-admin 一致）
-const PRIVILEGED_ROLES = ["admin", "premium", "advisor"];
-
-/**
- * 从 JWT 中解码角色信息（不验证签名，仅解码 payload）
- * 签名验证由后端负责，前端 SSR 仅需判断角色
- */
-function decodeJwtRole(token: string): string | null {
-  try {
-    const parts = token.split(".");
-    if (parts.length !== 3) return null;
-    const payload = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf-8"));
-    return payload.role || null;
-  } catch {
-    return null;
-  }
-}
-
-// ─── 访问控制判断 ────────────────────────────────────────────────────────
-async function checkAccess(slug: string, searchParams: Record<string, string>): Promise<boolean> {
-  // 1. 微信 token（URL 参数 ?wc=TOKEN）→ 永久有效，不看角色
-  const wcToken = searchParams["wc"];
-  if (wcToken && verifyWechatToken(wcToken, slug)) {
-    return true;
-  }
-
-  const cookieStore = await cookies();
-
-  // 2. 口令校验（支持不分大小写的 wonder 口令直接解锁）
-  const wonderPasscode = cookieStore.get("wonder_passcode")?.value;
-  if (wonderPasscode?.toLowerCase() === "wonder") {
-    return true;
-  }
-
-  // 3. JWT token（cookie 传入）→ 解码 role，仅 admin/premium/advisor 放行
-  const jwtCookie = cookieStore.get("token")?.value;
-  if (jwtCookie) {
-    const role = decodeJwtRole(jwtCookie);
-    if (role && PRIVILEGED_ROLES.includes(role)) return true;
-    // free 角色已登录但无权 → 不放行
-    return false;
-  }
-
-  // 3. Authorization header（API 场景）
-  const headersList = await headers();
-  const authHeader = headersList.get("authorization");
-  if (authHeader?.startsWith("Bearer ")) {
-    const token = authHeader.slice(7);
-    const role = decodeJwtRole(token);
-    if (role && PRIVILEGED_ROLES.includes(role)) return true;
-    return false;
-  }
-
-  return false;
-}
-
-// ─── 页面组件 ─────────────────────────────────────────────────────────────
 export default async function BlogPost({
   params,
-  searchParams,
 }: {
   params: Promise<{ slug: string }>;
-  searchParams: Promise<Record<string, string>>;
 }) {
   const { slug } = await params;
-  const sp = await searchParams;
   const post = getPostBySlug(slug);
 
   if (!post) notFound();
 
-  // 受限文章访问控制
   const isRestricted = post.restricted || post.category === RESTRICTED_CATEGORY;
-  const hasAccess = isRestricted ? await checkAccess(slug, sp) : true;
 
-  // 文章框架（标题/摘要区始终显示）
   const articleHeader = (
     <header className="mb-16">
       <div className="flex flex-wrap gap-2 mb-8">
@@ -202,7 +124,6 @@ export default async function BlogPost({
 
   return (
     <main className="min-h-screen bg-background text-foreground">
-      {/* 顶部面包屑 */}
       <div className="border-b border-border bg-card/70 backdrop-blur-md sticky top-16 z-10">
         <div className="max-w-4xl mx-auto px-6 py-4 flex items-center justify-between">
           <Link href="/blog" className="text-primary hover:text-primary/70 transition-colors text-base font-medium flex items-center gap-2">
@@ -222,33 +143,17 @@ export default async function BlogPost({
       >
         {articleHeader}
 
-        {hasAccess ? (
-          /* 有权限 → 显示全文 */
-          <div className="article-body prose prose-slate max-w-none">
-            <MDXRemote
-              source={post.content}
-              components={mdxComponents}
-              options={{
-                mdxOptions: {
-                  remarkPlugins: [remarkGfm, remarkBreaks],
-                },
-              }}
-            />
-          </div>
-        ) : (
-          /* 无权限 → 显示前 200 字 + 登录门 */
-          <>
-            <div className="article-body relative">
-              <div className="text-lg leading-[1.9] text-foreground/85 mb-6 line-clamp-5">
-                {post.content.replace(/[#*`\[\]!]/g, "").slice(0, 300)}...
-              </div>
-              {/* 渐隐遮罩 */}
-              <div className="absolute bottom-0 left-0 right-0 h-32 bg-gradient-to-t from-background to-transparent" />
-            </div>
-            {/* 客户端登录门（需要 client 组件处理 token 刷新）*/}
-            <ArticleLoginGate slug={slug} />
-          </>
-        )}
+        <div className="article-body prose prose-slate max-w-none">
+          <MDXRemote
+            source={post.content}
+            components={mdxComponents}
+            options={{
+              mdxOptions: {
+                remarkPlugins: [remarkGfm, remarkBreaks],
+              },
+            }}
+          />
+        </div>
 
         <footer className="mt-24 pt-10 border-t border-border">
           <Link href="/blog" className="flex items-center gap-3 text-primary hover:text-primary/70 text-base font-medium transition-colors">

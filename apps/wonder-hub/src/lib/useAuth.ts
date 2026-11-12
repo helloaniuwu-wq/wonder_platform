@@ -7,6 +7,7 @@
  */
 
 import { useState, useEffect } from "react";
+import { API_BASE } from "@/lib/api";
 
 interface CurrentUser {
   id: number;
@@ -38,8 +39,8 @@ export function useAuth(): AuthState {
       return;
     }
 
-    // 通过 Next.js 代理访问后端（/api/* → localhost:8000/*）
-    fetch("/api/auth/me", {
+    // 静态部署后直连现役 Worker
+    fetch(`${API_BASE}/api/auth/me`, {
       headers: { Authorization: `Bearer ${token}` },
     })
       .then((res) => {

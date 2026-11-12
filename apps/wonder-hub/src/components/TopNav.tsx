@@ -9,8 +9,10 @@
 import { useState, useEffect, useRef } from "react";
 import Link from "next/link";
 import { cn } from "@/lib/utils";
+import { API_BASE } from "@/lib/api";
 
-const BACKEND = "/api"; // wonder-hub next.config 已代理到 localhost:8000
+// 静态部署（Cloudflare Pages）后不再有 next.config 的 /api rewrite，直连现役 Worker
+const BACKEND = `${API_BASE}/api`;
 
 // ─── 登录弹窗 ─────────────────────────────────────────────────────────────
 function LoginModal({
@@ -76,7 +78,7 @@ function LoginModal({
           客户登录
         </h2>
         <p className="text-sm text-muted-foreground mb-6">
-          登录后可查阅客户通讯与专属研究报告
+          登录后可访问客户专属工具与数据
         </p>
 
         <form onSubmit={handleSubmit} className="space-y-4">

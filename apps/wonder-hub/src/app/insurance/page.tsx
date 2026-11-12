@@ -4,6 +4,7 @@ import { useState, useEffect, useRef } from "react"
 import Link from "next/link"
 import { cn } from "@/lib/utils"
 import { Turnstile } from "@/components/Turnstile"
+import { API_BASE } from "@/lib/api"
 
 // ── 产品数据 ──────────────────────────────────────────────────────────────────
 
@@ -128,7 +129,7 @@ export default function InsurancePage() {
     }
     setSubmitting(true)
     try {
-      const res = await fetch("/api/insurance-inquiry", {
+      const res = await fetch(`${API_BASE}/api/insurance-inquiry`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
