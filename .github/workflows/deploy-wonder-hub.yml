@@ -41,6 +41,14 @@ jobs:
           NEXT_STATIC_EXPORT: "1"
         run: pnpm run build
 
+      # 诊断步骤：用 CI 的 API Token 跑 whoami，能立刻暴露 token 权限/失效问题
+      - name: Verify Cloudflare auth (diagnostic)
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: whoami
+
       - name: Deploy to Cloudflare Pages
         uses: cloudflare/wrangler-action@v3
         with:

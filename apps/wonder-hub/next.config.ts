@@ -14,7 +14,6 @@ const STATIC_EXPORT = process.env.NEXT_STATIC_EXPORT === "1";
 
 const nextConfig: NextConfig = {
   typescript: { ignoreBuildErrors: true },
-  eslint: { ignoreDuringBuilds: true },
   skipTrailingSlashRedirect: true,
   output: STATIC_EXPORT ? "export" : "standalone",
   images: { unoptimized: true },
