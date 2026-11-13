@@ -10,6 +10,8 @@ const API_URL =
 
 // standalone = 自建 Node 服务；export = Cloudflare Pages 静态托管。
 // 用 NEXT_STATIC_EXPORT=1 切换，默认保持原有 standalone 行为不变。
+// 注意：Cloudflare Pages 原生集成（wonder-hub 项目）的构建命令里已写死
+// NEXT_STATIC_EXPORT=1，否则 next build 走 standalone、不产生 out/，Pages 找不到产物。
 const STATIC_EXPORT = process.env.NEXT_STATIC_EXPORT === "1";
 
 const nextConfig: NextConfig = {
