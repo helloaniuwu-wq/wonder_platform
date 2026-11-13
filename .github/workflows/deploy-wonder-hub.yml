@@ -19,10 +19,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # 不指定 version：让 action 直接读取仓库 package.json 的 packageManager 字段（pnpm@10.33.0），
+      # 避免与 action 的 version 冲突报 ERR_PNPM_BAD_PM_VERSION。
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
-        with:
-          version: 10
 
       - name: Setup Node
         uses: actions/setup-node@v4
