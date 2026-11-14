@@ -1,4 +1,5 @@
-import api from './index.js'
+import api, { API_BASE } from './index.js'
+import { prepareUploadFiles } from '../utils/uploadImage.js'
 
 // ── Expenses ──────────────────────────────────────────────────────────────
 export const expensesApi = {
@@ -11,11 +12,12 @@ export const expensesApi = {
   // 单条详情
   get: (id) => api.get(`/expenses/${id}`),
 
-  // 批量上传（FormData）
-  upload: (companyId, files) => {
+  // 批量上传（FormData）— 图片先做 EXIF 转正 + 压缩，PDF 原样上传
+  upload: async (companyId, files) => {
+    const optimized = await prepareUploadFiles(files)
     const form = new FormData()
     form.append('company_id', companyId)
-    files.forEach(f => form.append('files', f))
+    optimized.forEach(f => form.append('files', f))
     return api.post('/expenses/upload', form, {
       headers: { 'Content-Type': 'multipart/form-data' },
     })
@@ -56,22 +58,35 @@ export const expensesApi = {
   statsByFiscalYear: (companyId) =>
     api.get('/expenses/stats/by-fiscal-year', { params: { company_id: companyId } }),
 
-  // 图片预览 URL（静态文件服务）
+  // 图片预览 URL：R2 静态文件实际由 Worker 提供，必须拼 Worker 的绝对地址。
+  // 若用 /receipts/... 这种相对路径，请求会落在 Pages 上并被 SPA fallback
+  // 返回 index.html，浏览器 <img> 解码失败，表现为「图片加载失败」。
   receiptImageUrl: (imagePath) => {
     if (!imagePath) return null
-    // imagePath 格式: ./receipts_archive/YYYY-MM/EXP-xxx.jpg
-    // 转换为: /receipts/YYYY-MM/EXP-xxx.jpg
-    const parts = imagePath.replace('./receipts_archive/', '').replace('receipts_archive/', '')
-    return `/receipts/${parts}`
+    let p = String(imagePath).replace(/\\/g, '/').trim()
+    if (/^https?:\/\//i.test(p)) return p          // 已是完整 URL
+    p = p.replace(/^\.\//, '').replace(/^\/+/, '')  // 去掉 ./ 与开头的 /
+    p = p.replace(/\/\.\//g, '/')                    // 去掉中间的 /./
+    // 旧版曾拼出 /receipts/./receipts/... ，这里把重复前缀折叠掉
+    p = p.replace(/^(receipts|statements)\/(?:\.\/)?\1\//, '$1/')
+    // 数据库里混有 4 种历史格式，统一保留原有目录：
+    //   receipts/YYYY-MM/xxx.jpg                      （Worker 上传）
+    //   receipts_archive/YYYY-MM/xxx.jpg              （旧 Python）
+    //   receipts_archive/<companyId>/YYYY-MM/xxx.webp （旧 Python）
+    //   statements/...                              （佣金月结单）
+    // Worker 对 receipts_archive / statements_archive 都有别名路由。
+    return `${API_BASE}/${p}`
   },
 
-  // 导出支出明细（触发浏览器下载，直接请求后端避免 Vite 代理问题）
+  // 导出支出明细（触发浏览器下载，直接请求 Worker）
   exportUrl: (companyId, format = 'excel', filters = {}) => {
-    const BASE = import.meta.env.VITE_API_BASE_URL || ''  // 生产环境使用相对路径，由 nginx 代理
     const params = new URLSearchParams({ company_id: companyId, format })
     if (filters.status)        params.append('status', filters.status)
     if (filters.fiscal_year)   params.append('fiscal_year', filters.fiscal_year)
     if (filters.category_code) params.append('category_code', filters.category_code)
-    return `${BASE}/expenses/export?${params.toString()}`
+    // 浏览器直接打开链接不会带 Authorization header，后端 requireUser 支持 query token
+    const token = localStorage.getItem('token')
+    if (token) params.append('token', token)
+    return `${API_BASE}/expenses/export?${params.toString()}`
   },
 }

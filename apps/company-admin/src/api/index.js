@@ -1,7 +1,10 @@
 import axios from 'axios'
+import { optimizeFormData } from '../utils/uploadImage.js'
 
-const DEFAULT_API_BASE = 'https://wonder-api-worker.helloaniuwu.workers.dev'
-const api = axios.create({ baseURL: import.meta.env.VITE_API_BASE_URL || DEFAULT_API_BASE })
+// 静态文件（R2 凭证图片、发票 PDF）都在 Worker 上，不能拼成 Pages 的相对路径，
+// 否则会被 Pages 的 SPA fallback 返回 index.html，浏览器当图片解码就失败。
+export const API_BASE = (import.meta.env.VITE_API_BASE_URL || 'https://wonder-api-worker.helloaniuwu.workers.dev').replace(/\/$/, '')
+const api = axios.create({ baseURL: API_BASE })
 
 api.interceptors.request.use((config) => {
   const token = localStorage.getItem('token')
@@ -61,7 +64,9 @@ export const invoicesApi = {
   update: (companyId, id, data) => api.put(`/companies/${companyId}/invoices/${id}`, data),
   send: (companyId, id) => api.patch(`/companies/${companyId}/invoices/${id}/send`),
   void: (companyId, id) => api.patch(`/companies/${companyId}/invoices/${id}/void`),
-  pdfUrl: (companyId, id) => `/api/companies/${companyId}/invoices/${id}/pdf`,
+  // PDF 由 <a> / window.open 直接打开，不带 Authorization header，靠 ?token= 鉴权；
+  // 必须用 Worker 绝对地址，相对路径会被 Pages 的 SPA fallback 返回 index.html。
+  pdfUrl: (companyId, id) => `${API_BASE}/companies/${companyId}/invoices/${id}/pdf`,
   addPayment: (companyId, id, data) => api.post(`/companies/${companyId}/invoices/${id}/payments`, data),
 }
 
@@ -76,9 +81,9 @@ export const commissionsApi = {
   /** 获取单条详情（含细分字段） */
   get: (companyId, id) =>
     api.get(`/companies/${companyId}/commissions/${id}`),
-  /** 上传单张月结单截图（form-data） */
-  upload: (companyId, formData) =>
-    api.post(`/companies/${companyId}/commissions/upload`, formData, {
+  /** 上传单张月结单截图（form-data）— 上传前自动压缩图片 */
+  upload: async (companyId, formData) =>
+    api.post(`/companies/${companyId}/commissions/upload`, await optimizeFormData(formData), {
       headers: { 'Content-Type': 'multipart/form-data' },
     }),
   /** 人工修正字段 */
@@ -106,9 +111,9 @@ export const commissionsApi = {
   /** 获取所有财年列表 */
   fiscalYears: (companyId) =>
     api.get(`/companies/${companyId}/commissions/fiscal-years/list`),
-  /** 上传 IR56M */
-  uploadIR56M: (companyId, formData) =>
-    api.post(`/companies/${companyId}/commissions/ir56m/upload`, formData, {
+  /** 上传 IR56M — 上传前自动压缩图片 */
+  uploadIR56M: async (companyId, formData) =>
+    api.post(`/companies/${companyId}/commissions/ir56m/upload`, await optimizeFormData(formData), {
       headers: { 'Content-Type': 'multipart/form-data' },
     }),
   /** 获取 IR56M 列表 */

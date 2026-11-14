@@ -1,2 +1,10 @@
+# Pages "200 proxy" only works for relative URLs on this site, NOT external domains.
+# Frontend therefore builds absolute URLs to the Worker. These 302 rules are a
+# fallback for cached pages still requesting /receipts/... relatively.
+# (The /api/* 200 line below is kept for reference; it never proxied externally.)
 /api/* https://wonder-api-worker.helloaniuwu.workers.dev/:splat 200
+/receipts/* https://wonder-api-worker.helloaniuwu.workers.dev/receipts/:splat 302
+/receipts_archive/* https://wonder-api-worker.helloaniuwu.workers.dev/receipts_archive/:splat 302
+/statements/* https://wonder-api-worker.helloaniuwu.workers.dev/statements/:splat 302
+/statements_archive/* https://wonder-api-worker.helloaniuwu.workers.dev/statements_archive/:splat 302
 /* /index.html 200
