@@ -4,5 +4,8 @@
 -- 把累计分红现金误当新增本金，导致 ROI / CAGR 系统性低估。
 -- 修复后 calculateNav() 以「净入金 Σ CASH_IN − Σ CASH_OUT」为准，
 -- 需要把该值一并落进缓存，否则 /report/:id 的缓存分支无法还原正确本金。
+--
+-- 状态：已于 2026-11-12 应用到远端 D1 wonder-db，请勿重复执行
+--       （远端 portfolio_stats_cache 已含 total_cost 列）。
 
 ALTER TABLE portfolio_stats_cache ADD COLUMN total_cost REAL;

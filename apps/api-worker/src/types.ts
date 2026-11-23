@@ -9,12 +9,18 @@ export interface Env {
   OPENROUTER_API_KEY: string;
   OPENROUTER_BASE_URL: string;
   OPENROUTER_VISION_MODEL: string;
+  OPENROUTER_VISION_MODEL_FALLBACK?: string;
+  OPENROUTER_VISION_MODEL_LASTRESORT?: string;
   OPENROUTER_DEEPSEEK_MODEL: string;
   DEEPSEEK_API_KEY?: string;
   DEEPSEEK_BASE_URL: string;
   DEEPSEEK_MODEL: string;
   RESEND_API_KEY?: string;
   ADMIN_EMAIL?: string;
+  // 官网公开接口（routes/public.ts）所需
+  ADVISOR_EMAIL?: string;
+  TURNSTILE_SECRET?: string;
+  WECHAT_TOKEN_SECRET?: string;
   CORS_ORIGINS: string;
 }
 

@@ -1,7 +1,8 @@
 import { Hono } from "hono";
 import { Env, Variables } from "../types";
 import { assertCompanyAccess, generateUuid, HttpError, requireUser } from "../utils/auth";
-import { calculateFiscalYear } from "./expenses";
+import { calculateFiscalYear, summarizeCommissionStatements } from "../services/finance";
+import { callVisionApi } from "../services/vision";
 
 export const commissionsRouter = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -73,58 +74,27 @@ commissionsRouter.post("/upload", async (c) => {
 
   const buffer = await file.arrayBuffer();
   const filename = file.name || "statement.jpg";
-  const monthPrefix = new Date().toISOString().slice(0, 7);
-  const uniqueSuffix = generateUuid().slice(0, 8);
-  const storedKey = `statements/${monthPrefix}/${uniqueSuffix}_${filename}`;
-
-  await c.env.BUCKET.put(storedKey, buffer, {
-    httpMetadata: { contentType: file.type || "image/jpeg" },
-  });
-
   const uint8 = new Uint8Array(buffer);
   let binary = "";
   for (let i = 0; i < uint8.length; i++) binary += String.fromCharCode(uint8[i]);
   const base64Data = btoa(binary);
+  const isPdfFile = /\.pdf$/i.test(filename) || file.type === "application/pdf";
+  const mimeType = isPdfFile ? "application/pdf" : (file.type || "image/jpeg");
+  const dataUrl = `data:${mimeType};base64,${base64Data}`;
 
-  const dataUrl = `data:${file.type || "image/jpeg"};base64,{base64Data}`.replace("{base64Data}", base64Data);
+  // AI 提取失败即报错，不写入空记录
+  const vision = await callVisionApi(c.env, AIA_EXTRACT_PROMPT, dataUrl).catch((err: any) => {
+    throw new HttpError(502, `AI 識別失敗：${err.message}`);
+  });
+  const extracted = vision.data;
+  const rawText = vision.rawText;
 
-  let extracted: any = {};
-  let rawText = "";
-
-  if (c.env.OPENROUTER_API_KEY) {
-    const aiRes = await fetch(`${c.env.OPENROUTER_BASE_URL || "https://openrouter.ai/api/v1"}/chat/completions`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${c.env.OPENROUTER_API_KEY}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: c.env.OPENROUTER_VISION_MODEL || "google/gemini-2.0-flash-001",
-        messages: [
-          {
-            role: "user",
-            content: [
-              { type: "text", text: AIA_EXTRACT_PROMPT },
-              { type: "image_url", image_url: { url: dataUrl } },
-            ],
-          },
-        ],
-        max_tokens: 1024,
-        temperature: 0.1,
-      }),
-    });
-
-    if (aiRes.ok) {
-      const aiJson = await aiRes.json<any>();
-      rawText = aiJson.choices?.[0]?.message?.content || "";
-      const match = rawText.match(/\{[\s\S]*\}/);
-      if (match) {
-        try {
-          extracted = JSON.parse(match[0]);
-        } catch {}
-      }
-    }
-  }
+  const monthPrefix = new Date().toISOString().slice(0, 7);
+  const uniqueSuffix = generateUuid().slice(0, 8);
+  const storedKey = `statements/${monthPrefix}/${uniqueSuffix}_${filename}`;
+  await c.env.BUCKET.put(storedKey, buffer, {
+    httpMetadata: { contentType: mimeType },
+  });
 
   const id = generateUuid();
   const statementMonth = extracted.statement_month || new Date().toISOString().slice(0, 7);
@@ -232,57 +202,26 @@ commissionsRouter.post("/ir56m/upload", async (c) => {
 
   const buffer = await file.arrayBuffer();
   const filename = file.name || "ir56m.jpg";
-  const uniqueSuffix = generateUuid().slice(0, 8);
-  const storedKey = `statements/ir56m/${uniqueSuffix}_${filename}`;
-
-  await c.env.BUCKET.put(storedKey, buffer, {
-    httpMetadata: { contentType: file.type || "image/jpeg" },
-  });
-
   const uint8 = new Uint8Array(buffer);
   let binary = "";
   for (let i = 0; i < uint8.length; i++) binary += String.fromCharCode(uint8[i]);
   const base64Data = btoa(binary);
+  const isPdfFile = /\.pdf$/i.test(filename) || file.type === "application/pdf";
+  const mimeType = isPdfFile ? "application/pdf" : (file.type || "image/jpeg");
+  const dataUrl = `data:${mimeType};base64,${base64Data}`;
 
-  const dataUrl = `data:${file.type || "image/jpeg"};base64,{base64Data}`.replace("{base64Data}", base64Data);
+  // AI 提取失败即报错，不写入空记录
+  const vision = await callVisionApi(c.env, IR56M_EXTRACT_PROMPT, dataUrl).catch((err: any) => {
+    throw new HttpError(502, `AI 識別失敗：${err.message}`);
+  });
+  const extracted = vision.data;
+  const rawText = vision.rawText;
 
-  let extracted: any = {};
-  let rawText = "";
-
-  if (c.env.OPENROUTER_API_KEY) {
-    const aiRes = await fetch(`${c.env.OPENROUTER_BASE_URL || "https://openrouter.ai/api/v1"}/chat/completions`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${c.env.OPENROUTER_API_KEY}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: c.env.OPENROUTER_VISION_MODEL || "google/gemini-2.0-flash-001",
-        messages: [
-          {
-            role: "user",
-            content: [
-              { type: "text", text: IR56M_EXTRACT_PROMPT },
-              { type: "image_url", image_url: { url: dataUrl } },
-            ],
-          },
-        ],
-        max_tokens: 1024,
-        temperature: 0.1,
-      }),
-    });
-
-    if (aiRes.ok) {
-      const aiJson = await aiRes.json<any>();
-      rawText = aiJson.choices?.[0]?.message?.content || "";
-      const match = rawText.match(/\{[\s\S]*\}/);
-      if (match) {
-        try {
-          extracted = JSON.parse(match[0]);
-        } catch {}
-      }
-    }
-  }
+  const uniqueSuffix = generateUuid().slice(0, 8);
+  const storedKey = `statements/ir56m/${uniqueSuffix}_${filename}`;
+  await c.env.BUCKET.put(storedKey, buffer, {
+    httpMetadata: { contentType: mimeType },
+  });
 
   const id = generateUuid();
   const now = new Date().toISOString();
@@ -510,23 +449,11 @@ commissionsRouter.get("/summary/annual", async (c) => {
     .all<any>();
 
   const stmts = results || [];
-  const totalFyc = stmts.reduce((a, s) => a + Number(s.fyc_subtotal || 0), 0);
-  const totalRenewal = stmts.reduce((a, s) => a + Number(s.renewal_subtotal || 0), 0);
-  const totalOther = stmts.reduce((a, s) => a + Number(s.other_taxable_income || 0), 0);
-  const totalTaxable = stmts.reduce((a, s) => a + Number(s.total_taxable_income || 0), 0);
-
-  const latest = stmts.length > 0 ? stmts[stmts.length - 1] : null;
-  const ytdCheck = latest && latest.ytd_total_taxable != null ? Number(latest.ytd_total_taxable) : null;
+  const summary = summarizeCommissionStatements(stmts);
 
   return c.json({
     fiscal_year: fiscalYear,
-    statement_count: stmts.length,
-    total_fyc: totalFyc,
-    total_renewal: totalRenewal,
-    total_other_income: totalOther,
-    total_taxable_income: totalTaxable,
-    ytd_check: ytdCheck,
-    is_balanced: ytdCheck != null ? Math.abs(totalTaxable - ytdCheck) < 1.0 : true,
+    ...summary,
     statements: stmts,
   });
 });

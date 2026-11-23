@@ -2,62 +2,14 @@ import { Hono } from "hono";
 import { PDFDocument, rgb, StandardFonts } from "pdf-lib";
 import { Env, Variables } from "../types";
 import { assertCompanyAccess, HttpError, requireUser } from "../utils/auth";
-import { calculateFiscalYear } from "./expenses";
+import {
+  aggregateReceivables,
+  calculateFiscalYear,
+  computeProfitAndLoss,
+  getFiscalYearDates,
+} from "../services/finance";
 
 export const financialsRouter = new Hono<{ Bindings: Env; Variables: Variables }>();
-
-function getFiscalYearDates(fy: string): { start: string; end: string } {
-  try {
-    const startYr = parseInt(fy.split("-")[0], 10);
-    return {
-      start: `${startYr}-04-01`,
-      end: `${startYr + 1}-03-31`,
-    };
-  } catch {
-    const yr = new Date().getFullYear();
-    return { start: `${yr}-04-01`, end: `${yr + 1}-03-31` };
-  }
-}
-
-function estimateProfitsTax(profit: number, isUnlimited: boolean) {
-  if (profit <= 0) {
-    return { rate_desc: "無須徵稅", estimated_tax: 0, effective_rate: 0 };
-  }
-  const tier1Limit = 2000000;
-  if (!isUnlimited) {
-    // 8.25% / 16.5%
-    let tax = 0;
-    let desc = "";
-    if (profit <= tier1Limit) {
-      tax = profit * 0.0825;
-      desc = "8.25%（法團兩級制首級）";
-    } else {
-      tax = tier1Limit * 0.0825 + (profit - tier1Limit) * 0.165;
-      desc = "8.25% / 16.5%（法團兩級制）";
-    }
-    return {
-      rate_desc: desc,
-      estimated_tax: Math.round(tax * 100) / 100,
-      effective_rate: Math.round((tax / profit) * 10000) / 100,
-    };
-  } else {
-    // 7.5% / 15%
-    let tax = 0;
-    let desc = "";
-    if (profit <= tier1Limit) {
-      tax = profit * 0.075;
-      desc = "7.5%（非法團兩級制首級）";
-    } else {
-      tax = tier1Limit * 0.075 + (profit - tier1Limit) * 0.15;
-      desc = "7.5% / 15%（非法團兩級制）";
-    }
-    return {
-      rate_desc: desc,
-      estimated_tax: Math.round(tax * 100) / 100,
-      effective_rate: Math.round((tax / profit) * 10000) / 100,
-    };
-  }
-}
 
 // ── Fiscal Years Dropdown ──────────────────────────────────────────────────
 financialsRouter.get("/fiscal-years", async (c) => {
@@ -206,11 +158,13 @@ financialsRouter.get("/pnl", async (c) => {
   }
   expenseCategories.sort((a, b) => b.total_hkd - a.total_hkd);
 
-  const grossProfit = totalIncome - totalExpense;
-  const assessableProfit = Math.max(0, totalIncome - totalTaxDeductible);
-  const isUnlimited = ["unlimited", "sole_prop"].includes(String(company.company_legal_type));
-  const taxInfo = estimateProfitsTax(assessableProfit, isUnlimited);
-  const netProfit = grossProfit - taxInfo.estimated_tax;
+  const { grossProfit, assessableProfit, taxInfo, netProfit } = computeProfitAndLoss({
+    invoiceIncome,
+    commissionIncome,
+    totalExpense,
+    totalTaxDeductible,
+    companyLegalType: company.company_legal_type as string | null | undefined,
+  });
 
   return c.json({
     company: {
@@ -259,35 +213,7 @@ financialsRouter.get("/ar", async (c) => {
     .all<any>();
 
   const today = new Date().toISOString().slice(0, 10);
-  const clientMap: Record<string, any> = {};
-
-  for (const inv of results || []) {
-    const cname = inv.client_name || "未知客戶";
-    if (!clientMap[cname]) {
-      clientMap[cname] = {
-        client_name: cname,
-        invoice_count: 0,
-        total_billed: 0,
-        total_paid: 0,
-        balance_due: 0,
-        overdue_amount: 0,
-      };
-    }
-    const tot = Number(inv.total_amount || 0);
-    const paid = Number(inv.paid_amount || 0);
-    const bal = tot - paid;
-
-    clientMap[cname].invoice_count++;
-    clientMap[cname].total_billed += tot;
-    clientMap[cname].total_paid += paid;
-    clientMap[cname].balance_due += bal;
-
-    if (inv.due_date && inv.due_date.slice(0, 10) < today && bal > 0) {
-      clientMap[cname].overdue_amount += bal;
-    }
-  }
-
-  const clients = Object.values(clientMap).sort((a: any, b: any) => b.balance_due - a.balance_due);
+  const clients = aggregateReceivables(results || [], today);
   return c.json({ fiscal_year: fiscalYear, clients });
 });
 

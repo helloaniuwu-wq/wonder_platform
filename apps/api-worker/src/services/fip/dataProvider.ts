@@ -319,7 +319,7 @@ async function fetchYahooChart(
     )}?interval=1d&range=${rangeStr}${eventsParam}`;
     const res = await fetch(url, {
       headers: { "User-Agent": USER_AGENT, Accept: "application/json" },
-      signal: AbortSignal.timeout(2500),
+      signal: AbortSignal.timeout(4500),
     });
     if (!res.ok) return null;
     const json: any = await res.json();
@@ -421,6 +421,7 @@ export async function getMarketData(db: D1Database, isin: string): Promise<Marke
 
   const meta = await getAssetMetadata(db, isin);
   let currentPrice: number | null = null;
+  let fetchedFresh = false;
   let name = meta.name;
   const sector = meta.sector;
   const country = meta.country;
@@ -447,6 +448,7 @@ export async function getMarketData(db: D1Database, isin: string): Promise<Marke
     if (yfData) {
       if (yfData.price && yfData.price > 0) {
         currentPrice = yfData.price;
+        fetchedFresh = true;
       }
       if (name === isin && yfData.name) {
         name = yfData.name;
@@ -495,7 +497,8 @@ export async function getMarketData(db: D1Database, isin: string): Promise<Marke
 
   const finalPrice = currentPrice && currentPrice > 0 ? currentPrice : 0.0;
 
-  if (finalPrice > 0 && !skipYf) {
+  // 仅在实际从远端拉取到新行情时才写入 D1 price_cache，命中本地缓存绝不重复写入，保护 D1 写额度
+  if (fetchedFresh && finalPrice > 0 && !skipYf) {
     try {
       const sectorStr =
         sector === "Unknown Sector"
@@ -580,24 +583,25 @@ export async function getHistoricalSeries(
       }
     }
 
-    const dbCache = await db
+    // 仅从 price_cache 查最新 1 条行情补齐当天快照（单次查 1 行，严控 D1 读额度）
+    const latestCache = await db
       .prepare(
-        "SELECT substr(date, 1, 10) as d, price FROM price_cache WHERE isin = ? AND date >= ? AND price > 0 ORDER BY date ASC"
+        "SELECT substr(date, 1, 10) as d, price FROM price_cache WHERE isin = ? AND date >= ? AND price > 0 ORDER BY date DESC LIMIT 1"
       )
       .bind(isin, startStr)
-      .all<{ d: string; price: number }>();
+      .first<{ d: string; price: number }>();
 
-    for (const r of dbCache.results || []) {
-      if (r.d && r.price > 0) {
-        results[r.d] = Number(r.price);
-      }
+    if (latestCache && latestCache.d && latestCache.price > 0) {
+      results[latestCache.d] = Number(latestCache.price);
     }
   } catch {
     // ignore
   }
 
-  // If D1 already has price data points covering the asset, return immediately
-  if (Object.keys(results).length === 0 && !isin.startsWith("CASH_")) {
+  // 2. If D1 doesn't have sufficient historical data points covering the requested period, fetch from Yahoo Finance.
+  // When an asset has only 1 or a few intraday records in price_cache, we MUST still fetch the full historical series.
+  const minRequiredPoints = Math.min(Math.max(20, Math.floor(daysBack * 0.35)), 200);
+  if (Object.keys(results).length < minRequiredPoints && !isin.startsWith("CASH_")) {
     const meta = await getAssetMetadata(db, isin);
     const yahooTicker = normalizeForYahoo(meta.ticker || isin);
     const rangeStr =
@@ -623,27 +627,19 @@ export async function getHistoricalSeries(
         }
       }
 
-      // Cache dividends if any returned
-      const divEntries = Object.entries(yfData.dividends);
-      if (divEntries.length > 0) {
-        try {
-          const stmts = divEntries.slice(-50).map(([d, amt]) =>
-            db
-              .prepare("INSERT OR REPLACE INTO dividend_cache (isin, date, amount) VALUES (?, ?, ?)")
-              .bind(isin, d, amt)
-          );
-          if (stmts.length > 0) {
-            await db.batch(stmts);
-          }
-        } catch {
-          // ignore
-        }
+      // 将随附的分红数据写入 Worker 内存缓存（0 次 D1 写操作，彻底杜绝刷爆 D1 写入配额）
+      // 真正的 D1 离线持久化由用户明确查看分红明细时的 getDividendHistory 按需把控
+      if (yfData.dividends && Object.keys(yfData.dividends).length > 0) {
+        memoryDividendCache.set(`${isin}:${startStr}`, {
+          divs: yfData.dividends,
+          expiresAt: Date.now() + 30 * 60 * 1000,
+        });
       }
     }
   }
 
-  // Fallback to Stooq if still completely empty
-  if (Object.keys(results).length === 0 && !isin.startsWith("CASH_")) {
+  // 3. Fallback to Stooq if still insufficient (< 20 points)
+  if (Object.keys(results).length < 20 && !isin.startsWith("CASH_")) {
     const stooq = await fetchStooqHistorical(isin);
     for (const [d, p] of Object.entries(stooq)) {
       if (d >= startStr && d <= endStr && p > 0 && results[d] === undefined) {
@@ -652,7 +648,8 @@ export async function getHistoricalSeries(
     }
   }
 
-  memoryHistoryCache.set(cacheKey, { series: results, expiresAt: Date.now() + 10 * 60 * 1000 });
+  // 提升时序内存缓存时长到 30 分钟（同一 Worker 实例下重复计算实现 0 D1 读、0 D1 写）
+  memoryHistoryCache.set(cacheKey, { series: results, expiresAt: Date.now() + 30 * 60 * 1000 });
   return results;
 }
 

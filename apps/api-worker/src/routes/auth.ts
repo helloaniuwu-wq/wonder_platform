@@ -193,3 +193,10 @@ authRouter.get("/me", async (c) => {
   const user = await requireUser(c);
   return c.json(formatUserOut(user as unknown as Record<string, unknown>));
 });
+
+authRouter.get("/advisors", async (c) => {
+  const { results } = await c.env.DB.prepare(
+    "SELECT id, name, email FROM users WHERE (role = 'advisor' OR role = 'admin') AND is_active = 1 ORDER BY name ASC"
+  ).all();
+  return c.json(results || []);
+});

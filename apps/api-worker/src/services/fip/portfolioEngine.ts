@@ -49,6 +49,13 @@ export class PortfolioEngine {
   meta!: PortfolioMeta;
   transactions: Transaction[] = [];
 
+  /**
+   * 累计「已派发」分红，按 ISIN 归集、统一折算为组合基准币。
+   * 与 total_div_cash 的区别：total_div_cash 只统计进现金账户的分红，用于避免
+   * REINVEST 的 PnL 双计；本字段无论 CASH / REINVEST 都统计，供报告展示 Total Dividends。
+   */
+  dividendsReceivedBase: Record<string, number> = {};
+
   constructor(db: D1Database, portfolioId: number) {
     this.db = db;
     this.portfolioId = portfolioId;
@@ -108,15 +115,17 @@ export class PortfolioEngine {
    * 步骤一：仅根据 transactions 重建持仓与现金（不含任何分红派发）。
    * 单独拆出来，供 getDividendDetails 反查建仓时使用，避免与 getCurrentPortfolio 相互递归。
    */
-  async buildBaseHoldings(): Promise<{
+  async buildBaseHoldings(asOfDate?: string): Promise<{
     portfolio: Record<string, { shares: number; avg_cost: number; total_cost: number; total_div_cash: number }>;
     cashBalances: Record<string, number>;
   }> {
     const portfolio: Record<string, { shares: number; avg_cost: number; total_cost: number; total_div_cash: number }> =
       {};
     const cashBalances: Record<string, number> = {};
+    const cutoff = asOfDate?.slice(0, 10);
+    const ledger = cutoff ? this.transactions.filter((t) => t.date <= cutoff) : this.transactions;
 
-    for (const row of this.transactions) {
+    for (const row of ledger) {
       const isin = row.isin;
       const q = row.shares;
       const p = row.price;
@@ -158,7 +167,10 @@ export class PortfolioEngine {
         const currency = guessCurrencyFromIsin(isin);
         const cKey = `CASH_${currency}`;
         const divAmt = q * p;
-        curr.total_div_cash += divAmt;
+        const baseCcy = this.meta.base_currency || "USD";
+        const fx = currency && currency !== baseCcy ? await getFxRate(this.db, currency, baseCcy) : 1;
+        // total_div_cash 统一存基准币；现金账户仍按原币入账
+        curr.total_div_cash += divAmt * fx;
         cashBalances[cKey] = (cashBalances[cKey] || 0) + divAmt;
       }
     }
@@ -187,39 +199,74 @@ export class PortfolioEngine {
    * 这是迁移到 TypeScript 时唯一漏掉的环节 —— 之前 total_divs 恒为 0、净值曲线末端跳空，
    * 根因都在这里。
    */
-  async applyDividends(base: {
-    portfolio: Record<string, { shares: number; avg_cost: number; total_cost: number; total_div_cash: number }>;
-    cashBalances: Record<string, number>;
-  }) {
+  async applyDividends(
+    base: {
+      portfolio: Record<string, { shares: number; avg_cost: number; total_cost: number; total_div_cash: number }>;
+      cashBalances: Record<string, number>;
+    },
+    asOfDate?: string
+  ) {
     const { portfolio, cashBalances } = base;
-    const divs = await this.getDividendDetails(base);
+    const baseCcy = this.meta.base_currency || "USD";
+    const cutoff = asOfDate?.slice(0, 10);
+    let divs = await this.getDividendDetails(base);
+    if (cutoff) divs = divs.filter((d) => d.date <= cutoff);
 
-    for (const d of divs) {
-      // DIV_CASH 交易在 buildBaseHoldings 里已经入账，这里跳过避免重复
-      if (d.type === "Recorded") continue;
+    this.dividendsReceivedBase = {};
 
-      const holding = portfolio[d.isin];
-      if (!holding) continue;
-      const amount = Number(d.total_amount || 0);
-      if (!(amount > 0)) continue;
+    // getDividendDetails 为便于前端展示按日期倒序返回，入账必须按日期正序：
+    // 否则 REINVEST 的下一期派发无法基于上一期折股后的持股数，复利会整体丢失。
+    const ordered = [...divs].sort((a, b) => a.date.localeCompare(b.date));
+    const reinvestExtraShares: Record<string, number> = {};
 
-      const ccy = d.currency || guessCurrencyFromIsin(d.isin);
+    for (const d of ordered) {
+      const isin = d.isin;
+      const ccy = d.currency || guessCurrencyFromIsin(isin);
       const cKey = `CASH_${ccy}`;
+      const fx = ccy && ccy !== baseCcy ? await getFxRate(this.db, ccy, baseCcy) : 1;
 
-      if (d.type === "Manual" || this.meta.dividend_strategy !== "REINVEST") {
-        holding.total_div_cash += amount;
+      // DIV_CASH 交易已在 buildBaseHoldings 入账，这里只补展示口径，避免重复计入现金
+      if (d.type === "Recorded") {
+        this.dividendsReceivedBase[isin] =
+          (this.dividendsReceivedBase[isin] || 0) + Number(d.total_amount || 0) * fx;
+        continue;
+      }
+
+      // REINVEST 下本期派发应按「派发日持股 + 历次折股」计算
+      const effectiveShares = d.shares_held + (reinvestExtraShares[isin] || 0);
+      const amount = Math.round(d.amount_per_share * effectiveShares * 100) / 100;
+      if (!(amount > 0)) continue;
+      const amountBase = amount * fx;
+
+      this.dividendsReceivedBase[isin] = (this.dividendsReceivedBase[isin] || 0) + amountBase;
+
+      let holding = portfolio[isin];
+      if (!holding) {
+        // 资产已清仓也要入账：分红是真实收到的现金，与当前是否持有无关
+        holding = { shares: 0, avg_cost: 0, total_cost: 0, total_div_cash: 0 };
+        portfolio[isin] = holding;
+      }
+
+      const reinvest = d.type !== "Manual" && this.meta.dividend_strategy === "REINVEST";
+      if (!reinvest) {
+        holding.total_div_cash += amountBase; // 基准币
         cashBalances[cKey] = (cashBalances[cKey] || 0) + amount;
         continue;
       }
 
-      const px = await getHistoricalPrice(this.db, d.isin, d.date);
+      const px = await getHistoricalPrice(this.db, isin, d.date);
       if (px > 0) {
         const buyShares = Math.floor(amount / px);
-        holding.shares += buyShares;
+        if (buyShares > 0) {
+          const prevCost = holding.shares * holding.avg_cost;
+          holding.shares += buyShares;
+          holding.avg_cost = (prevCost + buyShares * px) / holding.shares;
+          reinvestExtraShares[isin] = (reinvestExtraShares[isin] || 0) + buyShares;
+        }
         cashBalances[cKey] = (cashBalances[cKey] || 0) + (amount - buyShares * px);
       } else {
-        // 拿不到历史价时退化为现金分红，避免整笔丢失
-        holding.total_div_cash += amount;
+        // 拿不到派发日价格时退化为现金分红，避免整笔丢失
+        holding.total_div_cash += amountBase;
         cashBalances[cKey] = (cashBalances[cKey] || 0) + amount;
       }
     }
@@ -231,10 +278,10 @@ export class PortfolioEngine {
     return base;
   }
 
-  /** 对外统一入口：基础持仓 + 分红入账 */
-  async getCurrentPortfolio() {
-    const base = await this.buildBaseHoldings();
-    return this.applyDividends(base);
+  /** 对外统一入口：基础持仓 + 分红入账。传入 asOfDate 可做历史快照。 */
+  async getCurrentPortfolio(asOfDate?: string) {
+    const base = await this.buildBaseHoldings(asOfDate);
+    return this.applyDividends(base, asOfDate);
   }
 
   async calculateNav(): Promise<{
@@ -298,12 +345,14 @@ export class PortfolioEngine {
 
       const marketVal = data.shares * currPrice;
       const cost = data.total_cost * fx;
-      const divFx = await getFxRate(this.db, guessCurrencyFromIsin(isin), baseCcy);
-      const divTotal = data.total_div_cash * divFx;
+      // total_div_cash 已在入账时折算为基准币，此处不再二次乘汇率。
+      // 它只含「进现金账户」的分红，REINVEST 的分红已体现在市值里，不重复计入收益率。
+      const divTotal = data.total_div_cash;
+      // 报告展示用：累计已派发分红（CASH 与 REINVEST 都统计）
+      const divReceived = this.dividendsReceivedBase[isin] || 0;
 
       totalNav += marketVal;
       totalCost += cost;
-      totalDivs += divTotal;
 
       const pnl = marketVal - cost;
       const itemYield = cost > 0 ? ((marketVal + divTotal - cost) / cost) * 100 : 0;
@@ -332,7 +381,7 @@ export class PortfolioEngine {
         price: Math.round(currPrice * 100) / 100,
         market_value: Math.round(marketVal * 100) / 100,
         total_cost: Math.round(cost * 100) / 100,
-        dividends: Math.round(divTotal * 100) / 100,
+        dividends: Math.round(divReceived * 100) / 100,
         pnl: Math.round(pnl * 100) / 100,
         yield: Math.round(itemYield * 100) / 100,
       });
@@ -341,12 +390,20 @@ export class PortfolioEngine {
     // Weight and Rebalance targets
     for (const d of details) {
       d.weight = totalNav > 0 ? Math.round((d.market_value / totalNav) * 1000) / 10 : 0;
-      const targetPct = this.meta.target_allocations[d.isin] ?? null;
-      if (targetPct != null) {
-        d.target_weight = targetPct;
-        d.rebalance_diff = Math.round((d.weight - targetPct) * 10) / 10;
+      const rawTarget = this.meta.target_allocations[d.isin];
+      if (rawTarget != null) {
+        // target_allocations 以小数存储（0.4 = 40%），而 weight 是百分数。
+        // 旧代码直接相减，把 39.1 − 0.4 当成偏离度，单位错了一百倍。
+        const n = Number(rawTarget) || 0;
+        const targetPct = n <= 1 ? n * 100 : n; // 兼容历史里已存成百分数的行
+        d.target_weight = Math.round(targetPct * 10) / 10;
+        d.rebalance_diff = Math.round(((d.weight || 0) - targetPct) * 10) / 10;
       }
     }
+
+    // Total Dividends = 全部已派发分红（含 REINVEST 折股、含已清仓资产），
+    // 与净值/收益计算解耦，避免为了展示而把分红二次塞进 PnL。
+    totalDivs = Object.values(this.dividendsReceivedBase).reduce((s, v) => s + v, 0);
 
     // 投入本金口径：净入金 = Σ CASH_IN − Σ CASH_OUT（按当时币种折算到基准币）。
     // 不能用「持仓成本 + 现金余额」，否则累计在账上的分红现金会被误当成新增本金，
@@ -389,13 +446,25 @@ export class PortfolioEngine {
       countryMap[d.country] = Math.round(((countryMap[d.country] || 0) + d.market_value) * 100) / 100;
     }
 
-    // Update stats cache
+    // Update stats cache. 必须用 UPSERT 而非 INSERT OR REPLACE：
+    // REPLACE 会把未列出的 historical_chart / dividend_history 清空，
+    // 导致每次刷新后净值曲线消失、下一次读取只能重算。
     await this.db
       .prepare(
-        `INSERT OR REPLACE INTO portfolio_stats_cache (
+        `INSERT INTO portfolio_stats_cache (
           portfolio_id, total_nav, wallet_balance, total_pnl, total_divs,
           cumulative_roi, annualized_return, details, total_cost, last_updated
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(portfolio_id) DO UPDATE SET
+          total_nav = excluded.total_nav,
+          wallet_balance = excluded.wallet_balance,
+          total_pnl = excluded.total_pnl,
+          total_divs = excluded.total_divs,
+          cumulative_roi = excluded.cumulative_roi,
+          annualized_return = excluded.annualized_return,
+          details = excluded.details,
+          total_cost = excluded.total_cost,
+          last_updated = excluded.last_updated`
       )
       .bind(
         this.portfolioId,
@@ -454,7 +523,14 @@ export class PortfolioEngine {
   > {
     const list: Array<any> = [];
     const { portfolio } = baseHoldings ?? (await this.buildBaseHoldings());
-    const isins = Object.keys(portfolio).filter((i) => !i.startsWith("CASH_") && portfolio[i].shares > 0);
+    // 曾经在账本里出现过的资产都要参与分红计算，不能只看当前持仓：
+    // 已清仓资产在持有期间派发的分红同样是真实收到的现金。
+    const isins = Array.from(
+      new Set([
+        ...Object.keys(portfolio).filter((i) => !i.startsWith("CASH_")),
+        ...this.transactions.map((t) => t.isin).filter((i) => i && !i.startsWith("CASH_")),
+      ])
+    );
 
     // 1. 手动分红 (Manual Dividends)
     const manRows = await this.db
@@ -918,10 +994,25 @@ export class PortfolioEngine {
           }
         }
 
-        if (t === "CASH_IN") cash += p * fx;
-        else if (t === "CASH_OUT") cash -= p * fx;
-        else if (t === "DIVIDEND") cash += q * p * fx;
-        else if (t === "BUY" && !isin.startsWith("CASH_")) {
+        // CASH_OUT 的 price 本身已是负数（与 buildBaseHoldings / investedCapital 口径一致），
+        // 必须直接累加；写成 cash -= p 会把出金反过来做成入金。
+        if (t === "CASH_IN" || t === "CASH_OUT") cash += p * fx;
+        else if (t === "DIVIDEND") {
+          const divAmt = q * p;
+          if (this.meta.dividend_strategy === "REINVEST") {
+            // 再投资分红不进现金，按派发日价格折成份额，否则曲线会低估复利
+            const px = historicalData[isin]?.[d] || avgCosts[isin] || 0;
+            if (px > 0) {
+              const addShares = Math.floor(divAmt / px);
+              dailyShares[isin] = (dailyShares[isin] || 0) + addShares;
+              cash += (divAmt - addShares * px) * fx;
+            } else {
+              cash += divAmt * fx;
+            }
+          } else {
+            cash += divAmt * fx;
+          }
+        } else if (t === "BUY" && !isin.startsWith("CASH_")) {
           cash -= q * p * fx;
           dailyShares[isin] = (dailyShares[isin] || 0) + q;
         } else if (t === "SELL" && !isin.startsWith("CASH_")) {
@@ -993,5 +1084,187 @@ export class PortfolioEngine {
     }
 
     return histChart;
+  }
+
+  /** 再平衡 Step 1：按指定日期（或实时）返回各持仓的市值与权重 */
+  async getCurrentWeights(asOfDate?: string) {
+    const { portfolio } = await this.getCurrentPortfolio(asOfDate);
+    const rows: Array<{
+      isin: string;
+      name: string;
+      shares: number;
+      price: number;
+      currency: string;
+      market_value_usd: number;
+      weight_pct: number;
+    }> = [];
+    let total = 0;
+
+    for (const [isin, data] of Object.entries(portfolio)) {
+      if (isin.startsWith("CASH_") || data.shares <= 0) continue;
+      const px = asOfDate
+        ? await getHistoricalPrice(this.db, isin, asOfDate)
+        : (await getMarketData(this.db, isin)).price;
+      if (!(px > 0)) continue;
+      const ccy = guessCurrencyFromIsin(isin);
+      const fx = await getFxRate(this.db, ccy, "USD");
+      const mv = data.shares * px * fx;
+      const meta = await getAssetMetadata(this.db, isin);
+      rows.push({
+        isin,
+        name: meta.name || isin,
+        shares: Math.round(data.shares),
+        price: Math.round(px * 10000) / 10000,
+        currency: ccy,
+        market_value_usd: Math.round(mv * 100) / 100,
+        weight_pct: 0,
+      });
+      total += mv;
+    }
+    for (const r of rows) {
+      r.weight_pct = total > 0 ? Math.round((r.market_value_usd / total) * 10000) / 100 : 0;
+    }
+    rows.sort((a, b) => b.market_value_usd - a.market_value_usd);
+    return {
+      weights: rows,
+      total_nav_usd: Math.round(total * 100) / 100,
+      as_of_date: asOfDate || new Date().toISOString().slice(0, 10),
+    };
+  }
+
+  /** 再平衡 Step 2：按目标权重生成交易清单（含现金池伪行） */
+  async getRebalancePreview(asOfDate?: string) {
+    const targets = this.meta.target_allocations || {};
+    const baseCcy = this.meta.base_currency || "USD";
+    const dateStr = asOfDate || new Date().toISOString().slice(0, 10);
+    const empty = {
+      trades: [] as any[],
+      as_of_date: dateStr,
+      base_currency: baseCcy,
+      total_nav_usd: 0,
+      total_nav_base: 0,
+      total_cash_usd: 0,
+      total_cash_base: 0,
+      cash_pct: 0,
+    };
+    if (Object.keys(targets).length === 0) return empty;
+
+    const { portfolio, cashBalances } = await this.getCurrentPortfolio(asOfDate);
+    const prices: Record<string, number> = {};
+    const assetMv: Record<string, number> = {};
+    let totalAssets = 0;
+
+    for (const [isin, data] of Object.entries(portfolio)) {
+      if (isin.startsWith("CASH_") || data.shares <= 0) continue;
+      const px = asOfDate
+        ? await getHistoricalPrice(this.db, isin, asOfDate)
+        : (await getMarketData(this.db, isin)).price;
+      if (!(px > 0)) continue;
+      prices[isin] = px;
+      const ccy = guessCurrencyFromIsin(isin);
+      const fx = await getFxRate(this.db, ccy, baseCcy);
+      const mv = data.shares * px * fx;
+      assetMv[isin] = mv;
+      totalAssets += mv;
+    }
+
+    let totalCashBase = 0;
+    for (const [cIsin, bal] of Object.entries(cashBalances)) {
+      const ccy = cIsin.replace("CASH_", "");
+      const fx = await getFxRate(this.db, ccy, baseCcy);
+      totalCashBase += bal * fx;
+    }
+
+    const totalValue = totalAssets + totalCashBase;
+    if (!(totalValue > 0)) return empty;
+
+    // 目标权重统一归一化为 0-1 小数（兼容历史里误存成 40 而非 0.4 的行）
+    const normTarget = (v: unknown) => {
+      const n = Number(v) || 0;
+      return n <= 1 ? n : n / 100;
+    };
+    const targetSum = Object.values(targets).reduce((s, v) => s + normTarget(v), 0);
+    const cashTargetWeight = Math.max(0, 1 - targetSum);
+    const allIsins = new Set<string>([
+      ...Object.keys(targets),
+      ...Object.keys(portfolio).filter((i) => !i.startsWith("CASH_") && portfolio[i].shares > 0),
+    ]);
+
+    const trades: any[] = [];
+    for (const isin of allIsins) {
+      const tw = normTarget(targets[isin]);
+      let px = prices[isin];
+      if (!(px > 0)) {
+        px = asOfDate
+          ? await getHistoricalPrice(this.db, isin, asOfDate)
+          : (await getMarketData(this.db, isin)).price;
+      }
+      if (!(px > 0)) continue;
+      const ccy = guessCurrencyFromIsin(isin);
+      const fx = await getFxRate(this.db, ccy, baseCcy);
+      const targetShares = Math.floor((totalValue * tw) / (px * fx));
+      const currentShares = portfolio[isin]?.shares || 0;
+      const diff = targetShares - currentShares;
+      if (diff === 0) continue;
+      const meta = await getAssetMetadata(this.db, isin);
+      const amount = Math.abs(diff) * px;
+      trades.push({
+        isin,
+        name: meta.name || isin,
+        is_cash: false,
+        action: diff > 0 ? "BUY" : "SELL",
+        shares: Math.abs(diff),
+        price: Math.round(px * 10000) / 10000,
+        currency: ccy,
+        amount: Math.round(amount * 100) / 100,
+        amount_usd: Math.round(amount * fx * 100) / 100,
+        current_weight: Math.round(((assetMv[isin] || 0) / totalValue) * 10000) / 100,
+        target_weight: Math.round(tw * 10000) / 100,
+      });
+    }
+
+    trades.push({
+      isin: `CASH_${baseCcy}`,
+      name: `Cash & Equivalents (${baseCcy})`,
+      is_cash: true,
+      action: cashTargetWeight > 0.01 ? "HOLD" : "DEPLOY",
+      shares: null,
+      price: null,
+      currency: baseCcy,
+      amount: Math.round(totalCashBase * 100) / 100,
+      amount_usd: Math.round(totalCashBase * 100) / 100,
+      current_weight: Math.round((totalCashBase / totalValue) * 10000) / 100,
+      target_weight: Math.round(cashTargetWeight * 10000) / 100,
+    });
+
+    return {
+      trades,
+      as_of_date: dateStr,
+      base_currency: baseCcy,
+      total_nav_usd: Math.round(totalValue * 100) / 100,
+      total_nav_base: Math.round(totalValue * 100) / 100,
+      total_cash_usd: Math.round(totalCashBase * 100) / 100,
+      total_cash_base: Math.round(totalCashBase * 100) / 100,
+      cash_pct: Math.round((totalCashBase / totalValue) * 10000) / 100,
+    };
+  }
+
+  /** 再平衡执行：只写 BUY/SELL，现金由账本推导，不额外写 CASH_IN/OUT 以免双计 */
+  async executeRebalance(asOfDate?: string) {
+    const preview = await this.getRebalancePreview(asOfDate);
+    const dateStr = asOfDate || new Date().toISOString().slice(0, 10);
+    const stmts: D1PreparedStatement[] = [];
+    for (const t of preview.trades) {
+      if (t.is_cash || t.shares == null || t.price == null) continue;
+      stmts.push(
+        this.db
+          .prepare(
+            "INSERT INTO transactions (portfolio_id, date, isin, type, shares, price) VALUES (?, ?, ?, ?, ?, ?)"
+          )
+          .bind(this.portfolioId, dateStr, t.isin, t.action, t.shares, t.price)
+      );
+    }
+    if (stmts.length > 0) await this.db.batch(stmts);
+    return { inserted: stmts.length, date: dateStr };
   }
 }

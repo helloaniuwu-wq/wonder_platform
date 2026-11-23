@@ -17,6 +17,12 @@ fipRouter.get("/portfolios", async (c) => {
   if (user) {
     if (user.role === "admin") {
       sql = "SELECT * FROM portfolios";
+    } else if (user.role === "advisor") {
+      sql = `SELECT * FROM portfolios 
+             WHERE is_public = 1 
+                OR user_id = ? 
+                OR user_id IN (SELECT client_id FROM advisor_clients WHERE advisor_id = ? AND is_active = 1)`;
+      params.push(user.id, user.id);
     } else {
       sql = "SELECT * FROM portfolios WHERE is_public = 1 OR user_id = ?";
       params.push(user.id);
@@ -50,21 +56,83 @@ fipRouter.post("/portfolios/new", async (c) => {
 
   const baseCurrency = String(body.base_currency || "USD").toUpperCase();
   const divStrategy = String(body.dividend_strategy || "CASH").toUpperCase();
-  const targetAllocations = body.target_allocations ? JSON.stringify(body.target_allocations) : "{}";
+  const targetAllocations = body.allocations
+    ? JSON.stringify(body.allocations)
+    : body.target_allocations
+    ? JSON.stringify(body.target_allocations)
+    : "{}";
   const now = new Date().toISOString();
+
+  // 检查是否为客户创建
+  let targetUserId = user.id;
+  if (body.client_id) {
+    if (user.role === "admin") {
+      targetUserId = body.client_id;
+    } else if (user.role === "advisor") {
+      const link = await c.env.DB.prepare(
+        "SELECT 1 FROM advisor_clients WHERE advisor_id = ? AND client_id = ? AND is_active = 1"
+      )
+        .bind(user.id, body.client_id)
+        .first();
+      if (!link) {
+        throw new HttpError(403, "該客戶不在你的服務範圍內");
+      }
+      targetUserId = body.client_id;
+    }
+  }
 
   const maxOrder = await c.env.DB.prepare("SELECT MAX(sort_order) as m FROM portfolios").first<{ m: number }>();
   const sortOrder = (maxOrder?.m || 0) + 1;
 
   const res = await c.env.DB.prepare(
     `INSERT INTO portfolios (name, base_currency, dividend_strategy, target_allocations, user_id, is_public, sort_order, created_at)
-     VALUES (?, ?, ?, ?, ?, 0, ?, ?)`
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
   )
-    .bind(name, baseCurrency, divStrategy, targetAllocations, user.id, sortOrder, now)
+    .bind(name, baseCurrency, divStrategy, targetAllocations, targetUserId, body.is_public ? 1 : 0, sortOrder, now)
     .run();
 
   const id = res.meta.last_row_id;
-  return c.json({ id, name, base_currency: baseCurrency, dividend_strategy: divStrategy });
+
+  // 如果提供了 budget 与 allocations，自动初始化入金和买入记录
+  const budget = Number(body.budget) || 0;
+  const startDate = body.date || now.slice(0, 10);
+  const txStmts: any[] = [];
+
+  if (budget > 0) {
+    txStmts.push(
+      c.env.DB.prepare(
+        "INSERT INTO transactions (portfolio_id, date, isin, type, shares, price) VALUES (?, ?, ?, 'CASH_IN', ?, 1.0)"
+      ).bind(id, startDate, `CASH_${baseCurrency}`, budget)
+    );
+  }
+
+  const allocations = body.allocations || {};
+  const manualPrices = body.manual_prices || {};
+  for (const [isin, weightVal] of Object.entries(allocations)) {
+    const weight = Number(weightVal);
+    if (!isin || weight <= 0) continue;
+    const allocBudget = budget * weight;
+    const price = Number(manualPrices[isin]) || 100.0;
+    const shares = allocBudget / price;
+    txStmts.push(
+      c.env.DB.prepare(
+        "INSERT INTO transactions (portfolio_id, date, isin, type, shares, price) VALUES (?, ?, ?, 'BUY', ?, ?)"
+      ).bind(id, startDate, isin, shares, price)
+    );
+  }
+
+  if (txStmts.length > 0) {
+    await c.env.DB.batch(txStmts);
+  }
+
+  return c.json({
+    id,
+    portfolio_id: id,
+    name,
+    base_currency: baseCurrency,
+    dividend_strategy: divStrategy,
+    user_id: targetUserId,
+  });
 });
 
 fipRouter.get("/portfolios/:id", async (c) => {
@@ -136,18 +204,19 @@ fipRouter.delete("/portfolios/:id", async (c) => {
   return c.json({ success: true, id });
 });
 
-fipRouter.post("/portfolios/reorder", async (c) => {
+const handleReorderPortfolios = async (c: any) => {
   const user = await requireUser(c);
-  const body = await c.req.json<{ ids: number[] }>();
-  if (Array.isArray(body.ids)) {
-    for (let i = 0; i < body.ids.length; i++) {
-      await c.env.DB.prepare("UPDATE portfolios SET sort_order = ? WHERE id = ?")
-        .bind(i + 1, body.ids[i])
-        .run();
-    }
+  const body = (await c.req.json()) as { ids?: number[]; ordered_ids?: number[] };
+  const list = Array.isArray(body.ordered_ids) ? body.ordered_ids : Array.isArray(body.ids) ? body.ids : [];
+  for (let i = 0; i < list.length; i++) {
+    await c.env.DB.prepare("UPDATE portfolios SET sort_order = ? WHERE id = ?")
+      .bind(i + 1, list[i])
+      .run();
   }
-  return c.json({ success: true });
-});
+  return c.json({ status: "success", success: true });
+};
+fipRouter.post("/portfolios/reorder", handleReorderPortfolios);
+fipRouter.put("/portfolios/reorder", handleReorderPortfolios);
 
 // ── Portfolio Report & Stats ───────────────────────────────────────────────
 fipRouter.get("/report/:id", async (c) => {
@@ -450,8 +519,10 @@ fipRouter.post("/lab/analyze", async (c) => {
       insurance_plan: body.insurance_plan,
       insurance_alpha_low: body.insurance_alpha_low,
       insurance_alpha_high: body.insurance_alpha_high,
+      cma_mode: body.cma_mode || body.mc_cma_mode || "shrunk",
     },
-    Number(body.risk_free_rate || 0.04)
+    Number(body.risk_free_rate || 0.04),
+    (body.cma_mode || body.mc_cma_mode || "shrunk") as any
   );
 
   return c.json(result);
@@ -471,7 +542,9 @@ fipRouter.post("/lab/generate-report", async (c) => {
 
 // ── Lab Scenarios ──────────────────────────────────────────────────────────
 fipRouter.get("/lab/scenarios", async (c) => {
-  const { results } = await c.env.DB.prepare("SELECT * FROM lab_scenarios ORDER BY created_at DESC").all<any>();
+  const { results } = await c.env.DB.prepare(
+    "SELECT id, name, created_at, assets_json, weights_json, summary_json FROM lab_scenarios ORDER BY created_at DESC"
+  ).all<any>();
   return c.json(
     (results || []).map((s) => ({
       id: s.id,
@@ -479,9 +552,7 @@ fipRouter.get("/lab/scenarios", async (c) => {
       created_at: s.created_at,
       assets: JSON.parse(s.assets_json || "[]"),
       weights: JSON.parse(s.weights_json || "{}"),
-      settings: JSON.parse(s.settings_json || "{}"),
       summary: JSON.parse(s.summary_json || "{}"),
-      chart: JSON.parse(s.chart_json || "{}"),
     }))
   );
 });
@@ -490,42 +561,100 @@ fipRouter.get("/lab/scenarios/:id", async (c) => {
   const id = parseInt(c.req.param("id"), 10);
   const s = await c.env.DB.prepare("SELECT * FROM lab_scenarios WHERE id = ?").bind(id).first<any>();
   if (!s) throw new HttpError(404, "Scenario not found");
+
+  const settingsRaw = JSON.parse(s.settings_json || "{}");
+  const mcSettings: Record<string, any> = {};
+  for (const [k, v] of Object.entries(settingsRaw)) {
+    if (!k.startsWith("_")) {
+      mcSettings[k] = v;
+    }
+  }
+  const parsedChart = JSON.parse(s.chart_json || "[]");
+  const chartData = Array.isArray(parsedChart) ? parsedChart : [];
+
   return c.json({
     id: s.id,
     name: s.name,
     created_at: s.created_at,
     assets: JSON.parse(s.assets_json || "[]"),
     weights: JSON.parse(s.weights_json || "{}"),
-    settings: JSON.parse(s.settings_json || "{}"),
+    mc_settings: mcSettings,
+    settings: settingsRaw,
     summary: JSON.parse(s.summary_json || "{}"),
-    chart: JSON.parse(s.chart_json || "{}"),
+    chart_data: chartData,
+    chart: chartData,
+    ilp_enabled: settingsRaw._ilp_enabled ?? null,
+    ilp_config: settingsRaw._ilp_config ?? null,
+    insurance_enabled: settingsRaw._ins_enabled ?? null,
+    insurance_plan: settingsRaw._ins_plan ?? null,
+    insurance_alpha_low: settingsRaw._ins_alpha_low ?? null,
+    insurance_alpha_high: settingsRaw._ins_alpha_high ?? null,
   });
 });
 
 fipRouter.put("/lab/scenarios/:id", async (c) => {
   const id = parseInt(c.req.param("id"), 10);
   const body = await c.req.json<any>();
-  await c.env.DB.prepare(
-    `UPDATE lab_scenarios SET name = ?, assets_json = ?, weights_json = ?, settings_json = ?, summary_json = ?, chart_json = ? WHERE id = ?`
-  )
-    .bind(
-      String(body.name || "未命名方案"),
-      JSON.stringify(body.assets || []),
-      JSON.stringify(body.weights || {}),
-      JSON.stringify(body.settings || {}),
-      JSON.stringify(body.summary || {}),
-      JSON.stringify(body.chart || {}),
-      id
-    )
-    .run();
-  return c.json({ success: true, id });
+  const updates: string[] = [];
+  const values: unknown[] = [];
+
+  if (body.name !== undefined) {
+    const newName = String(body.name || "").trim();
+    if (!newName) throw new HttpError(400, "Name is required");
+    updates.push("name = ?");
+    values.push(newName);
+  }
+  if (body.assets !== undefined) {
+    updates.push("assets_json = ?");
+    values.push(JSON.stringify(body.assets));
+  }
+  if (body.custom_weights !== undefined || body.weights !== undefined) {
+    updates.push("weights_json = ?");
+    values.push(JSON.stringify(body.custom_weights || body.weights));
+  }
+  if (body.mc_settings !== undefined || body.settings !== undefined) {
+    updates.push("settings_json = ?");
+    values.push(JSON.stringify(body.mc_settings || body.settings));
+  }
+  if (body.summary !== undefined) {
+    updates.push("summary_json = ?");
+    values.push(JSON.stringify(body.summary));
+  }
+  if (body.chart_data !== undefined || body.chart !== undefined) {
+    updates.push("chart_json = ?");
+    values.push(JSON.stringify(body.chart_data || body.chart));
+  }
+
+  if (updates.length > 0) {
+    values.push(id);
+    await c.env.DB.prepare(`UPDATE lab_scenarios SET ${updates.join(", ")} WHERE id = ?`)
+      .bind(...values)
+      .run();
+  }
+  return c.json({ success: true, id, message: "方案名称已更新" });
 });
 
 fipRouter.post("/lab/scenarios/save", async (c) => {
   const user = await getOptionalUser(c);
   const body = await c.req.json<any>();
-  const name = String(body.name || "未命名方案");
+  const name = String(body.name || "未命名方案").trim();
   const now = new Date().toISOString();
+
+  const rawSettings = body.mc_settings || body.settings || {};
+  const settingsExt: Record<string, any> = { ...rawSettings };
+  if (body.ilp_enabled !== undefined && body.ilp_enabled !== null) {
+    settingsExt._ilp_enabled = body.ilp_enabled;
+    settingsExt._ilp_config = body.ilp_config ?? null;
+  }
+  if (body.insurance_enabled !== undefined && body.insurance_enabled !== null) {
+    settingsExt._ins_enabled = body.insurance_enabled;
+    settingsExt._ins_plan = body.insurance_plan ?? null;
+    settingsExt._ins_alpha_low = body.insurance_alpha_low ?? null;
+    settingsExt._ins_alpha_high = body.insurance_alpha_high ?? null;
+  }
+
+  const weights = body.custom_weights || body.weights || {};
+  const chartData = body.chart_data || body.chart || [];
 
   const res = await c.env.DB.prepare(
     `INSERT INTO lab_scenarios (name, assets_json, weights_json, settings_json, summary_json, chart_json, user_id, created_at)
@@ -534,16 +663,16 @@ fipRouter.post("/lab/scenarios/save", async (c) => {
     .bind(
       name,
       JSON.stringify(body.assets || []),
-      JSON.stringify(body.weights || {}),
-      JSON.stringify(body.settings || {}),
+      JSON.stringify(weights),
+      JSON.stringify(settingsExt),
       JSON.stringify(body.summary || {}),
-      JSON.stringify(body.chart || {}),
+      JSON.stringify(Array.isArray(chartData) ? chartData : []),
       user?.id || null,
       now
     )
     .run();
 
-  return c.json({ success: true, id: res.meta.last_row_id });
+  return c.json({ success: true, id: res.meta.last_row_id, name, message: "方案已保存成功" });
 });
 
 fipRouter.delete("/lab/scenarios/:id", async (c) => {
@@ -552,52 +681,137 @@ fipRouter.delete("/lab/scenarios/:id", async (c) => {
   return c.json({ success: true, id });
 });
 
-// ── ILP Config ─────────────────────────────────────────────────────────────
-fipRouter.get("/ilp/config", async (c) => {
-  const user = await requireUser(c);
-  const row = await c.env.DB.prepare("SELECT * FROM user_ilp_config WHERE user_id = ?").bind(user.id).first<any>();
-
-  if (!row) {
-    return c.json({
-      age: 35,
-      gender: "M",
-      smoker: 0,
-      premium: 100000,
-      currency: "USD",
-      enrollment_rate: 0.05,
-    });
+// ── Rebalance ─────────────────────────────────────────────────────────────
+// 迁移到 Worker 时整段遗漏：前端 PortfolioView 的按钮与 RebalanceModal 两步流程
+// 一直存在，但四个端点全部 404。以下按旧 Python fip_router.py 的契约补齐。
+async function assertPortfolioWrite(c: any, user: any, portfolioId: number) {
+  if (user.role === "admin") return;
+  const row = (await c.env.DB.prepare("SELECT user_id FROM portfolios WHERE id = ?")
+    .bind(portfolioId)
+    .first()) as { user_id: string } | null;
+  if (row?.user_id && row.user_id !== user.id) {
+    throw new HttpError(403, "無權修改該組合");
   }
+}
 
-  return c.json({
+fipRouter.get("/portfolios/current_weights/:id", async (c) => {
+  const id = parseInt(c.req.param("id"), 10);
+  const engine = new PortfolioEngine(c.env.DB, id);
+  await engine.init();
+  return c.json(await engine.getCurrentWeights(c.req.query("as_of_date") || undefined));
+});
+
+fipRouter.get("/portfolios/rebalance/preview/:id", async (c) => {
+  const id = parseInt(c.req.param("id"), 10);
+  const engine = new PortfolioEngine(c.env.DB, id);
+  await engine.init();
+  return c.json(await engine.getRebalancePreview(c.req.query("as_of_date") || undefined));
+});
+
+fipRouter.post("/portfolios/rebalance/:id", async (c) => {
+  const user = await requireUser(c);
+  const id = parseInt(c.req.param("id"), 10);
+  await assertPortfolioWrite(c, user, id);
+  const body = await c.req.json<any>().catch(() => ({}));
+  const engine = new PortfolioEngine(c.env.DB, id);
+  await engine.init();
+  const result = await engine.executeRebalance(body?.as_of_date || undefined);
+  return c.json({ status: "success", ...result });
+});
+
+fipRouter.post("/portfolios/rebalance/undo/:id", async (c) => {
+  const user = await requireUser(c);
+  const id = parseInt(c.req.param("id"), 10);
+  await assertPortfolioWrite(c, user, id);
+  const row = await c.env.DB.prepare("SELECT MAX(date) as d FROM transactions WHERE portfolio_id = ?")
+    .bind(id)
+    .first<{ d: string | null }>();
+  if (!row?.d) return c.json({ status: "success", deleted: 0 });
+  const res = await c.env.DB.prepare("DELETE FROM transactions WHERE portfolio_id = ? AND date = ?")
+    .bind(id, row.d)
+    .run();
+  return c.json({ status: "success", deleted: res.meta.changes ?? 0, date: row.d });
+});
+
+// ── ILP Config ─────────────────────────────────────────────────────────────
+const ILP_DEFAULTS = {
+  age: 35,
+  gender: "M",
+  smoker: 0,
+  premium: 100000,
+  currency: "USD",
+  enrollment_rate: 0.05,
+};
+
+async function readIlpConfig(db: D1Database, userId: string) {
+  const row = await db.prepare("SELECT * FROM user_ilp_config WHERE user_id = ?").bind(userId).first<any>();
+  if (!row) return { ...ILP_DEFAULTS };
+  return {
     age: row.age,
     gender: row.gender,
     smoker: row.smoker,
     premium: row.premium,
     currency: row.currency,
     enrollment_rate: row.enrollment_rate,
-  });
-});
+  };
+}
 
-fipRouter.put("/ilp/config", async (c) => {
-  const user = await requireUser(c);
-  const body = await c.req.json<any>();
-  const now = new Date().toISOString();
-
-  await c.env.DB.prepare(
-    `INSERT OR REPLACE INTO user_ilp_config (user_id, age, gender, smoker, premium, currency, enrollment_rate, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-  )
+async function writeIlpConfig(db: D1Database, userId: string, body: any) {
+  await db
+    .prepare(
+      `INSERT OR REPLACE INTO user_ilp_config (user_id, age, gender, smoker, premium, currency, enrollment_rate, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+    )
     .bind(
-      user.id,
+      userId,
       Number(body.age || 35),
       body.gender || "M",
       body.smoker ? 1 : 0,
       Number(body.premium || 100000),
       body.currency || "USD",
       Number(body.enrollment_rate || 0.05),
-      now
+      new Date().toISOString()
     )
     .run();
+}
 
+/** 顾问只能操作分配给自己的客户；admin 不限。 */
+async function assertAdvisorAccess(c: any, user: any, targetUserId: string) {
+  if (user.role === "admin") return;
+  if (user.role !== "advisor") throw new HttpError(403, "僅顧問或管理員可存取客戶配置");
+  const row = await c.env.DB.prepare(
+    "SELECT 1 FROM advisor_clients WHERE advisor_id = ? AND client_id = ? AND is_active = 1"
+  )
+    .bind(user.id, targetUserId)
+    .first();
+  if (!row) throw new HttpError(403, "該客戶不在你的服務範圍內");
+}
+
+fipRouter.get("/ilp/config", async (c) => {
+  const user = await requireUser(c);
+  return c.json(await readIlpConfig(c.env.DB, user.id));
+});
+
+fipRouter.put("/ilp/config", async (c) => {
+  const user = await requireUser(c);
+  const body = await c.req.json<any>();
+  await writeIlpConfig(c.env.DB, user.id, body);
   return c.json({ success: true });
+});
+
+// 顾问 / Admin 代客读写（前端 ILPSettingsModal 在选中客户时走这条路径）
+fipRouter.get("/ilp/config/:target_user_id", async (c) => {
+  const user = await requireUser(c);
+  const targetUserId = c.req.param("target_user_id");
+  await assertAdvisorAccess(c, user, targetUserId);
+  return c.json(await readIlpConfig(c.env.DB, targetUserId));
+});
+
+fipRouter.put("/ilp/config/:target_user_id", async (c) => {
+  const user = await requireUser(c);
+  const targetUserId = c.req.param("target_user_id");
+  await assertAdvisorAccess(c, user, targetUserId);
+  const body = await c.req.json<any>();
+  await writeIlpConfig(c.env.DB, targetUserId, body);
+  return c.json({ status: "success", success: true, message: `客戶 ${targetUserId} 的 ILP 配置已更新` });
 });

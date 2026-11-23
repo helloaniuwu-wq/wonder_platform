@@ -28,6 +28,7 @@ export interface MonteCarloSettings {
   insurance_plan?: any[];
   insurance_alpha_low?: number;
   insurance_alpha_high?: number;
+  cma_mode?: "shrunk" | "ltcma" | "raw";
 }
 
 export interface StrategyLabAnalysisResult {
@@ -39,11 +40,20 @@ export interface StrategyLabAnalysisResult {
   correlation_matrix: Array<{ asset1: string; asset2: string; value: number }>;
   asset_stats: Record<
     string,
-    { expected_return: number; volatility: number; dividend_yield: number; name: string }
+    {
+      expected_return: number;
+      volatility: number;
+      dividend_yield: number;
+      name: string;
+      asset_class?: string;
+      raw_return?: number;
+      raw_volatility?: number;
+    }
   >;
   valid_assets: string[];
   data_points: number;
   data_warnings: string[];
+  cma_mode?: "shrunk" | "ltcma" | "raw";
   risk_contributions?: Record<string, number>;
   mc_target_label?: string;
   monte_carlo: {
@@ -81,6 +91,197 @@ export interface StrategyLabAnalysisResult {
     } | null;
     stressed_volatility: number | null;
   };
+}
+
+export interface AssetClassPrior {
+  class_key: string;
+  class_name: string;
+  expected_total_return: number; // 长期预期总收益率 (名义)
+  expected_volatility: number;   // 长期预期年化波动率
+  typical_dividend_yield: number;// 典型年化股息率
+}
+
+export const CMA_PRIORS: Record<string, AssetClassPrior> = {
+  US_TECH_GROWTH: {
+    class_key: "US_TECH_GROWTH",
+    class_name: "科技与成长股票",
+    expected_total_return: 0.110, // 11.0%
+    expected_volatility: 0.210,
+    typical_dividend_yield: 0.007,
+  },
+  US_BROAD_EQUITY: {
+    class_key: "US_BROAD_EQUITY",
+    class_name: "美股大盘宽基",
+    expected_total_return: 0.098, // 9.8% (标普百年名义中枢)
+    expected_volatility: 0.155,
+    typical_dividend_yield: 0.015,
+  },
+  US_DIVIDEND_VALUE: {
+    class_key: "US_DIVIDEND_VALUE",
+    class_name: "美股高股息与价值",
+    expected_total_return: 0.088, // 8.8%
+    expected_volatility: 0.140,
+    typical_dividend_yield: 0.033,
+  },
+  COVERED_CALL_INCOME: {
+    class_key: "COVERED_CALL_INCOME",
+    class_name: "备兑期权高现金流策略",
+    expected_total_return: 0.082, // 8.2% (长期总回报略低于标的指数，高分红低资本利得)
+    expected_volatility: 0.125,
+    typical_dividend_yield: 0.080,
+  },
+  GLOBAL_DEVELOPED_EQUITY: {
+    class_key: "GLOBAL_DEVELOPED_EQUITY",
+    class_name: "成熟市场股票 (非美/欧日)",
+    expected_total_return: 0.078, // 7.8%
+    expected_volatility: 0.165,
+    typical_dividend_yield: 0.032,
+  },
+  EMERGING_MARKETS_EQUITY: {
+    class_key: "EMERGING_MARKETS_EQUITY",
+    class_name: "新兴市场股票",
+    expected_total_return: 0.085, // 8.5%
+    expected_volatility: 0.205,
+    typical_dividend_yield: 0.026,
+  },
+  CHINA_EQUITY: {
+    class_key: "CHINA_EQUITY",
+    class_name: "中国核心资产 (A股/港股)",
+    expected_total_return: 0.075, // 7.5%
+    expected_volatility: 0.190,
+    typical_dividend_yield: 0.035,
+  },
+  REITS_REAL_ESTATE: {
+    class_key: "REITS_REAL_ESTATE",
+    class_name: "房地产信托 (REITs)",
+    expected_total_return: 0.080, // 8.0%
+    expected_volatility: 0.180,
+    typical_dividend_yield: 0.038,
+  },
+  GOLD_COMMODITIES: {
+    class_key: "GOLD_COMMODITIES",
+    class_name: "实物黄金与大宗商品",
+    expected_total_return: 0.058, // 5.8%
+    expected_volatility: 0.155,
+    typical_dividend_yield: 0.000,
+  },
+  HIGH_YIELD_CREDIT: {
+    class_key: "HIGH_YIELD_CREDIT",
+    class_name: "高收益信用债",
+    expected_total_return: 0.062, // 6.2%
+    expected_volatility: 0.095,
+    typical_dividend_yield: 0.060,
+  },
+  BROAD_BONDS: {
+    class_key: "BROAD_BONDS",
+    class_name: "综合投资级债券",
+    expected_total_return: 0.043, // 4.3%
+    expected_volatility: 0.055,
+    typical_dividend_yield: 0.038,
+  },
+  CASH_EQUIVALENTS: {
+    class_key: "CASH_EQUIVALENTS",
+    class_name: "现金及货币市场",
+    expected_total_return: 0.035, // 3.5%
+    expected_volatility: 0.015,
+    typical_dividend_yield: 0.035,
+  },
+  GLOBAL_EQUITY_GENERAL: {
+    class_key: "GLOBAL_EQUITY_GENERAL",
+    class_name: "全球通用权益资产",
+    expected_total_return: 0.088,
+    expected_volatility: 0.165,
+    typical_dividend_yield: 0.020,
+  },
+};
+
+export function classifyAsset(isin: string, name?: string): AssetClassPrior {
+  const upper = String(isin || "").toUpperCase().trim();
+  const nameUpper = String(name || "").toUpperCase().trim();
+
+  if (upper.startsWith("CASH_") || ["BIL", "SGOV", "SHV", "ICSH", "GBIL"].includes(upper)) {
+    return CMA_PRIORS.CASH_EQUIVALENTS;
+  }
+  if (["GLD", "IAU", "SGOL", "BAR", "GLDM"].includes(upper) || nameUpper.includes("GOLD")) {
+    return CMA_PRIORS.GOLD_COMMODITIES;
+  }
+  if (["DBC", "GSG", "PDBC", "USO", "BNO", "COMT"].includes(upper) || nameUpper.includes("COMMODIT")) {
+    return CMA_PRIORS.GOLD_COMMODITIES;
+  }
+  if (
+    ["JEPI", "JEPQ", "DIVO", "XYLD", "QYLD", "RYLD", "GPIQ", "GPIX", "SVOL", "SPYI", "QQQI"].includes(upper) ||
+    nameUpper.includes("PREMIUM INCOME") ||
+    nameUpper.includes("COVERED CALL") ||
+    nameUpper.includes("ENHANCED DIVIDEND")
+  ) {
+    return CMA_PRIORS.COVERED_CALL_INCOME;
+  }
+  if (["VNQ", "SCHH", "IYR", "XLRE", "REM"].includes(upper) || nameUpper.includes("REIT") || nameUpper.includes("REAL ESTATE")) {
+    return CMA_PRIORS.REITS_REAL_ESTATE;
+  }
+  if (["HYG", "JNK", "USHY", "BKLN", "FALN", "ANGL"].includes(upper) || nameUpper.includes("HIGH YIELD") || nameUpper.includes("JUNK")) {
+    return CMA_PRIORS.HIGH_YIELD_CREDIT;
+  }
+  if (
+    ["BND", "AGG", "TLT", "IEF", "BNDX", "VGIT", "VTEB", "LQD", "GOVT", "SHY"].includes(upper) ||
+    nameUpper.includes("BOND") ||
+    nameUpper.includes("TREASURY") ||
+    nameUpper.includes("FIXED INCOME")
+  ) {
+    return CMA_PRIORS.BROAD_BONDS;
+  }
+  if (
+    upper.endsWith(".SZ") ||
+    upper.endsWith(".SS") ||
+    upper.endsWith(".HK") ||
+    ["ASHR", "FXI", "KWEB", "MCHI", "CQQQ", "YINN"].includes(upper) ||
+    nameUpper.includes("CHINA") ||
+    nameUpper.includes("HANG SENG") ||
+    nameUpper.includes("CSI") ||
+    nameUpper.includes("HK STOCK CONNECT")
+  ) {
+    return CMA_PRIORS.CHINA_EQUITY;
+  }
+  if (
+    ["QQQ", "VUG", "XLK", "IYW", "SMH", "SOXX", "ARKK", "QTEC", "FDN", "IGV", "IWF"].includes(upper) ||
+    nameUpper.includes("TECH") ||
+    nameUpper.includes("NASDAQ") ||
+    nameUpper.includes("GROWTH") ||
+    nameUpper.includes("SEMICONDUCTOR")
+  ) {
+    return CMA_PRIORS.US_TECH_GROWTH;
+  }
+  if (
+    ["SCHD", "VYM", "VIG", "DGRO", "NOBL", "DVY", "HDV", "COWZ", "SDY", "IWD"].includes(upper) ||
+    nameUpper.includes("DIVIDEND") ||
+    nameUpper.includes("VALUE") ||
+    nameUpper.includes("EQUITY INCOME")
+  ) {
+    return CMA_PRIORS.US_DIVIDEND_VALUE;
+  }
+  if (["VWO", "EEM", "IEMG"].includes(upper) || nameUpper.includes("EMERGING")) {
+    return CMA_PRIORS.EMERGING_MARKETS_EQUITY;
+  }
+  if (
+    ["EFV", "EFA", "VEA", "IEFA", "SCZ"].includes(upper) ||
+    upper.endsWith(".L") ||
+    upper.endsWith(".PA") ||
+    upper.endsWith(".DE") ||
+    upper.endsWith(".T") ||
+    nameUpper.includes("EAFE") ||
+    nameUpper.includes("DEVELOPED")
+  ) {
+    return CMA_PRIORS.GLOBAL_DEVELOPED_EQUITY;
+  }
+  if (
+    ["SPY", "VOO", "IVV", "VTI", "ITOT", "DIA", "IWM", "RSP", "SCHX"].includes(upper) ||
+    nameUpper.includes("S&P 500") ||
+    nameUpper.includes("TOTAL STOCK") ||
+    nameUpper.includes("RUSSELL")
+  ) {
+    return CMA_PRIORS.US_BROAD_EQUITY;
+  }
+  return CMA_PRIORS.GLOBAL_EQUITY_GENERAL;
 }
 
 function calculateIrr(cashFlows: number[], years: number): number {
@@ -121,7 +322,8 @@ export class StrategyLab {
     maxWeight: number = 0.35,
     customWeights?: Record<string, number>,
     mcSettings?: MonteCarloSettings,
-    riskFreeRate: number = 0.04
+    riskFreeRate: number = 0.04,
+    cmaMode: "shrunk" | "ltcma" | "raw" = "shrunk"
   ): Promise<StrategyLabAnalysisResult> {
     const warnings: string[] = [];
     // 去重 + 去空：前端允许重复添加同一 ISIN，重复会让权重字典塌缩成负权重
@@ -165,8 +367,17 @@ export class StrategyLab {
     commonDates.sort();
 
     if (commonDates.length < 30) {
-      // 若强交集过短，退化为第一只资产日期，其余资产采用最近有效值填充 (ffill)
-      commonDates = Object.keys(rawSeriesMap[validIsins[0]]).sort();
+      // 若强交集过短，退化为拥有最长交易日资产的日期列表，其余资产采用最近有效值填充 (ffill)
+      let longestIsin = validIsins[0];
+      for (const isin of validIsins) {
+        if (
+          Object.keys(rawSeriesMap[isin] || {}).length >
+          Object.keys(rawSeriesMap[longestIsin] || {}).length
+        ) {
+          longestIsin = isin;
+        }
+      }
+      commonDates = Object.keys(rawSeriesMap[longestIsin] || {}).sort();
     }
 
     const alignedPrices: Record<string, number[]> = {};
@@ -194,7 +405,8 @@ export class StrategyLab {
 
     const tradingDays = Math.max(1, numDays - 1);
 
-    // 3. 计算单资产均值、波动率与协方差矩阵
+    // 3. 计算单资产均值、波动率与协方差矩阵（结合大类资产长期基准进行收缩校准）
+    const effectiveCmaMode = mcSettings?.cma_mode || cmaMode || "shrunk";
     const meanReturns: Record<string, number> = {};
     const vols: Record<string, number> = {};
     const assetStats: Record<string, any> = {};
@@ -202,13 +414,10 @@ export class StrategyLab {
     for (const isin of validIsins) {
       const r = returnsMatrix[isin];
       const meanDaily = r.reduce((a, b) => a + b, 0) / tradingDays;
-      const annualizedReturn = meanDaily * 252;
+      const sampleAnnualReturn = meanDaily * 252;
       const varianceDaily =
         r.reduce((acc, v) => acc + Math.pow(v - meanDaily, 2), 0) / Math.max(1, tradingDays - 1);
-      const annualizedVol = Math.sqrt(varianceDaily * 252);
-
-      meanReturns[isin] = annualizedReturn;
-      vols[isin] = annualizedVol;
+      const sampleAnnualVol = Math.sqrt(varianceDaily * 252);
 
       // 尝试获取资产名称与真实股息率
       let assetName = isin;
@@ -224,11 +433,41 @@ export class StrategyLab {
         // ignore
       }
 
+      // 获取资产大类基准先验 (CMA Prior)
+      const prior = classifyAsset(isin, assetName);
+
+      let finalAnnualReturn = sampleAnnualReturn;
+      let finalAnnualVol = sampleAnnualVol;
+
+      if (effectiveCmaMode === "ltcma") {
+        // 保守模式：100% 采用大类资产百年跨周期统计假设
+        finalAnnualReturn = prior.expected_total_return;
+        finalAnnualVol = prior.expected_volatility;
+      } else if (effectiveCmaMode === "shrunk") {
+        // 推荐模式：贝叶斯均值收缩（50% 历史短期样本 + 50% 跨周期长期中枢）
+        finalAnnualReturn = 0.5 * sampleAnnualReturn + 0.5 * prior.expected_total_return;
+        finalAnnualVol = 0.5 * sampleAnnualVol + 0.5 * prior.expected_volatility;
+      } else {
+        // "raw" 纯历史样本模式
+        finalAnnualReturn = sampleAnnualReturn;
+        finalAnnualVol = sampleAnnualVol;
+      }
+
+      // 合理性走廊约束，避免个别异常资产产生崩塌
+      finalAnnualReturn = Math.max(-0.15, Math.min(0.25, finalAnnualReturn));
+      finalAnnualVol = Math.max(0.01, Math.min(0.50, finalAnnualVol));
+
+      meanReturns[isin] = finalAnnualReturn;
+      vols[isin] = finalAnnualVol;
+
       assetStats[isin] = {
-        expected_return: Math.round(annualizedReturn * 10000) / 10000,
-        volatility: Math.round(annualizedVol * 10000) / 10000,
+        expected_return: Math.round(finalAnnualReturn * 10000) / 10000,
+        volatility: Math.round(finalAnnualVol * 10000) / 10000,
         dividend_yield: Math.round(divYield * 10000) / 10000,
         name: assetName,
+        asset_class: prior.class_name,
+        raw_return: Math.round(sampleAnnualReturn * 10000) / 10000,
+        raw_volatility: Math.round(sampleAnnualVol * 10000) / 10000,
       };
     }
 
@@ -252,15 +491,16 @@ export class StrategyLab {
           covDaily += (rA[i] - mA) * (rB[i] - mB);
         }
         covDaily = covDaily / Math.max(1, tradingDays - 1);
-        covMatrix[a][b] = covDaily * 252;
-
         const denom = Math.sqrt(varA * varB);
         const corrVal = denom > 0 ? covDaily / (Math.sqrt(varA / (tradingDays - 1)) * Math.sqrt(varB / (tradingDays - 1))) : 1.0;
+        const boundedCorr = Math.min(1.0, Math.max(-1.0, corrVal));
         corrList.push({
           asset1: a,
           asset2: b,
-          value: Math.round(Math.min(1.0, Math.max(-1.0, corrVal)) * 100) / 100,
+          value: Math.round(boundedCorr * 100) / 100,
         });
+        // 协方差矩阵按校准后的单资产波动率与历史相关系数严格重构，保证数学严谨一致
+        covMatrix[a][b] = boundedCorr * vols[a] * vols[b];
       }
     }
 
@@ -537,6 +777,13 @@ export class StrategyLab {
     }
     portfolioDivYield = Math.max(0, Math.min(0.15, portfolioDivYield));
 
+    // 关键数学修正：
+    // 现代资产配置总回报 = 资本利得 (Price Return) + 股息收益 (Dividend Yield)
+    // 蒙特卡洛模型在循环内已通过 divIncome 将股息计入现金流（优先抵消提领，结余全额再投资加入 pStart）。
+    // 因此，资产价格的几何布朗运动 (GBM) 漂移项应为资产本身的资本利得增长项 (Price Return Drift = Total Return - Dividend Yield)，
+    // 彻底消除「分红再投累加本金 + 价格又按总回报全速复利」导致的双重计提虚高！
+    const simPriceDrift = Math.max(-0.05, simRet - portfolioDivYield);
+
     const numSims = 2000;
     const paths: number[][] = [];
     const actualDrawPaths: number[][] = [];
@@ -584,7 +831,7 @@ export class StrategyLab {
         const u2 = Math.random();
         const z = Math.sqrt(-2.0 * Math.log(u1 + 1e-12)) * Math.cos(2.0 * Math.PI * u2);
 
-        const r = Math.exp(simRet - 0.5 * simVol * simVol + simVol * z) - 1;
+        const r = Math.exp(simPriceDrift - 0.5 * simVol * simVol + simVol * z) - 1;
         curr = Math.max(0, pStart * (1 + r));
 
         if (curr > peak) peak = curr;
@@ -787,6 +1034,7 @@ export class StrategyLab {
       valid_assets: validIsins,
       data_points: tradingDays,
       data_warnings: warnings,
+      cma_mode: effectiveCmaMode,
       risk_contributions: riskContributions,
       mc_target_label: mcTargetLabel,
       monte_carlo: {

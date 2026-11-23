@@ -1,6 +1,8 @@
 import { Hono } from "hono";
 import { Env, Variables } from "../types";
 import { assertCompanyAccess, generateUuid, HttpError, requireUser } from "../utils/auth";
+import { callVisionApi } from "../services/vision";
+import { calculateFiscalYear } from "../services/finance";
 
 export const expensesRouter = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -20,12 +22,7 @@ const DEFAULT_CATEGORIES = [
   { code: "OTHER", name_zh: "其他", name_en: "Other", hk_tax_deductible: "review", hk_tax_note: "需人工確認是否符合抵扣條件", sort_order: 13 },
 ];
 
-export function calculateFiscalYear(d: Date): string {
-  const year = d.getFullYear();
-  const month = d.getMonth() + 1;
-  const start = month >= 4 ? year : year - 1;
-  return `${start}-${String(start + 1).slice(-2)}`;
-}
+export { calculateFiscalYear };
 
 const FALLBACK_RATES: Record<string, number> = {
   HKD: 1.0,
@@ -197,6 +194,14 @@ expensesRouter.get("/", async (c) => {
 
 // ── Upload Receipts (AI Scan + R2 Put) ──────────────────────────────────────
 const EXTRACT_PROMPT = `你是專業的會計助手，需要從收據/發票圖片中提取結構化數據。
+
+【辨識規則】
+- 只填寫圖片上確實能看清的內容，禁止猜測、推算或套用常見稅率補全；看不清的字段一律填 null。
+- 金額請照抄單據原文，不要自行加總或反推稅額。amount_original 填「小計 / Subtotal」（未加服務費或稅前），若單據沒有小計就填 null；total_amount 填實付總額（Amount / Total，含服務費與稅），兩者不要混用。
+- 幣種與日期以單據為準（香港收據通常 HKD，內地發票 CNY）。
+- 若金額、日期、商戶任一項看不清，confidence 必須低於 50。
+- 下列 JSON 只是字段格式說明，裡面的數字不是建議值，不要照抄。
+
 請認真識別並以純 JSON 格式返回，不要有任何其他文字：
 {
   "receipt_type": "cn_vat_special|cn_vat_general|cn_ordinary|hk_receipt|other",
@@ -205,14 +210,14 @@ const EXTRACT_PROMPT = `你是專業的會計助手，需要從收據/發票圖�
   "vendor_tax_id": "納稅人識別號（僅內地發票有，其他填null）",
   "currency": "CNY|HKD|USD|EUR|...",
   "amount_original": 0.00,
-  "tax_rate": 0.09,
+  "tax_rate": 0.00,
   "tax_amount": 0.00,
   "total_amount": 0.00,
   "cn_invoice_code": "發票代碼（僅內地發票有，其他填null）",
   "cn_invoice_number": "發票號碼（僅內地發票有，其他填null）",
   "description": "消費內容簡述",
   "suggested_category": "MEAL|TRAVEL|OFFICE|MARKETING|STAFF|PROFESSIONAL|EQUIPMENT|UTILITIES|RENT|INSURANCE|ENTERTAINMENT|OTHER",
-  "confidence": 85
+  "confidence": 0
 }`;
 
 expensesRouter.post("/upload", async (c) => {
@@ -251,61 +256,37 @@ expensesRouter.post("/upload", async (c) => {
         continue;
       }
 
-      // Store in R2
+      const uint8 = new Uint8Array(buffer);
+      let binary = "";
+      for (let i = 0; i < uint8.length; i++) binary += String.fromCharCode(uint8[i]);
+      const base64Data = btoa(binary);
+      // 部分系统拖入的 PDF 不带 file.type，按扩展名兜底判断
+      const isPdfFile = /\.pdf$/i.test(filename) || file.type === "application/pdf";
+      const mimeType = isPdfFile ? "application/pdf" : (file.type || "image/jpeg");
+      const dataUrl = `data:${mimeType};base64,${base64Data}`;
+
+      // AI 提取失败就明确报错，不再静默写入空记录
+      let aiData: Record<string, any>;
+      let rawText: string;
+      let modelUsed = "";
+      try {
+        const vision = await callVisionApi(c.env, EXTRACT_PROMPT, dataUrl, { filename });
+        aiData = vision.data;
+        rawText = vision.rawText;
+        modelUsed = vision.modelUsed;
+      } catch (err: any) {
+        results.push({ filename, status: "error", error: `AI 識別失敗：${err.message}` });
+        continue;
+      }
+
+      // 识别成功后才归档到 R2，避免留下孤儿文件
       const monthPrefix = new Date().toISOString().slice(0, 7);
       const uniqueSuffix = generateUuid().slice(0, 8);
       const ext = filename.split(".").pop() || "jpg";
       const storedKey = `receipts/${monthPrefix}/${uniqueSuffix}_${filename}`;
       await c.env.BUCKET.put(storedKey, buffer, {
-        httpMetadata: { contentType: file.type || "image/jpeg" },
+        httpMetadata: { contentType: mimeType },
       });
-
-      // Call Vision API via OpenRouter
-      const uint8 = new Uint8Array(buffer);
-      let binary = "";
-      for (let i = 0; i < uint8.length; i++) binary += String.fromCharCode(uint8[i]);
-      const base64Data = btoa(binary);
-
-      const mimeType = file.type || (filename.endsWith(".pdf") ? "application/pdf" : "image/jpeg");
-      const dataUrl = `data:${mimeType};base64,${base64Data}`;
-
-      let aiData: any = {};
-      let rawText = "";
-
-      if (c.env.OPENROUTER_API_KEY) {
-        const aiRes = await fetch(`${c.env.OPENROUTER_BASE_URL || "https://openrouter.ai/api/v1"}/chat/completions`, {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${c.env.OPENROUTER_API_KEY}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            model: c.env.OPENROUTER_VISION_MODEL || "google/gemini-2.0-flash-001",
-            messages: [
-              {
-                role: "user",
-                content: [
-                  { type: "text", text: EXTRACT_PROMPT },
-                  { type: "image_url", image_url: { url: dataUrl } },
-                ],
-              },
-            ],
-            max_tokens: 1024,
-            temperature: 0.1,
-          }),
-        });
-
-        if (aiRes.ok) {
-          const aiJson = await aiRes.json<any>();
-          rawText = aiJson.choices?.[0]?.message?.content || "";
-          const match = rawText.match(/\{[\s\S]*\}/);
-          if (match) {
-            try {
-              aiData = JSON.parse(match[0]);
-            } catch {}
-          }
-        }
-      }
 
       const receiptDate = aiData.receipt_date || new Date().toISOString().slice(0, 10);
       const fiscalYear = calculateFiscalYear(new Date(receiptDate));
@@ -382,6 +363,7 @@ expensesRouter.post("/upload", async (c) => {
         currency,
         receipt_date: receiptDate,
         fiscal_year: fiscalYear,
+        model_used: modelUsed,
         ai_confidence: aiData.confidence || null,
         expense_id: expenseId,
       });

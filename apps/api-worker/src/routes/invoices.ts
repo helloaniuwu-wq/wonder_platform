@@ -1,9 +1,42 @@
 import { Context, Hono } from "hono";
+import fontkit from "@pdf-lib/fontkit";
 import { PDFDocument, rgb, StandardFonts } from "pdf-lib";
 import { Env, Variables } from "../types";
 import { assertCompanyAccess, generateUuid, HttpError, requireUser } from "../utils/auth";
 
 export const invoicesRouter = new Hono<{ Bindings: Env; Variables: Variables }>();
+
+// ── PDF 中文字體 ──────────────────────────────────────────────────────────
+// pdf-lib 內建的 Helvetica 是 WinAnsi 編碼，遇到中文會直接拋
+// "WinAnsi cannot encode ..."。這裡從 R2 讀開源 Noto Sans CJK（SIL OFL）的
+// TrueType 版本，覆蓋 CJK 基本區全部漢字 + 繁體常用字 + ASCII。
+//
+// ⚠️ 兩個實測踩過的坑，改動前務必看：
+// 1. CFF/OTF 字體經 pdf-lib 子集化後，MuPDF / poppler 報 "unknown file format"
+//    而無法載入，中文只是靠系統字體回退才顯示；必須用 TrueType (glyf)。
+// 2. 即使換成 TTF，pdf-lib 的 `subset: true` 在多次 drawText 時仍會讓 glyph ID
+//    映射錯亂：文字層完整、但渲染出來大量缺字。所以這裡用 `subset: false`
+//    完整嵌入，代價是 PDF 約 6MB；純 ASCII 文字另外走 Helvetica，避免中文字體
+//    的全形字距把金額、日期拉開。
+const CJK_FONT_KEY = "fonts/NotoSansCJK-BMP.ttf";
+let cachedCjkFont: ArrayBuffer | null = null;
+
+async function loadCjkFont(env: Env): Promise<ArrayBuffer | null> {
+  if (cachedCjkFont) return cachedCjkFont;
+  try {
+    const object = await env.BUCKET.get(CJK_FONT_KEY);
+    if (!object) return null;
+    cachedCjkFont = await object.arrayBuffer();
+    return cachedCjkFont;
+  } catch {
+    return null;
+  }
+}
+
+/** 字體資源缺失時的降級：Helvetica 只能編碼 ASCII，其餘換成 ?，避免 500。 */
+function winAnsiSafe(text: string): string {
+  return text.replace(/[^\x20-\x7E]/g, "?");
+}
 
 function generateInvoiceNumber(invoiceType: string, count: number): string {
   const prefix = invoiceType === "invoice" ? "INV" : "QUO";
@@ -534,14 +567,39 @@ invoicesRouter.get("/invoices/:invoice_id/pdf", async (c) => {
 
   const pdfDoc = await PDFDocument.create();
   const page = pdfDoc.addPage([595.28, 841.89]); // A4
+
+  const cjkBytes = await loadCjkFont(c.env);
+  pdfDoc.registerFontkit(fontkit);
   const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
   const fontBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+  // 不用 subset:true，原因見上方說明。
+  const cjkFont = cjkBytes ? await pdfDoc.embedFont(cjkBytes, { subset: false }) : null;
+
+  type DrawTextOptions = NonNullable<Parameters<typeof page.drawText>[1]>;
+  // ⚠️ 每次 drawText 都傳 font 會讓 pdf-lib 重複註冊字體資源，
+  // subset:false 的 6MB 字體被嵌二十幾次會直接觸發 Cloudflare 1102。
+  // 這裡只在字體切換時 setFont 一次，後續呼叫不再帶 font 參數。
+  let activeFont: typeof font | null = null;
+  const drawText = (text: string, options: DrawTextOptions) => {
+    const needsCjk = /[^\x20-\x7E]/.test(text);
+    let chosen = font;
+    if (needsCjk && cjkFont) chosen = cjkFont;
+    else if (options.font === fontBold) chosen = fontBold;
+
+    if (chosen !== activeFont) {
+      page.setFont(chosen);
+      activeFont = chosen;
+    }
+    // 字體資源缺失時降級：非 ASCII 換成 ?，避免 WinAnsi 編碼直接拋錯。
+    const content = needsCjk && !cjkFont ? winAnsiSafe(text) : text;
+    return page.drawText(content, { ...options, font: undefined });
+  };
 
   const isInvoice = inv.invoice_type === "invoice";
   const title = isInvoice ? "INVOICE" : "QUOTATION";
 
   // Header
-  page.drawText(String(company.name_en || company.name_zh || "WONDER COMPANY"), {
+  drawText(String(company.name_en || company.name_zh || "WONDER COMPANY"), {
     x: 40,
     y: 800,
     size: 16,
@@ -550,7 +608,7 @@ invoicesRouter.get("/invoices/:invoice_id/pdf", async (c) => {
   });
 
   if (company.address) {
-    page.drawText(String(company.address), {
+    drawText(String(company.address), {
       x: 40,
       y: 780,
       size: 9,
@@ -559,7 +617,7 @@ invoicesRouter.get("/invoices/:invoice_id/pdf", async (c) => {
     });
   }
 
-  page.drawText(title, {
+  drawText(title, {
     x: 420,
     y: 800,
     size: 24,
@@ -567,7 +625,7 @@ invoicesRouter.get("/invoices/:invoice_id/pdf", async (c) => {
     color: rgb(0.15, 0.25, 0.45),
   });
 
-  page.drawText(`No: ${inv.invoice_number}`, {
+  drawText(`No: ${inv.invoice_number}`, {
     x: 420,
     y: 780,
     size: 10,
@@ -575,7 +633,7 @@ invoicesRouter.get("/invoices/:invoice_id/pdf", async (c) => {
     color: rgb(0.3, 0.3, 0.3),
   });
 
-  page.drawText(`Date: ${inv.issue_date?.slice(0, 10) || ""}`, {
+  drawText(`Date: ${inv.issue_date?.slice(0, 10) || ""}`, {
     x: 420,
     y: 765,
     size: 10,
@@ -584,10 +642,10 @@ invoicesRouter.get("/invoices/:invoice_id/pdf", async (c) => {
   });
 
   // Client Info
-  page.drawText("BILL TO:", { x: 40, y: 720, size: 10, font: fontBold, color: rgb(0.2, 0.2, 0.2) });
-  page.drawText(String(inv.client_name || ""), { x: 40, y: 705, size: 11, font, color: rgb(0.1, 0.1, 0.1) });
+  drawText("BILL TO:", { x: 40, y: 720, size: 10, font: fontBold, color: rgb(0.2, 0.2, 0.2) });
+  drawText(String(inv.client_name || ""), { x: 40, y: 705, size: 11, font, color: rgb(0.1, 0.1, 0.1) });
   if (inv.client_address) {
-    page.drawText(String(inv.client_address), { x: 40, y: 690, size: 9, font, color: rgb(0.4, 0.4, 0.4) });
+    drawText(String(inv.client_address), { x: 40, y: 690, size: 9, font, color: rgb(0.4, 0.4, 0.4) });
   }
 
   // Items Table
@@ -599,10 +657,10 @@ invoicesRouter.get("/invoices/:invoice_id/pdf", async (c) => {
     color: rgb(0.2, 0.3, 0.5),
   });
 
-  page.drawText("Description", { x: 45, y: currentY, size: 10, font: fontBold });
-  page.drawText("Qty", { x: 340, y: currentY, size: 10, font: fontBold });
-  page.drawText("Price", { x: 400, y: currentY, size: 10, font: fontBold });
-  page.drawText("Amount", { x: 480, y: currentY, size: 10, font: fontBold });
+  drawText("Description", { x: 45, y: currentY, size: 10, font: fontBold });
+  drawText("Qty", { x: 340, y: currentY, size: 10, font: fontBold });
+  drawText("Price", { x: 400, y: currentY, size: 10, font: fontBold });
+  drawText("Amount", { x: 480, y: currentY, size: 10, font: fontBold });
 
   page.drawLine({
     start: { x: 40, y: currentY - 8 },
@@ -613,15 +671,15 @@ invoicesRouter.get("/invoices/:invoice_id/pdf", async (c) => {
 
   currentY -= 25;
   for (const it of inv.items) {
-    page.drawText(String(it.description || ""), { x: 45, y: currentY, size: 9, font });
-    page.drawText(String(it.quantity || "1"), { x: 340, y: currentY, size: 9, font });
-    page.drawText(`${inv.currency} ${Number(it.unit_price || 0).toFixed(2)}`, {
+    drawText(String(it.description || ""), { x: 45, y: currentY, size: 9, font });
+    drawText(String(it.quantity || "1"), { x: 340, y: currentY, size: 9, font });
+    drawText(`${inv.currency} ${Number(it.unit_price || 0).toFixed(2)}`, {
       x: 400,
       y: currentY,
       size: 9,
       font,
     });
-    page.drawText(`${inv.currency} ${Number(it.amount || 0).toFixed(2)}`, {
+    drawText(`${inv.currency} ${Number(it.amount || 0).toFixed(2)}`, {
       x: 480,
       y: currentY,
       size: 9,
@@ -639,18 +697,18 @@ invoicesRouter.get("/invoices/:invoice_id/pdf", async (c) => {
     color: rgb(0.7, 0.7, 0.7),
   });
 
-  page.drawText("Subtotal:", { x: 360, y: currentY, size: 10, font });
-  page.drawText(`${inv.currency} ${Number(inv.subtotal || 0).toFixed(2)}`, { x: 460, y: currentY, size: 10, font });
+  drawText("Subtotal:", { x: 360, y: currentY, size: 10, font });
+  drawText(`${inv.currency} ${Number(inv.subtotal || 0).toFixed(2)}`, { x: 460, y: currentY, size: 10, font });
   currentY -= 18;
 
   if (Number(inv.discount_amount) > 0) {
-    page.drawText("Discount:", { x: 360, y: currentY, size: 10, font });
-    page.drawText(`-${inv.currency} ${Number(inv.discount_amount).toFixed(2)}`, { x: 460, y: currentY, size: 10, font });
+    drawText("Discount:", { x: 360, y: currentY, size: 10, font });
+    drawText(`-${inv.currency} ${Number(inv.discount_amount).toFixed(2)}`, { x: 460, y: currentY, size: 10, font });
     currentY -= 18;
   }
 
-  page.drawText("Total Due:", { x: 360, y: currentY, size: 11, font: fontBold, color: rgb(0.15, 0.25, 0.45) });
-  page.drawText(`${inv.currency} ${Number(inv.total_amount || 0).toFixed(2)}`, {
+  drawText("Total Due:", { x: 360, y: currentY, size: 11, font: fontBold, color: rgb(0.15, 0.25, 0.45) });
+  drawText(`${inv.currency} ${Number(inv.total_amount || 0).toFixed(2)}`, {
     x: 460,
     y: currentY,
     size: 11,
