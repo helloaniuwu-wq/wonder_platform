@@ -3,7 +3,8 @@ import { optimizeFormData } from '../utils/uploadImage.js'
 
 // 静态文件（R2 凭证图片、发票 PDF）都在 Worker 上，不能拼成 Pages 的相对路径，
 // 否则会被 Pages 的 SPA fallback 返回 index.html，浏览器当图片解码就失败。
-export const API_BASE = (import.meta.env.VITE_API_BASE_URL || 'https://wonder-api-worker.helloaniuwu.workers.dev').replace(/\/$/, '')
+// 生产构建由 vite.config.js 保证 VITE_API_BASE_URL 已设置；本地开发默认连本机 `wrangler dev`。
+export const API_BASE = (import.meta.env.VITE_API_BASE_URL || (import.meta.env.DEV ? 'http://localhost:8000' : '')).replace(/\/$/, '')
 const api = axios.create({ baseURL: API_BASE })
 
 api.interceptors.request.use((config) => {

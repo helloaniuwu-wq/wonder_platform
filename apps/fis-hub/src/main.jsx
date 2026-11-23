@@ -5,7 +5,8 @@ import App from './App.jsx'
 import { LangProvider } from './i18n/LangContext.jsx'
 import { ThemeProvider } from './theme/ThemeContext.jsx'
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL || 'https://wonder-api-worker.helloaniuwu.workers.dev';
+// 生产构建由 vite.config.js 保证 VITE_API_BASE_URL 已设置；本地开发默认连本机 `wrangler dev`。
+const API_BASE = (import.meta.env.VITE_API_BASE_URL || (import.meta.env.DEV ? 'http://localhost:8000' : '')).replace(/\/$/, '');
 if (API_BASE) {
   const originalFetch = window.fetch;
   window.fetch = (url, options) => {
