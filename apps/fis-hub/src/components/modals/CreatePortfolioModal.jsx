@@ -14,14 +14,14 @@ const CreatePortfolioModal = ({
         <div className="modal-overlay">
           <div className="glass-card modal-content" onClick={e => e.stopPropagation()} style={{position: 'relative'}}>
             <button 
+              type="button"
+              aria-label="Close modal"
               onClick={() => setShowModal(false)}
               style={{
                 position: 'absolute', top: '15px', right: '15px', 
-                background: 'transparent', border: 'none', color: 'rgba(255,255,255,0.4)', 
-                fontSize: '1.5rem', cursor: 'pointer', transition: 'color 0.2s'
+                background: 'transparent', border: 'none', color: 'var(--text-muted)', 
+                fontSize: '1.25rem', cursor: 'pointer', transition: 'color 0.2s'
               }}
-              onMouseOver={e => e.target.style.color = '#fff'}
-              onMouseOut={e => e.target.style.color = 'rgba(255,255,255,0.4)'}
             >✕</button>
             <h2 style={{marginTop: 0}}>New Portfolio Strategy</h2>
             <form onSubmit={handleCreatePortfolio}>

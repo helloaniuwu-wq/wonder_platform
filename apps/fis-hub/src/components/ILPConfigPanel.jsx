@@ -187,9 +187,9 @@ const ILPConfigPanel = ({
 
   return (
     <div style={{
-      background: 'rgba(99, 102, 241, 0.05)',
-      border: '1px solid rgba(99, 102, 241, 0.2)',
-      borderRadius: '8px',
+      background: 'var(--surface-card)',
+      border: '1px solid var(--border-subtle)',
+      borderRadius: 'var(--card-radius)',
       padding: '16px',
       marginTop: '12px',
     }}>
@@ -197,45 +197,45 @@ const ILPConfigPanel = ({
       <div style={{
         display: 'flex', gap: '12px', flexWrap: 'wrap', alignItems: 'flex-end',
         marginBottom: '16px', paddingBottom: '14px',
-        borderBottom: '1px solid rgba(255,255,255,0.08)'
+        borderBottom: '1px solid var(--border-subtle)'
       }}>
         <div style={{display: 'flex', flexDirection: 'column', gap: '4px'}}>
-          <span style={{fontSize: '0.75rem', color: 'rgba(255,255,255,0.6)'}}>受保人年龄</span>
+          <span style={{fontSize: '0.75rem', color: 'var(--text-secondary)'}}>受保人年龄</span>
           <input type="number" min="0" max="80" value={config.age}
             onChange={e => update('age', parseInt(e.target.value) || 0)}
-            style={{background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)',
-              color: '#fff', borderRadius: '4px', padding: '6px', width: '60px'}} />
+            style={{background: 'var(--surface-subtle)', border: '1px solid var(--border-strong)',
+              color: 'var(--text-primary)', fontFamily: 'var(--font-mono)', borderRadius: '4px', padding: '6px', width: '68px'}} />
         </div>
         <div style={{display: 'flex', flexDirection: 'column', gap: '4px'}}>
-          <span style={{fontSize: '0.75rem', color: 'rgba(255,255,255,0.6)'}}>性别</span>
+          <span style={{fontSize: '0.75rem', color: 'var(--text-secondary)'}}>性别</span>
           <select value={config.gender} onChange={e => update('gender', e.target.value)}
-            style={{background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)',
-              color: '#fff', borderRadius: '4px', padding: '6px'}}>
+            style={{background: 'var(--surface-subtle)', border: '1px solid var(--border-strong)',
+              color: 'var(--text-primary)', borderRadius: '4px', padding: '6px'}}>
             <option value="male">男</option>
             <option value="female">女</option>
           </select>
         </div>
         <div style={{display: 'flex', flexDirection: 'column', gap: '4px'}}>
-          <span style={{fontSize: '0.75rem', color: 'rgba(255,255,255,0.6)'}}>吸烟</span>
+          <span style={{fontSize: '0.75rem', color: 'var(--text-secondary)'}}>吸烟</span>
           <select value={config.smoker ? 'yes' : 'no'} onChange={e => update('smoker', e.target.value === 'yes')}
-            style={{background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)',
-              color: '#fff', borderRadius: '4px', padding: '6px'}}>
+            style={{background: 'var(--surface-subtle)', border: '1px solid var(--border-strong)',
+              color: 'var(--text-primary)', borderRadius: '4px', padding: '6px'}}>
             <option value="no">否</option>
             <option value="yes">是</option>
           </select>
         </div>
         <div style={{display: 'flex', flexDirection: 'column', gap: '4px'}}>
-          <span style={{fontSize: '0.75rem', color: 'rgba(255,255,255,0.6)'}}>整付保费 ($)</span>
+          <span style={{fontSize: '0.75rem', color: 'var(--text-secondary)'}}>整付保费 ($)</span>
           <input type="number" min="0" step="10000" value={config.totalPremium}
             onChange={e => update('totalPremium', parseFloat(e.target.value) || 0)}
-            style={{background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)',
-              color: '#fff', borderRadius: '4px', padding: '6px', width: '120px'}} />
+            style={{background: 'var(--surface-subtle)', border: '1px solid var(--border-strong)',
+              color: 'var(--text-primary)', fontFamily: 'var(--font-mono)', borderRadius: '4px', padding: '6px', width: '130px'}} />
         </div>
         <div style={{display: 'flex', flexDirection: 'column', gap: '4px'}}>
-          <span style={{fontSize: '0.75rem', color: 'rgba(255,255,255,0.6)'}}>货币</span>
+          <span style={{fontSize: '0.75rem', color: 'var(--text-secondary)'}}>货币</span>
           <select value={config.currency} onChange={e => update('currency', e.target.value)}
-            style={{background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)',
-              color: '#fff', borderRadius: '4px', padding: '6px'}}>
+            style={{background: 'var(--surface-subtle)', border: '1px solid var(--border-strong)',
+              color: 'var(--text-primary)', borderRadius: '4px', padding: '6px'}}>
             <option value="USD">USD</option>
             <option value="HKD">HKD</option>
             <option value="CNY">CNY</option>
@@ -249,67 +249,60 @@ const ILPConfigPanel = ({
           {/* 身故赔偿 */}
           <div style={{
             display: 'flex', alignItems: 'center', gap: '12px',
-            background: 'rgba(16, 185, 129, 0.08)', padding: '10px 14px', borderRadius: '6px',
-            border: '1px solid rgba(16, 185, 129, 0.2)'
+            background: 'var(--surface-subtle)', padding: '10px 14px', borderRadius: 'var(--card-radius)',
+            border: '1px solid var(--border-subtle)', borderLeft: '3px solid var(--accent-color)'
           }}>
-            <span style={{fontSize: '1.2rem'}}>🛡</span>
             <div>
-              <div style={{fontSize: '0.8rem', color: 'rgba(255,255,255,0.6)'}}>身故赔偿（已缴保费 × 105%）</div>
-              <div style={{fontSize: '1.1rem', fontWeight: 700, color: '#10b981'}}>{fmt(summary.sumAssured)}</div>
+              <div style={{fontSize: '0.8rem', color: 'var(--text-secondary)'}}>身故赔偿（已缴保费 × 105%）</div>
+              <div style={{fontSize: '1.1rem', fontWeight: 700, fontFamily: 'var(--font-mono)', color: 'var(--accent-color)'}}>{fmt(summary.sumAssured)}</div>
             </div>
           </div>
 
           {/* 开户奖赏 */}
           <div style={{
             display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-            background: 'rgba(245, 158, 11, 0.08)', padding: '10px 14px', borderRadius: '6px',
-            border: '1px solid rgba(245, 158, 11, 0.2)'
+            background: 'var(--surface-subtle)', padding: '10px 14px', borderRadius: 'var(--card-radius)',
+            border: '1px solid var(--border-subtle)', borderLeft: '3px solid var(--accent-secondary)'
           }}>
             <div style={{display: 'flex', alignItems: 'center', gap: '12px'}}>
-              <span style={{fontSize: '1.2rem'}}>🎁</span>
               <div>
-                <div style={{fontSize: '0.8rem', color: 'rgba(255,255,255,0.6)'}}>
+                <div style={{fontSize: '0.8rem', color: 'var(--text-secondary)'}}>
                   开户奖赏（一次性） — 推广率 {(summary.enrollRate * 100).toFixed(1)}%
                 </div>
-                <div style={{fontSize: '1.1rem', fontWeight: 700, color: '#f59e0b'}}>
+                <div style={{fontSize: '1.1rem', fontWeight: 700, fontFamily: 'var(--font-mono)', color: 'var(--accent-secondary)'}}>
                   {fmt(summary.enrollBonus)}
                 </div>
               </div>
             </div>
             {onOpenEnrollmentModal && (
-              <button onClick={onOpenEnrollmentModal}
-                style={{
-                  background: 'rgba(245, 158, 11, 0.2)', border: '1px solid rgba(245, 158, 11, 0.4)',
-                  color: '#f59e0b', padding: '4px 10px', borderRadius: '4px',
-                  cursor: 'pointer', fontSize: '0.8rem'
-                }}>
-                ⚙️ 调整
+              <button type="button" onClick={onOpenEnrollmentModal} className="action-btn-secondary" style={{padding: '4px 10px', fontSize: '0.8rem'}}>
+                调整
               </button>
             )}
           </div>
 
           {/* 费用摘要 */}
           <div style={{
-            background: 'rgba(244, 63, 94, 0.05)', padding: '12px 14px', borderRadius: '6px',
-            border: '1px solid rgba(244, 63, 94, 0.15)'
+            background: 'var(--surface-subtle)', padding: '12px 14px', borderRadius: 'var(--card-radius)',
+            border: '1px solid var(--border-subtle)', borderLeft: '3px solid var(--danger)'
           }}>
-            <div style={{fontSize: '0.85rem', fontWeight: 600, color: '#f43f5e', marginBottom: '8px'}}>
-              📊 费用摘要（年化估算）
+            <div style={{fontSize: '0.85rem', fontWeight: 700, color: 'var(--danger)', marginBottom: '8px'}}>
+              费用摘要（年化估算）
             </div>
             <div style={{display: 'grid', gridTemplateColumns: '1fr auto', gap: '4px 20px', fontSize: '0.82rem'}}>
-              <span style={{color: 'rgba(255,255,255,0.7)'}}>前期费（首5年）</span>
-              <span style={{textAlign: 'right', color: '#fff'}}>{fmt(summary.initialChargeAnnual)}/年（1.35%）</span>
-              <span style={{color: 'rgba(255,255,255,0.7)'}}>户口价值费</span>
-              <span style={{textAlign: 'right', color: '#fff'}}>~{fmt(summary.accountChargeAnnual)}/年（1.0%）</span>
-              <span style={{color: 'rgba(255,255,255,0.7)'}}>保险费（{config.age}岁{config.gender === 'male' ? '男' : '女'}）</span>
-              <span style={{textAlign: 'right', color: '#fff'}}>~{fmt(summary.insuranceChargeAnnual)}/年</span>
-              <div style={{gridColumn: '1 / -1', borderTop: '1px solid rgba(255,255,255,0.1)', margin: '4px 0'}} />
-              <span style={{fontWeight: 600, color: '#f43f5e'}}>首年总拖累</span>
-              <span style={{textAlign: 'right', fontWeight: 600, color: '#f43f5e'}}>
+              <span style={{color: 'var(--text-secondary)'}}>前期费（首5年）</span>
+              <span style={{textAlign: 'right', color: 'var(--text-primary)', fontFamily: 'var(--font-mono)'}}>{fmt(summary.initialChargeAnnual)}/年（1.35%）</span>
+              <span style={{color: 'var(--text-secondary)'}}>户口价值费</span>
+              <span style={{textAlign: 'right', color: 'var(--text-primary)', fontFamily: 'var(--font-mono)'}}>~{fmt(summary.accountChargeAnnual)}/年（1.0%）</span>
+              <span style={{color: 'var(--text-secondary)'}}>保险费（{config.age}岁{config.gender === 'male' ? '男' : '女'}）</span>
+              <span style={{textAlign: 'right', color: 'var(--text-primary)', fontFamily: 'var(--font-mono)'}}>~{fmt(summary.insuranceChargeAnnual)}/年</span>
+              <div style={{gridColumn: '1 / -1', borderTop: '1px solid var(--border-subtle)', margin: '4px 0'}} />
+              <span style={{fontWeight: 600, color: 'var(--danger)'}}>首年总拖累</span>
+              <span style={{textAlign: 'right', fontWeight: 700, fontFamily: 'var(--font-mono)', color: 'var(--danger)'}}>
                 ~{fmt(summary.totalChargeY1)}/年（≈{fmtPct(summary.dragPctY1)}）
               </span>
-              <span style={{color: 'rgba(255,255,255,0.5)', fontSize: '0.78rem'}}>第6年起（无前期费）</span>
-              <span style={{textAlign: 'right', color: 'rgba(255,255,255,0.5)', fontSize: '0.78rem'}}>
+              <span style={{color: 'var(--text-muted)', fontSize: '0.78rem'}}>第6年起（无前期费）</span>
+              <span style={{textAlign: 'right', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', fontSize: '0.78rem'}}>
                 ~{fmt(summary.totalChargeY6)}/年（≈{fmtPct(summary.dragPctY6)}）
               </span>
             </div>
@@ -317,16 +310,16 @@ const ILPConfigPanel = ({
 
           {/* 长期客户奖赏预览 */}
           <div style={{
-            background: 'rgba(99, 102, 241, 0.05)', padding: '12px 14px', borderRadius: '6px',
-            border: '1px solid rgba(99, 102, 241, 0.15)'
+            background: 'var(--surface-subtle)', padding: '12px 14px', borderRadius: 'var(--card-radius)',
+            border: '1px solid var(--border-subtle)', borderLeft: '3px solid var(--info)'
           }}>
-            <div style={{fontSize: '0.85rem', fontWeight: 600, color: '#818cf8', marginBottom: '8px'}}>
-              💎 长期客户奖赏预览（第60月起）
+            <div style={{fontSize: '0.85rem', fontWeight: 700, color: 'var(--info)', marginBottom: '8px'}}>
+              长期客户奖赏预览（第60月起）
             </div>
-            <div style={{fontSize: '0.82rem', color: 'rgba(255,255,255,0.7)'}}>
+            <div style={{fontSize: '0.82rem', color: 'var(--text-secondary)'}}>
               预估第60月户口价值 ≈ {fmt(summary.estCV60)}
             </div>
-            <div style={{fontSize: '0.95rem', fontWeight: 600, color: '#818cf8', marginTop: '4px'}}>
+            <div style={{fontSize: '0.92rem', fontWeight: 700, fontFamily: 'var(--font-mono)', color: 'var(--info)', marginTop: '4px'}}>
               月奖赏 ≈ {fmt(summary.monthlyLoyalty)} · 年化 ≈ {fmt(summary.loyaltyAnnual)}（{fmtPct(summary.loyaltyPct)}）
             </div>
           </div>

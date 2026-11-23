@@ -1,7 +1,8 @@
 // ── Currency & Formatting Utilities ───────────────────────────────────────────
 // Shared across PortfolioView, StrategyLabView, and chart components.
 
-export const COLORS = ['#6366f1', '#a855f7', '#ec4899', '#f43f5e', '#ef4444', '#f97316'];
+// Nordic Gallery & Private Wealth Curated Palette (Pine, Bronze, Prussian Blue, Terracotta, Sage, Umber, Slate, Ochre)
+export const COLORS = ['#1E4D3B', '#9A6F38', '#28547A', '#8C3B32', '#4A6B5D', '#7C5836', '#3A6B88', '#6B5B4E'];
 
 export const CURRENCY_SYMBOLS = {
   USD: '$', HKD: 'HK$', JPY: '¥', CNY: '¥', EUR: '€',

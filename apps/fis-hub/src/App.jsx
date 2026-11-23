@@ -21,122 +21,28 @@ import AdminPanel from './components/AdminPanel';
 import AdvisorClientsPanel from './components/AdvisorClientsPanel';
 import HelpManualView from './components/HelpManualView';
 import FeatureLock from './components/FeatureLock';
+import ComplianceGateModal from './components/ComplianceGateModal';
+import { buildSectorData, buildTop10Data, getDaysUntil, buildHoldingsCsv, buildDividendsCsv, downloadCsv } from './utils/portfolioStats';
+import { reloadReportAndHistory } from './utils/reportApi';
 import ImmigrationShowcase from './components/ImmigrationShowcase';
 import { useTheme } from './theme/ThemeContext';
+import { Menu, Briefcase, Activity, FolderOpen, BookOpen, Sun, Moon, ShieldAlert } from 'lucide-react';
 
 
 // ── 角色颜色映射（颜色固定，标签由 i18n 提供）──
 const ROLE_META = {
-  admin:   { color: '#ef4444' },
-  advisor: { color: '#3b82f6' },
-  premium: { color: '#f59e0b' },
-  free:    { color: '#6b7280' },
+  admin:   { color: 'var(--danger)' },
+  advisor: { color: 'var(--info)' },
+  premium: { color: 'var(--accent-secondary)' },
+  free:    { color: 'var(--text-muted)' },
 };
-
-// ── 合规确认弹窗（首次进入时展示）──────────────────────────────────────────
-function ComplianceGateModal({ onAcknowledge }) {
-  const { t } = useLang();
-  return (
-    <div style={{
-      position: 'fixed', inset: 0, zIndex: 99999,
-      background: 'rgba(0,0,0,0.75)',
-      backdropFilter: 'blur(10px)',
-      display: 'flex', alignItems: 'center', justifyContent: 'center',
-      padding: '16px',
-    }}>
-      <div style={{
-        background: 'linear-gradient(145deg, #0f1629 0%, #111827 100%)',
-        border: '1px solid rgba(99,102,241,0.3)',
-        borderRadius: '20px',
-        padding: '36px 32px',
-        maxWidth: '540px',
-        width: '100%',
-        boxShadow: '0 32px 64px rgba(0,0,0,0.6), 0 0 0 1px rgba(99,102,241,0.1)',
-      }}>
-        {/* 标题 */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '14px', marginBottom: '24px' }}>
-          <div style={{
-            width: 44, height: 44, borderRadius: '12px',
-            background: 'rgba(251,191,36,0.12)',
-            border: '1px solid rgba(251,191,36,0.3)',
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            fontSize: '20px', flexShrink: 0,
-          }}>⚠️</div>
-          <div>
-            <h2 style={{ color: '#f1f5f9', fontSize: '17px', fontWeight: 700, margin: 0, lineHeight: 1.3 }}>
-              {t('compliance.title')}
-            </h2>
-            <p style={{ color: 'rgba(255,255,255,0.4)', fontSize: '12px', margin: '3px 0 0' }}>
-              {t('compliance.subtitle')} · Please read before proceeding
-            </p>
-          </div>
-        </div>
-
-        {/* 核心声明 */}
-        <div style={{
-          background: 'rgba(251,191,36,0.06)',
-          border: '1px solid rgba(251,191,36,0.18)',
-          borderRadius: '12px',
-          padding: '16px 18px',
-          marginBottom: '16px',
-        }}>
-          <p style={{ fontSize: '12.5px', color: 'rgba(255,255,255,0.7)', lineHeight: 1.75, margin: 0 }}>
-            <strong style={{ color: '#fbbf24' }}>Wonder Wisdom. · </strong>
-            {t('compliance.body')}
-            <strong style={{ color: 'rgba(255,255,255,0.85)' }}>{t('compliance.bodyBold1')}</strong>
-            {t('compliance.bodyMid')}
-            <strong style={{ color: 'rgba(255,255,255,0.85)' }}>{t('compliance.bodyBold2')}</strong>
-          </p>
-        </div>
-
-        <div style={{
-          background: 'rgba(99,102,241,0.06)',
-          border: '1px solid rgba(99,102,241,0.18)',
-          borderRadius: '12px',
-          padding: '12px 18px',
-          marginBottom: '24px',
-        }}>
-          <p style={{ fontSize: '11px', color: 'rgba(255,255,255,0.45)', lineHeight: 1.7, margin: 0 }}>
-            {t('compliance.bodyEn')}
-          </p>
-        </div>
-
-        {/* 确认按钮 */}
-        <button
-          id="compliance-acknowledge-btn"
-          onClick={onAcknowledge}
-          style={{
-            width: '100%',
-            padding: '14px',
-            borderRadius: '12px',
-            background: 'linear-gradient(135deg, #6366f1, #4f46e5)',
-            border: 'none',
-            color: '#fff',
-            fontSize: '14px',
-            fontWeight: 700,
-            cursor: 'pointer',
-            boxShadow: '0 8px 24px rgba(99,102,241,0.4)',
-            transition: 'all 0.2s',
-            letterSpacing: '0.01em',
-          }}
-          onMouseEnter={e => { e.currentTarget.style.opacity = '0.88'; e.currentTarget.style.transform = 'translateY(-1px)'; }}
-          onMouseLeave={e => { e.currentTarget.style.opacity = '1'; e.currentTarget.style.transform = 'translateY(0)'; }}
-        >
-          {t('compliance.btn')}
-        </button>
-        <p style={{ textAlign: 'center', fontSize: '11px', color: 'rgba(255,255,255,0.25)', marginTop: '12px', marginBottom: 0 }}>
-          {t('compliance.footer')} · Continuing constitutes acceptance of the above terms
-        </p>
-      </div>
-    </div>
-  );
-}
 
 import { VerifyEmailOverlay, ResetPasswordOverlay } from './components/AuthOverlays';
 
 function App() {
   const { lang, toggleLang, t } = useLang();
-  const { theme, cycleTheme } = useTheme();
+  const { theme, cycleTheme, isDark } = useTheme();
+  const [mobileDrawerOpen, setMobileDrawerOpen] = useState(false);
   const [urlParams] = useState(new URLSearchParams(window.location.search));
   const mode = urlParams.get('mode');
   const urlLang = urlParams.get('lang') || 'zh';
@@ -224,7 +130,8 @@ function App() {
     years: 30,
     target: 2000000,
     stress: false,
-    inflation: 2.5
+    inflation: 2.5,
+    cma_mode: 'shrunk'
   });
   const [labTab, setLabTab] = useState('optimization'); // optimization, backtest
   const [showLabDebug, setShowLabDebug] = useState(false);
@@ -265,16 +172,16 @@ function App() {
 
   // Effect 1: ILP 开启时 / capital 改变时 → 同步保费，强制 contribution=0
   useEffect(() => {
-    if (!ilpEnabled) return;
+    if (!ilpEnabled || !labMcSettings) return;
     const capital = parseFloat(labMcSettings.capital) || 0;
     setIlpConfig(prev => {
       if (prev.totalPremium === capital) return prev; // 值不变则不更新，避免触发 Effect 2
       return { ...prev, totalPremium: capital };
     });
     setLabMcSettings(prev =>
-      prev.contribution !== 0 ? { ...prev, contribution: 0 } : prev
+      prev && prev.contribution !== 0 ? { ...prev, contribution: 0 } : prev
     );
-  }, [ilpEnabled, labMcSettings.capital]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [ilpEnabled, labMcSettings?.capital]); // eslint-disable-line react-hooks/exhaustive-deps
 
 
 
@@ -347,56 +254,9 @@ function App() {
   }, [currentUser]);
 
 
-  // Process data for Ghostfolio Asset Allocation Widgets
-  const sectorData = React.useMemo(() => {
-    try {
-      if (!data || !data.details) return [];
-      let map = {};
-      data.details.forEach(d => {
-        if (d.isin.startsWith('CASH_')) return; // Skip cash for sector breakdown
-        let sectorObj = d.sector;
-        if (typeof sectorObj === 'string' && sectorObj.startsWith('{')) {
-          try { sectorObj = JSON.parse(sectorObj); } catch(e) {}
-        }
-        
-        if (typeof sectorObj === 'object' && !Array.isArray(sectorObj) && sectorObj !== null) {
-          Object.entries(sectorObj).forEach(([k, weight]) => {
-            const name = String(k).replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()); // Format "consumer_cyclical" -> "Consumer Cyclical"
-            map[name] = (map[name] || 0) + (Number(d.market_value) || 0) * (Number(weight) || 0);
-          });
-        } else {
-          const s = String(sectorObj || 'Unknown');
-          map[s] = (map[s] || 0) + (Number(d.market_value) || 0);
-        }
-      });
-      return Object.entries(map)
-        .map(([name, value]) => ({ name, value, pct: data.total_nav > 0 ? (value / data.total_nav * 100) : 0 }))
-        .filter(d => d.value > 0 && !isNaN(d.value) && isFinite(d.value));
-    } catch (e) {
-      console.error("Safeguard: Sector processing failed", e);
-      return [];
-    }
-  }, [data]);
-
-  const top10Data = React.useMemo(() => {
-    try {
-      if (!data || !data.details) return [];
-      return data.details
-        .filter(d => !d.isin.startsWith('CASH_') && Number(d.market_value) > 0)
-        .sort((a, b) => Number(b.market_value) - Number(a.market_value))
-        .slice(0, 10)
-        .map(d => ({
-          name: d.name && d.name.length > 30 ? d.name.substring(0, 28) + '…' : (d.name || d.isin),
-          fullName: d.name || d.isin,
-          isin: d.isin,
-          value: Number(d.market_value),
-          pct: data.total_nav > 0 ? (Number(d.market_value) / data.total_nav * 100) : 0
-        }));
-    } catch (e) {
-      console.error("Safeguard: Top10 processing failed", e);
-      return [];
-    }
-  }, [data]);
+  // Asset allocation widgets（纯计算见 utils/portfolioStats.js）
+  const sectorData = React.useMemo(() => buildSectorData(data), [data]);
+  const top10Data = React.useMemo(() => buildTop10Data(data), [data]);
 
   const fetchPortfolios = () => {
     fetch('/api/portfolios', { headers: authHeaders() })
@@ -523,13 +383,6 @@ function App() {
     }
   }, [activeId, activeSubTab, taxRate, dripMode]);
 
-  const getDaysUntil = (dateStr) => {
-    if (!dateStr) return null;
-    const diffTime = new Date(dateStr) - new Date();
-    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-    return diffDays;
-  };
-
   const handleCreatePortfolio = async (e) => {
     e.preventDefault();
     if (Math.abs(totalWeight - 1.0) > 0.001) {
@@ -608,23 +461,7 @@ function App() {
       });
       const data = await res.json();
       if (data.status === 'success') {
-        // Refresh core report data
-        const repRes = await fetch(`/api/report/${activeId}`);
-        const repData = await repRes.json();
-        if (!repData.detail) setData(repData);
-        
-        // Also refresh historical chart
-        fetch(`/api/report/history/${activeId}`)
-          .then(async r => {
-            const text = await r.text();
-            return JSON.parse(text.replace(/:\s*NaN/g, ': null'));
-          })
-          .then(hData => {
-            if (Array.isArray(hData)) {
-              setHistoryData(hData.filter(d => d && d.date && d.value !== null && !isNaN(d.value)));
-            }
-          })
-          .catch(() => {});
+        await reloadReportAndHistory(activeId, { setData, setHistoryData });
       } else {
         alert(`Failed to undo: ${data.message || 'Unknown error'}`);
       }
@@ -684,24 +521,7 @@ function App() {
         setLoading(false);
         return;
       }
-      // Refresh core report data
-      const repRes = await fetch(`/api/report/${activeId}`);
-      const repData = await repRes.json();
-      if (!repData.detail) setData(repData);
-
-      // Also refresh historical chart so performance curve reflects the new trades
-      fetch(`/api/report/history/${activeId}`)
-        .then(async r => {
-          const text = await r.text();
-          const cleanText = text.replace(/:\s*NaN/g, ': null');
-          return JSON.parse(cleanText);
-        })
-        .then(hData => {
-          if (Array.isArray(hData)) {
-            setHistoryData(hData.filter(d => d && d.date && d.value !== null && !isNaN(d.value)));
-          }
-        })
-        .catch(() => {});
+      await reloadReportAndHistory(activeId, { setData, setHistoryData });
     } catch (e) {
       alert(`⚠️ Rebalance 网络错误：${e.message}`);
     } finally {
@@ -835,31 +655,11 @@ function App() {
     }
   };
 
+  const activePortfolioName = () => portfolios.find(p => p.id === activeId)?.name || 'portfolio';
+
   const handleExportCSV = () => {
     if (!data) return;
-    const headers = ["ASSET", "ISIN", "ALLOCATION (%)", "SHARES", "AVG COST", "PRICE", "VALUE", "DIVIDENDS", "PNL (%)"];
-    const rows = data.details.map(a => [
-      a.name,
-      a.isin,
-      (a.market_value / data.total_nav * 100).toFixed(1) + "%",
-      a.isin.startsWith('CASH_') ? '1' : Math.floor(a.shares),
-      a.total_cost ? (a.total_cost / (a.isin.startsWith('CASH_') ? 1 : a.shares)).toFixed(2) : '0',
-      a.price.toFixed(2),
-      a.market_value.toFixed(2),
-      a.dividends.toFixed(2),
-      a.yield.toFixed(2) + "%"
-    ]);
-
-    const csvContent = [headers, ...rows].map(e => e.join(",")).join("\n");
-    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.setAttribute("href", url);
-    link.setAttribute("download", `${portfolios.find(p => p.id === activeId)?.name || 'portfolio'}_holdings.csv`);
-    link.style.visibility = 'hidden';
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+    downloadCsv(buildHoldingsCsv(data), `${activePortfolioName()}_holdings.csv`);
   };
 
   const handleExportDividendsCSV = async () => {
@@ -868,28 +668,7 @@ function App() {
       const res = await fetch(`/api/portfolios/dividends/export/${activeId}`);
       if (!res.ok) throw new Error("Failed to fetch dividends");
       const divs = await res.json();
-      
-      const headers = ["DATE", "ASSET / ISIN", "FUND NAME", "TYPE", "SHARES HELD", "AMOUNT PER SHARE", "TOTAL DIVIDEND ($)"];
-      const rows = divs.map(d => [
-        d.date,
-        d.isin,
-        `"${d.name}"`, // Quote to handle commas in names
-        d.type,
-        d.shares_held,
-        d.amount_per_share.toFixed(4),
-        d.total_amount.toFixed(2)
-      ]);
-
-      const csvContent = [headers, ...rows].map(e => e.join(",")).join("\n");
-      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      link.setAttribute("href", url);
-      link.setAttribute("download", `${portfolios.find(p => p.id === activeId)?.name || 'portfolio'}_dividends.csv`);
-      link.style.visibility = 'hidden';
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
+      downloadCsv(buildDividendsCsv(divs), `${activePortfolioName()}_dividends.csv`);
     } catch (err) {
       console.error(err);
       alert("Failed to export dividends data.");
@@ -1018,6 +797,7 @@ function App() {
         dividend_yield: target?.dividend_yield,
         irr_p50: mc?.irr?.p50,
         irr_p10: mc?.irr?.p10,
+        irr_p90: mc?.irr?.p90,
         success_rate: mc?.success_rate,
         capital: labMcSettings.capital,
         withdrawal: labMcSettings.withdrawal,
@@ -1058,42 +838,103 @@ function App() {
   const handleLoadScenario = async (id) => {
     try {
       const res = await fetch(`/api/lab/scenarios/${id}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
+
+      const rawSettings = data.mc_settings || data.settings || {};
+      const cleanMcSettings = {};
+      Object.entries(rawSettings).forEach(([k, v]) => {
+        if (!k.startsWith('_')) cleanMcSettings[k] = v;
+      });
+      const mergedMcSettings = {
+        capital: 1000000,
+        contribution: 0,
+        contribution_start: 1,
+        contribution_years: 10,
+        withdrawal: 0,
+        withdrawal_start: 1,
+        withdrawal_end: 30,
+        withdrawal_2: 0,
+        withdrawal_start_2: 31,
+        withdrawal_end_2: 60,
+        withdrawal_inflation: false,
+        years: 30,
+        target: 2000000,
+        stress: false,
+        inflation: 2.5,
+        cma_mode: 'shrunk',
+        ...cleanMcSettings,
+      };
+
+      const assets = Array.isArray(data.assets) ? data.assets : [];
+      const rawWeights = data.weights || data.custom_weights || {};
+      const uiWeights = {};
+      const normAllocations = {};
+      const weightSum = Object.values(rawWeights).reduce((s, v) => s + (parseFloat(v) || 0), 0);
+      Object.entries(rawWeights).forEach(([isin, val]) => {
+        const num = parseFloat(val) || 0;
+        if (weightSum <= 1.5 && weightSum > 0) {
+          uiWeights[isin] = Number((num * 100).toFixed(2));
+          normAllocations[isin] = num;
+        } else {
+          uiWeights[isin] = num;
+          normAllocations[isin] = weightSum > 0 ? num / weightSum : num / 100;
+        }
+      });
+
+      const rawChart = data.chart_data || data.chart || [];
+      const chartData = Array.isArray(rawChart) ? rawChart : [];
+      const summary = data.summary || {};
+
       // Restore assets, weights, settings
-      setLabIsins(data.assets);
-      setLabCustomWeights(data.weights);
+      setLabIsins(assets);
+      setLabCustomWeights(uiWeights);
       setLabMode('custom');
-      setLabMcSettings(data.mc_settings);
+      setLabMcSettings(mergedMcSettings);
       // Restore chart data into labData structure
       setLabData(prev => ({
         ...(prev || {}),
-        ...(data.summary || {}),
+        ...summary,
         mc_target_label: 'custom_portfolio',
         custom_portfolio: {
-          allocations: data.weights,
-          expected_return: data.summary.expected_return,
-          volatility: data.summary.volatility,
-          sharpe_ratio: data.summary.sharpe_ratio,
-          dividend_yield: data.summary.dividend_yield,
+          allocations: normAllocations,
+          expected_return: summary.expected_return ?? 0,
+          volatility: summary.volatility ?? 0,
+          sharpe_ratio: summary.sharpe_ratio ?? 0,
+          dividend_yield: summary.dividend_yield ?? 0,
         },
         monte_carlo: {
-          chart: data.chart_data,
-          irr: { p50: data.summary.irr_p50, p10: data.summary.irr_p10 },
-          success_rate: data.summary.success_rate,
+          chart: chartData,
+          irr: {
+            p50: summary.irr_p50,
+            p10: summary.irr_p10,
+            ...(summary.irr_p90 !== undefined ? { p90: summary.irr_p90 } : {}),
+          },
+          success_rate: summary.success_rate ?? null,
         },
         _restored_from: data.name,
       }));
       // ── 恢复 ILP 投连险配置 ──────────────────────────────────────────────
-      if (data.ilp_enabled != null) {
-        setIlpEnabled(!!data.ilp_enabled);
-        if (data.ilp_config) setIlpConfig(data.ilp_config);
+      const ilpEn = data.ilp_enabled ?? rawSettings._ilp_enabled;
+      const ilpCfg = data.ilp_config ?? rawSettings._ilp_config;
+      if (ilpEn != null) {
+        setIlpEnabled(!!ilpEn);
+        if (ilpCfg) setIlpConfig(ilpCfg);
+      } else {
+        setIlpEnabled(false);
       }
       // ── 恢复储蓄险配置 ──────────────────────────────────────────────────
-      if (data.insurance_enabled != null) {
-        setInsuranceEnabled(!!data.insurance_enabled);
-        if (data.insurance_plan)       setInsurancePlan(data.insurance_plan);
-        if (data.insurance_alpha_low  != null) setInsuranceAlphaLow(data.insurance_alpha_low);
-        if (data.insurance_alpha_high != null) setInsuranceAlphaHigh(data.insurance_alpha_high);
+      const insEn = data.insurance_enabled ?? rawSettings._ins_enabled;
+      const insPlan = data.insurance_plan ?? rawSettings._ins_plan;
+      const insLow = data.insurance_alpha_low ?? rawSettings._ins_alpha_low;
+      const insHigh = data.insurance_alpha_high ?? rawSettings._ins_alpha_high;
+      if (insEn != null) {
+        setInsuranceEnabled(!!insEn);
+        if (insPlan) setInsurancePlan(insPlan);
+        if (insLow != null) setInsuranceAlphaLow(insLow);
+        if (insHigh != null) setInsuranceAlphaHigh(insHigh);
+      } else {
+        setInsuranceEnabled(false);
       }
       setScenariosDrawer(false);
     } catch (e) {
@@ -1167,6 +1008,7 @@ function App() {
         // 通胀按「百分数」透传（2.5 表示 2.5%），后端统一除以 100；
         // 之前这里也除了一次，等于按 0.025% 折现，真实购买力曲线失真。
         mc_inflation: Number(labMcSettings.inflation),
+        cma_mode: labMcSettings.cma_mode || 'shrunk',
         _ts: Date.now() // Bust cache
       };
       
@@ -1257,96 +1099,101 @@ function App() {
   return (
     <div className="app-layout">
       {/* ── Top Header Bar ── */}
-      <header style={{
-        position: 'fixed', top: 0, left: 0, right: 0,
-        height: 52, zIndex: 1000,
-        background: 'var(--header-bg)',
-        borderBottom: '1px solid rgba(99,102,241,0.2)',
-        backdropFilter: 'blur(12px)',
-        display: 'flex', alignItems: 'center',
-        padding: '0 20px 0 260px',
-        justifyContent: 'space-between',
-      }}>
-        <div style={{ color: 'rgba(255,255,255,0.4)', fontSize: 13 }}>
-          {currentUser ? `${t('header.welcome')}${currentUser.name || currentUser.email?.split('@')[0] || t('role.' + currentUser.role)}` : t('header.platform')}
+      <header className="app-topbar">
+        <div className="topbar-left">
+          <button
+            type="button"
+            className="mobile-menu-trigger"
+            onClick={() => setMobileDrawerOpen(true)}
+            aria-label="Open navigation menu"
+          >
+            <Menu size={18} aria-hidden="true" />
+          </button>
+          <div className="topbar-brand-mobile">
+            Portfolio<span>Atelier</span>
+          </div>
+          <div className="topbar-welcome">
+            {currentUser
+              ? `${t('header.welcome')}${currentUser.name || currentUser.email?.split('@')[0] || t('role.' + currentUser.role)}`
+              : t('header.platform')}
+          </div>
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+
+        <div className="topbar-right">
           {/* ── 语言切换按钮 ── */}
           <button
+            type="button"
             onClick={toggleLang}
             title={lang === 'zh' ? 'Switch to English' : '切换为中文'}
+            className="action-btn-secondary"
             style={{
-              padding: '4px 12px', borderRadius: 8,
-              background: 'rgba(99,102,241,0.12)',
-              border: '1px solid rgba(99,102,241,0.35)',
-              color: '#818cf8', cursor: 'pointer',
-              fontSize: 12, fontWeight: 700,
+              padding: '4px 12px',
+              fontSize: 12,
+              fontWeight: 700,
+              fontFamily: 'var(--font-mono)',
               letterSpacing: '0.05em',
-              transition: 'all 0.2s',
             }}
-            onMouseEnter={e => { e.currentTarget.style.background = 'rgba(99,102,241,0.25)'; }}
-            onMouseLeave={e => { e.currentTarget.style.background = 'rgba(99,102,241,0.12)'; }}
           >
             {t('header.langBtn')}
           </button>
-          
-          {/* ── 主题切换按钮 ── */}
+
+          {/* ── 明暗画廊切换按钮 ── */}
           <button
+            type="button"
             onClick={cycleTheme}
-            title={`当前风格: ${theme.label} (点击切换)`}
+            title={`当前风格: ${theme.label} (点击切换日间画廊/暗夜黑金)`}
+            aria-label={isDark ? 'Switch to Gallery Light mode' : 'Switch to Atelier Dark mode'}
+            className="action-btn-secondary"
             style={{
-              padding: '4px 8px', borderRadius: 8,
-              background: 'transparent',
-              border: '1px solid var(--glass-border)',
-              color: 'var(--text-secondary)', cursor: 'pointer',
-              fontSize: 14, display: 'flex', alignItems: 'center', justifyContent: 'center',
-              transition: 'all 0.2s',
+              padding: '4px 10px',
+              fontSize: 12,
+              gap: '6px',
             }}
-            onMouseEnter={e => { e.currentTarget.style.background = 'var(--glass-bg)'; }}
-            onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}
           >
-            {theme.label.split(' ')[0]} {/* 仅显示 emoji */}
+            {isDark ? <Sun size={14} aria-hidden="true" /> : <Moon size={14} aria-hidden="true" />}
+            <span>{isDark ? (lang === 'zh' ? '日间' : 'Light') : (lang === 'zh' ? '暗夜' : 'Dark')}</span>
           </button>
 
           {currentUser ? (
             <>
               {/* 角色徽章 */}
               <span style={{
-                padding: '3px 10px', borderRadius: 12, fontSize: 11, fontWeight: 700,
-                background: ROLE_META[currentUser.role]?.color || '#6b7280',
-                color: '#fff', letterSpacing: '0.02em',
+                padding: '3px 9px', borderRadius: 4, fontSize: 11, fontWeight: 700,
+                background: ROLE_META[currentUser.role]?.color || 'var(--text-muted)',
+                color: '#fff', letterSpacing: '0.03em',
               }}>
                 {t('role.' + currentUser.role) || currentUser.role}
               </span>
               {/* 用户名 */}
-              <span style={{ color: '#e2e8f0', fontSize: 14, fontWeight: 500 }}>
+              <span style={{ color: 'var(--text-primary)', fontSize: 13, fontWeight: 600 }}>
                 {currentUser.name || currentUser.email?.split('@')[0]}
               </span>
               {/* 登出按钮 */}
               <button
+                type="button"
                 onClick={handleLogout}
+                className="action-btn-secondary"
                 style={{
-                  padding: '4px 14px', borderRadius: 8, background: 'transparent',
-                  border: '1px solid rgba(71,85,105,0.6)', color: '#94a3b8',
-                  cursor: 'pointer', fontSize: 12, fontWeight: 500,
-                  transition: 'all 0.2s',
+                  padding: '4px 12px',
+                  fontSize: 12,
+                  color: 'var(--text-secondary)',
                 }}
-                onMouseEnter={e => { e.currentTarget.style.borderColor = '#ef4444'; e.currentTarget.style.color = '#ef4444'; }}
-                onMouseLeave={e => { e.currentTarget.style.borderColor = 'rgba(71,85,105,0.6)'; e.currentTarget.style.color = '#94a3b8'; }}
-              >{t('header.logout')}</button>
+              >
+                {t('header.logout')}
+              </button>
             </>
           ) : (
             <button
+              type="button"
               onClick={() => setAuthModalOpen(true)}
+              className="create-btn"
               style={{
-                padding: '7px 18px', borderRadius: 8,
-                background: 'linear-gradient(135deg, #6366f1, #818cf8)',
-                border: 'none', color: '#fff', cursor: 'pointer',
-                fontSize: 13, fontWeight: 700,
-                boxShadow: '0 4px 14px rgba(99,102,241,0.4)',
-                transition: 'all 0.2s',
+                padding: '6px 16px',
+                fontSize: 13,
               }}
-            >{t('header.login')}</button>
+            >
+              {t('header.login')}
+            </button>
           )}
         </div>
       </header>
@@ -1359,6 +1206,8 @@ function App() {
         setDeleteCandidate={setDeleteCandidate} setShowDeleteModal={setShowDeleteModal}
         savedScenarios={savedScenarios} handleLoadScenario={handleLoadScenario} handleDeleteScenario={handleDeleteScenario} handleRenameScenario={handleRenameScenario}
         currentUser={currentUser} canEditPortfolio={canEditPortfolio}
+        mobileDrawerOpen={mobileDrawerOpen}
+        setMobileDrawerOpen={setMobileDrawerOpen}
         onIlpSaved={(cfg) => {
           setIlpConfig({
             age: cfg.age ?? 35,
@@ -1420,7 +1269,7 @@ function App() {
           </FeatureLock>
         ) : activeTab === 'portfolios' && activeId ? (
           loading ? (
-            <div style={{textAlign: 'center', paddingTop: '100px'}}><h2>Analyzing Data...</h2></div>
+            <div style={{ textAlign: 'center', paddingTop: '100px', color: 'var(--text-secondary)' }}><h2>Analyzing Data...</h2></div>
           ) : data && data.details ? (
             <PortfolioView
               portfolios={portfolios} activeId={activeId} data={data} historyData={historyData} loading={loading}
@@ -1438,15 +1287,53 @@ function App() {
               onOpenIlpEnrollmentModal={() => setIlpEnrollmentModalOpen(true)}
             />
           ) : (
-            <div style={{textAlign: 'center', paddingTop: '100px'}}><h2>Data Unavailable</h2><p>Please select a different portfolio.</p></div>
+            <div style={{ textAlign: 'center', paddingTop: '100px', color: 'var(--text-secondary)' }}><h2>Data Unavailable</h2><p>Please select a different portfolio.</p></div>
           )
         ) : (
-          <div style={{display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', flexDirection: 'column', gap: '16px', color: 'rgba(255,255,255,0.3)'}}>
-            <div style={{fontSize: '3rem'}}>📊</div>
-            <div>{t('empty.selectPortfolio')}</div>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '50vh', flexDirection: 'column', gap: '16px', color: 'var(--text-muted)' }}>
+            <Briefcase size={40} strokeWidth={1.25} aria-hidden="true" />
+            <div style={{ fontFamily: 'var(--font-display)', fontSize: '1.25rem' }}>{t('empty.selectPortfolio')}</div>
           </div>
         )}
       </main>
+
+      {/* ── Mobile Bottom Navigation Bar ── */}
+      <nav className="mobile-bottom-nav" aria-label="Mobile Navigation">
+        <button
+          type="button"
+          className={`mobile-nav-item ${activeTab === 'portfolios' && !mobileDrawerOpen ? 'active' : ''}`}
+          onClick={() => { setActiveTab('portfolios'); setMobileDrawerOpen(false); }}
+        >
+          <Briefcase size={18} aria-hidden="true" />
+          <span>{t('sidebar.portfolios')}</span>
+        </button>
+        <button
+          type="button"
+          className={`mobile-nav-item ${mobileDrawerOpen ? 'active' : ''}`}
+          onClick={() => setMobileDrawerOpen(v => !v)}
+        >
+          <FolderOpen size={18} aria-hidden="true" />
+          <span>{lang === 'zh' ? '目录/方案' : 'Catalog'}</span>
+        </button>
+        <button
+          type="button"
+          className={`mobile-nav-item ${activeTab === 'lab' && !mobileDrawerOpen ? 'active' : ''}`}
+          onClick={() => { setActiveTab('lab'); setMobileDrawerOpen(false); }}
+        >
+          <Activity size={18} aria-hidden="true" />
+          <span>{t('sidebar.lab')}</span>
+        </button>
+        {currentUser && (
+          <button
+            type="button"
+            className={`mobile-nav-item ${activeTab === 'help' && !mobileDrawerOpen ? 'active' : ''}`}
+            onClick={() => { setActiveTab('help'); setMobileDrawerOpen(false); }}
+          >
+            <BookOpen size={18} aria-hidden="true" />
+            <span>{lang === 'zh' ? '手册' : 'Guide'}</span>
+          </button>
+        )}
+      </nav>
 
       {/* ── Modals ── */}
       <CreatePortfolioModal
@@ -1533,43 +1420,32 @@ function App() {
 
       {/* ── Undo Trades Confirm Dialog ── */}
       {undoConfirmOpen && (
-        <div style={{
-          position: 'fixed', inset: 0, zIndex: 9999,
-          background: 'rgba(0,0,0,0.65)', backdropFilter: 'blur(8px)',
-          display: 'flex', alignItems: 'center', justifyContent: 'center'
-        }} onClick={() => setUndoConfirmOpen(false)}>
-          <div style={{
-            background: 'linear-gradient(135deg, #1a1a2e 0%, #16213e 100%)',
-            border: '1px solid rgba(239,68,68,0.3)',
-            borderRadius: '16px', padding: '32px', maxWidth: '420px', width: '90%',
-            boxShadow: '0 25px 50px rgba(0,0,0,0.5)'
-          }} onClick={e => e.stopPropagation()}>
-            <div style={{fontSize: '2rem', marginBottom: '12px', textAlign: 'center'}}>↩️</div>
-            <h3 style={{color: '#fff', marginBottom: '12px', textAlign: 'center', fontSize: '1.1rem'}}>
+        <div className="modal-overlay" onClick={() => setUndoConfirmOpen(false)}>
+          <div className="glass-card modal-content" style={{ maxWidth: '420px' }} onClick={e => e.stopPropagation()}>
+            <h3 style={{ color: 'var(--text-primary)', marginBottom: '12px', textAlign: 'center', fontSize: '1.25rem' }}>
               {t('undo.title')}
             </h3>
-            <p style={{color: 'rgba(255,255,255,0.6)', fontSize: '0.88rem', lineHeight: 1.6, marginBottom: '24px', textAlign: 'center'}}>
+            <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', lineHeight: 1.6, marginBottom: '24px', textAlign: 'center' }}>
               {t('undo.body')}
               <br/><br/>
-              <span style={{color: '#ef4444', fontWeight: 600}}>{t('undo.warning')}</span>
+              <span style={{ color: 'var(--danger)', fontWeight: 600 }}>{t('undo.warning')}</span>
             </p>
-            <div style={{display: 'flex', gap: '12px', justifyContent: 'center'}}>
+            <div style={{ display: 'flex', gap: '12px', justifyContent: 'center' }}>
               <button
+                type="button"
                 onClick={() => setUndoConfirmOpen(false)}
-                style={{
-                  background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.15)',
-                  color: 'rgba(255,255,255,0.7)', borderRadius: '8px', padding: '10px 24px',
-                  cursor: 'pointer', fontWeight: 500
-                }}
-              >{t('undo.cancel')}</button>
+                className="action-btn-secondary"
+              >
+                {t('undo.cancel')}
+              </button>
               <button
+                type="button"
                 onClick={handleUndoConfirmed}
-                style={{
-                  background: 'linear-gradient(135deg, #ef4444, #dc2626)',
-                  border: 'none', color: '#fff', borderRadius: '8px', padding: '10px 24px',
-                  cursor: 'pointer', fontWeight: 600, boxShadow: '0 4px 12px rgba(239,68,68,0.4)'
-                }}
-              >{t('undo.confirm')}</button>
+                className="create-btn"
+                style={{ background: 'var(--danger)', borderColor: 'var(--danger)', color: '#fff' }}
+              >
+                {t('undo.confirm')}
+              </button>
             </div>
           </div>
         </div>
@@ -1593,29 +1469,29 @@ function App() {
 
       {/* ── 极简合规页脚 ── */}
       <footer style={{
-        borderTop: '1px solid rgba(255,255,255,0.05)',
+        borderTop: '1px solid var(--border-subtle)',
         background: 'transparent',
-        padding: '14px 24px',
-        marginTop: '48px',
+        padding: '18px 32px',
+        marginTop: 'auto',
       }}>
         <div style={{ maxWidth: '1200px', margin: '0 auto', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px' }}>
-          <p style={{ fontSize: '11px', color: 'rgba(255,255,255,0.2)', margin: 0 }}>
+          <p style={{ fontSize: '11px', color: 'var(--text-muted)', margin: 0 }}>
             {t('footer.copy')}
           </p>
           <button
+            type="button"
             onClick={() => {
               localStorage.removeItem('ww_compliance_acked');
               setComplianceAcked(false);
             }}
             style={{
               background: 'none', border: 'none',
-              color: 'rgba(255,255,255,0.2)',
+              color: 'var(--text-muted)',
               fontSize: '11px', cursor: 'pointer',
               textDecoration: 'underline', padding: 0,
+              minBlockSize: 'auto',
               transition: 'color 0.2s',
             }}
-            onMouseEnter={e => e.currentTarget.style.color = 'rgba(255,255,255,0.5)'}
-            onMouseLeave={e => e.currentTarget.style.color = 'rgba(255,255,255,0.2)'}
           >
             {t('footer.disclaimer')}
           </button>
