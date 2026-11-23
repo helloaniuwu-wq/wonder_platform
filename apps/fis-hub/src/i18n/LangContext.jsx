@@ -7,10 +7,9 @@
  * 持久化：localStorage key = 'ww_lang'
  */
 
-import React, { createContext, useContext, useState, useCallback } from 'react';
+import React, { useState, useCallback } from 'react';
 import translations from './translations';
-
-const LangContext = createContext(null);
+import { LangContext } from './langCore';
 
 /**
  * Provider — 包裹 App 根节点
@@ -27,7 +26,7 @@ export function LangProvider({ children }) {
 
   const setLang = useCallback((l) => {
     setLangState(l);
-    try { localStorage.setItem('ww_lang', l); } catch {}
+    try { localStorage.setItem('ww_lang', l); } catch { /* 隐私模式下忽略 */ }
   }, []);
 
   const toggleLang = useCallback(() => {
@@ -55,15 +54,3 @@ export function LangProvider({ children }) {
     </LangContext.Provider>
   );
 }
-
-/**
- * useLang() — 在任意组件中使用
- * const { lang, t, toggleLang } = useLang();
- */
-export function useLang() {
-  const ctx = useContext(LangContext);
-  if (!ctx) throw new Error('useLang must be used within LangProvider');
-  return ctx;
-}
-
-export default LangContext;

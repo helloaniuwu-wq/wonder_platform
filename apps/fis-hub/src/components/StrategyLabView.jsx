@@ -1,5 +1,5 @@
 import React from 'react';
-import { useLang } from '../i18n/LangContext';
+import { useLang } from '../i18n/langCore';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
   LineChart, Line, Area, ComposedChart, ReferenceLine
@@ -9,6 +9,8 @@ import {
 } from 'lucide-react';
 import InsurancePlanPanel from './InsurancePlanPanel';
 import ILPConfigPanel from './ILPConfigPanel';
+import ClassicPortfoliosModal from './modals/ClassicPortfoliosModal';
+import { CLASSIC_PORTFOLIOS, toLabTemplate } from '../data/classicPortfolios';
 import ILPSummaryCard from './ILPSummaryCard';
 import ILPImpactPanel from './ILPImpactPanel';
 import NumberInputWithCommas from './NumberInput';
@@ -18,6 +20,74 @@ import { CombinedCashFlowTooltip } from '../utils/chartHelpers';
  * StrategyLabView — Nordic Gallery Minimal & Responsive Multi-Screen Edition.
  * Preserves 100% of calculations, props, and data contracts.
  */
+// 单个组合的「配置卡片」：关键指标 + 权重明细 + 部署按钮。
+// 自定义模式展示 1 张（自定义配置），自动优化模式展示 3 张（最大夏普 / 最小波动 / 风险平价）。
+const AllocationCard = ({ portfolio, name, color, onDeploy }) => {
+  const { t } = useLang();
+  return (
+            <div className="glass-card" style={{ borderTop: `3px solid ${color}`, marginBottom: 0 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+                <h3 style={{ margin: 0, color: color, fontSize: '1.2rem' }}>{name}</h3>
+                <button type="button" onClick={() => onDeploy(portfolio.allocations)} className="action-btn-secondary" style={{ fontSize: '0.76rem' }}>
+                  {t('lab.deploy')}
+                </button>
+              </div>
+              <div style={{
+                display: 'grid',
+                gridTemplateColumns: 'repeat(4, 1fr)',
+                gap: '8px',
+                marginBottom: '14px',
+                fontSize: '0.74rem',
+                color: 'var(--text-secondary)',
+                background: 'var(--surface-subtle)',
+                border: '1px solid var(--border-subtle)',
+                padding: '12px',
+                borderRadius: 'var(--card-radius)',
+              }}>
+                <div style={{ textAlign: 'center' }}>
+                  <div>{t('lab.annualReturn')}</div>
+                  <div style={{ fontWeight: 700, fontFamily: 'var(--font-mono)', color: 'var(--success)', marginTop: '4px', fontSize: '0.9rem' }}>
+                    {((portfolio.expected_return || 0) * 100).toFixed(1)}%
+                  </div>
+                </div>
+                <div style={{ textAlign: 'center' }}>
+                  <div>{t('lab.volatility')}</div>
+                  <div style={{ fontWeight: 700, fontFamily: 'var(--font-mono)', color: 'var(--warning)', marginTop: '4px', fontSize: '0.9rem' }}>
+                    {((portfolio.volatility || 0) * 100).toFixed(1)}%
+                  </div>
+                </div>
+                <div style={{ textAlign: 'center' }}>
+                  <div>{t('lab.sharpeRatio')}</div>
+                  <div style={{ fontWeight: 700, fontFamily: 'var(--font-mono)', color: 'var(--text-primary)', marginTop: '4px', fontSize: '0.9rem' }}>
+                    {portfolio.sharpe_ratio?.toFixed(2)}
+                  </div>
+                </div>
+                <div style={{ textAlign: 'center' }}>
+                  <div>{t('lab.divYieldLabel')}</div>
+                  <div style={{ fontWeight: 700, fontFamily: 'var(--font-mono)', color: 'var(--info)', marginTop: '4px', fontSize: '0.9rem' }}>
+                    {((portfolio.dividend_yield || 0) * 100).toFixed(2)}%
+                  </div>
+                </div>
+              </div>
+              <div style={{ background: 'var(--surface-subtle)', border: '1px solid var(--border-subtle)', padding: '12px 14px', borderRadius: 'var(--card-radius)' }}>
+                {Object.entries(portfolio.allocations || {}).sort((a,b) => b[1] - a[1]).map(([isin, w]) => {
+                  const numW = parseFloat(w) || 0;
+                  const pctW = numW > 1.001 ? numW : numW * 100;
+                  return (
+                    <div key={isin} style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.84rem', fontFamily: 'var(--font-mono)', padding: '4px 0', borderBottom: '1px dashed var(--border-subtle)' }}>
+                      <span style={{ color: 'var(--text-secondary)' }}>{isin}</span>
+                      <span style={{ fontWeight: 700, color: 'var(--text-primary)' }}>{pctW.toFixed(1)}%</span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+  );
+};
+
+// 工具栏里直接展示的快捷模板（其余在「经典组合库」弹窗中）
+const QUICK_TEMPLATE_IDS = ['all-weather', 'sixty-forty', 'golden-butterfly'];
+
 const StrategyLabView = ({
   labIsins = [], labInput, setLabInput,
   labData, labLoading, labError,
@@ -35,12 +105,11 @@ const StrategyLabView = ({
   saveDialogOpen, setSaveDialogOpen,
   scenarioName, setScenarioName,
   scenarioSaving,
-  reportModalOpen, setReportModalOpen,
-  showMcDoc, setShowMcDoc,
+  setShowMcDoc,
   handleAddLabIsin, handleRemoveLabIsin,
   handleRunLabAnalysis, handleDeployLabStrategy,
   handleSaveScenario, applyLabTemplate,
-  reportLoading, handleGenerateReport, handleGenerateWordReport,
+  handleGenerateReport,
   labSum, isLabReady,
   ilpEnabled, setIlpEnabled,
   ilpConfig, setIlpConfig,
@@ -63,9 +132,27 @@ const StrategyLabView = ({
     stress: false,
     inflation: 2.5,
   };
-  const { t } = useLang();
+  const { t, lang } = useLang();
+  const [showClassicLibrary, setShowClassicLibrary] = React.useState(false);
   const [showDivDoc, setShowDivDoc] = React.useState(false);
   const [showDdDoc, setShowDdDoc] = React.useState(false);
+
+  // 套用经典组合：转成实验室模板（美股版）并关闭弹窗；applyLabTemplate 会同时切到自定义权重模式
+  // 结果区展示哪些组合：自定义模式 = 自定义配置一列；自动优化模式 = 优化器给出的三个组合
+  const resultPortfolios = !labData ? [] : labData.custom_portfolio
+    ? [{ key: 'custom_portfolio', name: t('lab.customAllocation'), color: 'var(--accent-color)' }]
+    : [
+        { key: 'max_sharpe', name: t('lab.maxSharpe'), color: 'var(--accent-color)' },
+        { key: 'min_volatility', name: t('lab.minVolatility'), color: 'var(--info)' },
+        { key: 'risk_parity', name: t('lab.riskParity'), color: 'var(--accent-secondary)' },
+      ].filter(p => labData[p.key]);
+
+  const handleApplyClassic = (portfolio, variant = 'us') => {
+    const tpl = toLabTemplate(portfolio, variant);
+    if (!tpl) return;
+    applyLabTemplate(tpl.isins, tpl.weights);
+    setShowClassicLibrary(false);
+  };
 
   const inputBoxStyle = {
     background: 'var(--surface-card)',
@@ -79,6 +166,11 @@ const StrategyLabView = ({
 
   return (
     <>
+      <ClassicPortfoliosModal
+        open={showClassicLibrary}
+        onClose={() => setShowClassicLibrary(false)}
+        onApply={handleApplyClassic}
+      />
       <div className="strategy-lab-scope" style={{ maxWidth: '1240px' }}>
         <header className="portfolio-hero-header">
           <div className="portfolio-hero-title-group">
@@ -109,19 +201,14 @@ const StrategyLabView = ({
               <Target size={18} style={{ color: 'var(--accent-color)' }} aria-hidden="true" />
               {t('lab.assetSandbox')}
             </h3>
-            <span style={{
-              fontSize: '0.72rem',
-              fontFamily: 'var(--font-mono)',
-              color: 'var(--accent-secondary)',
-              background: 'var(--surface-subtle)',
-              border: '1px solid var(--border-subtle)',
-              padding: '3px 10px',
-              borderRadius: '4px',
-              textTransform: 'uppercase',
-              letterSpacing: '0.05em',
-            }}>
-              {t('lab.customPortfolio')}
-            </span>
+            <div role="group" aria-label={t('lab.modeLabel')} className="lab-segmented">
+              <button type="button" aria-pressed={labMode === 'auto'} onClick={() => setLabMode('auto')}>
+                {t('lab.modeAuto')}
+              </button>
+              <button type="button" aria-pressed={labMode === 'custom'} onClick={() => setLabMode('custom')}>
+                {t('lab.modeCustom')}
+              </button>
+            </div>
           </div>
 
           <div className="lab-asset-grid">
@@ -215,7 +302,19 @@ const StrategyLabView = ({
                     </div>
                   )}
 
-                  {/* Weight input */}
+                  {/* Weight input — 自动优化模式下由优化器决定，不显示输入 */}
+                  {labMode === 'auto' ? (
+                    <div style={{
+                      marginTop: 'auto',
+                      borderTop: '1px solid var(--border-subtle)',
+                      paddingTop: '8px',
+                      fontSize: '0.72rem',
+                      color: 'var(--text-muted)',
+                      fontStyle: 'italic',
+                    }}>
+                      {t('lab.autoWeightByOptimizer')}
+                    </div>
+                  ) : (
                   <div style={{
                     display: 'flex',
                     alignItems: 'center',
@@ -242,6 +341,7 @@ const StrategyLabView = ({
                       <span style={{ fontSize: '0.8rem', fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)' }}>%</span>
                     </div>
                   </div>
+                  )}
                 </div>
               );
             })}
@@ -250,9 +350,19 @@ const StrategyLabView = ({
           <div style={{ display: 'flex', gap: '12px', marginBottom: '16px', flexWrap: 'wrap', alignItems: 'center' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
               <span style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', fontWeight: 600 }}>{t('lab.template')}:</span>
-              <button type="button" onClick={() => applyLabTemplate(['VTI', 'TLT', 'IEF', 'GLD', 'DBC'], { 'VTI': 30, 'TLT': 40, 'IEF': 15, 'GLD': 7.5, 'DBC': 7.5 })} className="action-btn-secondary" style={{ fontSize: '0.76rem', padding: '4px 10px' }}>All‑Weather</button>
-              <button type="button" onClick={() => applyLabTemplate(['SPY', 'BND'], { 'SPY': 60, 'BND': 40 })} className="action-btn-secondary" style={{ fontSize: '0.76rem', padding: '4px 10px' }}>60/40</button>
-              <button type="button" onClick={() => applyLabTemplate(['VTI', 'VBR', 'TLT', 'SHY', 'GLD'], { 'VTI': 20, 'VBR': 20, 'TLT': 20, 'SHY': 20, 'GLD': 20 })} className="action-btn-secondary" style={{ fontSize: '0.76rem', padding: '4px 10px' }}>Golden Butterfly</button>
+              {QUICK_TEMPLATE_IDS.map((id) => {
+                const p = CLASSIC_PORTFOLIOS.find((x) => x.id === id);
+                return (
+                  <button key={id} type="button" onClick={() => handleApplyClassic(p)}
+                    className="action-btn-secondary" style={{ fontSize: '0.76rem', padding: '4px 10px' }}>
+                    {p.name[lang]}
+                  </button>
+                );
+              })}
+              <button type="button" onClick={() => setShowClassicLibrary(true)}
+                className="action-btn-secondary" style={{ fontSize: '0.76rem', padding: '4px 10px', borderStyle: 'dashed' }}>
+                {t('lab.classicMore')}
+              </button>
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: '14px', marginLeft: 'auto', flexWrap: 'wrap' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
@@ -284,7 +394,23 @@ const StrategyLabView = ({
                 </select>
               </div>
             </div>
-            {labSum > 0 && (
+            {labMode === 'auto' && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }} title={t('lab.autoHint')}>
+                <span style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', fontWeight: 600 }}>{t('lab.maxWeight')}:</span>
+                <select
+                  value={labMaxWeight}
+                  onChange={e => setLabMaxWeight(parseFloat(e.target.value))}
+                  className="atelier-select"
+                  style={{ width: 'auto', padding: '4px 10px', fontSize: '0.8rem' }}
+                >
+                  {[0.2, 0.25, 0.3, 0.35, 0.4, 0.5].map(v => (
+                    <option key={v} value={v}>{Math.round(v * 100)}%</option>
+                  ))}
+                  <option value={1}>{t('lab.maxWeightNone')}</option>
+                </select>
+              </div>
+            )}
+            {labMode === 'custom' && labSum > 0 && (
               <div style={{
                 fontSize: '0.78rem',
                 fontFamily: 'var(--font-mono)',
@@ -423,7 +549,7 @@ const StrategyLabView = ({
                   borderRadius: '4px',
                   marginLeft: 'auto',
                 }}>
-                  {t('lab.mcActiveOn')}
+                  {labData.custom_portfolio ? t('lab.mcActiveOn') : t('lab.mcActiveOnMaxSharpe')}
                 </span>
               )}
             </div>
@@ -432,9 +558,9 @@ const StrategyLabView = ({
                 <thead>
                   <tr>
                     <th>{t('lab.metric')}</th>
-                    {labData.custom_portfolio && (
-                      <th style={{ color: 'var(--accent-color)', textAlign: 'center' }}>{t('lab.customAllocation')}</th>
-                    )}
+                    {resultPortfolios.map(p => (
+                      <th key={p.key} style={{ color: p.color, textAlign: 'center' }}>{p.name}</th>
+                    ))}
                   </tr>
                 </thead>
                 <tbody>
@@ -445,11 +571,11 @@ const StrategyLabView = ({
                   ].map(row => (
                     <tr key={row.label}>
                       <td style={{ color: 'var(--text-secondary)' }}>{row.label}</td>
-                      {labData.custom_portfolio && (
-                        <td style={{ textAlign: 'center', fontWeight: 700, fontFamily: 'var(--font-mono)', color: row.col }}>
-                          {row.fmt(labData.custom_portfolio[row.key])}
+                      {resultPortfolios.map(p => (
+                        <td key={p.key} style={{ textAlign: 'center', fontWeight: 700, fontFamily: 'var(--font-mono)', color: row.col }}>
+                          {row.fmt(labData[p.key][row.key])}
                         </td>
-                      )}
+                      ))}
                     </tr>
                   ))}
                   {(() => {
@@ -462,20 +588,20 @@ const StrategyLabView = ({
                       <>
                         <tr>
                           <td style={{ color: 'var(--text-secondary)', background: 'var(--surface-subtle)' }}>{t('lab.mcMedian')} ({labMcSettings.years}yr)</td>
-                          {labData.custom_portfolio && (
-                            <td style={{ textAlign: 'center', fontWeight: 700, fontFamily: 'var(--font-mono)', color: 'var(--accent-color)', background: 'var(--surface-subtle)' }}>
-                              ${(last.p50/1000).toFixed(0)}K
+                          {resultPortfolios.map(p => (
+                            <td key={p.key} style={{ textAlign: 'center', fontWeight: 700, fontFamily: 'var(--font-mono)', color: 'var(--accent-color)', background: 'var(--surface-subtle)' }}>
+                              {p.key === labData.mc_target_label ? `$${(last.p50/1000).toFixed(0)}K` : '–'}
                             </td>
-                          )}
+                          ))}
                         </tr>
                         {labData.monte_carlo.success_rate !== null && labData.monte_carlo.success_rate !== undefined && (
                           <tr>
                             <td style={{ color: 'var(--text-secondary)', background: 'var(--surface-subtle)' }}>{t('lab.successRate')}</td>
-                            {labData.custom_portfolio && (
-                              <td style={{ textAlign: 'center', fontWeight: 700, fontFamily: 'var(--font-mono)', color: srColor, background: 'var(--surface-subtle)' }}>
-                                {(labData.monte_carlo.success_rate*100).toFixed(1)}%
+                            {resultPortfolios.map(p => (
+                              <td key={p.key} style={{ textAlign: 'center', fontWeight: 700, fontFamily: 'var(--font-mono)', color: srColor, background: 'var(--surface-subtle)' }}>
+                                {p.key === labData.mc_target_label ? `${(labData.monte_carlo.success_rate*100).toFixed(1)}%` : '–'}
                               </td>
-                            )}
+                            ))}
                           </tr>
                         )}
                       </>
@@ -569,9 +695,7 @@ const StrategyLabView = ({
             })()}
 
             <div style={{ display: 'flex', gap: '15px', marginTop: '20px', borderTop: '1px solid var(--border-subtle)', paddingTop: '20px', flexWrap: 'wrap' }}>
-              {[
-                ...(labData.custom_portfolio ? [{ name: t('lab.customAllocation'), key: 'custom_portfolio', color: 'var(--accent-color)' }] : [])
-              ].map(p => {
+              {resultPortfolios.map(p => {
                 const bt = labData[p.key]?.backtest;
                 if (!bt || bt.length === 0) return null;
                 const end = bt[bt.length-1].value;
@@ -592,65 +716,10 @@ const StrategyLabView = ({
         {labTab === 'optimization' && labData && (
           <div className="lab-two-col">
             <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-              {labData.custom_portfolio && (
-                <div className="glass-card" style={{ borderTop: '3px solid var(--accent-color)', marginBottom: 0 }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
-                    <h3 style={{ margin: 0, color: 'var(--accent-color)', fontSize: '1.2rem' }}>{t('lab.customAllocation')}</h3>
-                    <button type="button" onClick={() => handleDeployLabStrategy(labData.custom_portfolio.allocations)} className="action-btn-secondary" style={{ fontSize: '0.76rem' }}>
-                      {t('lab.deploy')}
-                    </button>
-                  </div>
-                  <div style={{
-                    display: 'grid',
-                    gridTemplateColumns: 'repeat(4, 1fr)',
-                    gap: '8px',
-                    marginBottom: '14px',
-                    fontSize: '0.74rem',
-                    color: 'var(--text-secondary)',
-                    background: 'var(--surface-subtle)',
-                    border: '1px solid var(--border-subtle)',
-                    padding: '12px',
-                    borderRadius: 'var(--card-radius)',
-                  }}>
-                    <div style={{ textAlign: 'center' }}>
-                      <div>{t('lab.annualReturn')}</div>
-                      <div style={{ fontWeight: 700, fontFamily: 'var(--font-mono)', color: 'var(--success)', marginTop: '4px', fontSize: '0.9rem' }}>
-                        {((labData.custom_portfolio.expected_return || 0) * 100).toFixed(1)}%
-                      </div>
-                    </div>
-                    <div style={{ textAlign: 'center' }}>
-                      <div>{t('lab.volatility')}</div>
-                      <div style={{ fontWeight: 700, fontFamily: 'var(--font-mono)', color: 'var(--warning)', marginTop: '4px', fontSize: '0.9rem' }}>
-                        {((labData.custom_portfolio.volatility || 0) * 100).toFixed(1)}%
-                      </div>
-                    </div>
-                    <div style={{ textAlign: 'center' }}>
-                      <div>{t('lab.sharpeRatio')}</div>
-                      <div style={{ fontWeight: 700, fontFamily: 'var(--font-mono)', color: 'var(--text-primary)', marginTop: '4px', fontSize: '0.9rem' }}>
-                        {labData.custom_portfolio.sharpe_ratio?.toFixed(2)}
-                      </div>
-                    </div>
-                    <div style={{ textAlign: 'center' }}>
-                      <div>{t('lab.divYieldLabel')}</div>
-                      <div style={{ fontWeight: 700, fontFamily: 'var(--font-mono)', color: 'var(--info)', marginTop: '4px', fontSize: '0.9rem' }}>
-                        {((labData.custom_portfolio.dividend_yield || 0) * 100).toFixed(2)}%
-                      </div>
-                    </div>
-                  </div>
-                  <div style={{ background: 'var(--surface-subtle)', border: '1px solid var(--border-subtle)', padding: '12px 14px', borderRadius: 'var(--card-radius)' }}>
-                    {Object.entries(labData.custom_portfolio.allocations || {}).sort((a,b) => b[1] - a[1]).map(([isin, w]) => {
-                      const numW = parseFloat(w) || 0;
-                      const pctW = numW > 1.001 ? numW : numW * 100;
-                      return (
-                        <div key={isin} style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.84rem', fontFamily: 'var(--font-mono)', padding: '4px 0', borderBottom: '1px dashed var(--border-subtle)' }}>
-                          <span style={{ color: 'var(--text-secondary)' }}>{isin}</span>
-                          <span style={{ fontWeight: 700, color: 'var(--text-primary)' }}>{pctW.toFixed(1)}%</span>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              )}
+              {resultPortfolios.map(p => (
+                <AllocationCard key={p.key} portfolio={labData[p.key]} name={p.name} color={p.color}
+                  onDeploy={handleDeployLabStrategy} />
+              ))}
             </div>
 
             <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
@@ -989,7 +1058,6 @@ const StrategyLabView = ({
 
                 const divData = [];
                 let cumTotalDiv = 0;
-                let cumReinvested = 0;
                 let breakevenYear = null;
                 let firstYearDiv = 0;
                 let lastYearDiv = 0;
@@ -1015,7 +1083,6 @@ const StrategyLabView = ({
                     lastYearDiv = divGen;
 
                     cumTotalDiv += divGen;
-                    cumReinvested += divRe;
 
                     if (breakevenYear === null && totalCapitalInvested > 0 && cumTotalDiv >= totalCapitalInvested) {
                       breakevenYear = d.year;

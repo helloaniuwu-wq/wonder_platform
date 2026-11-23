@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { useLang } from '../i18n/LangContext';
+import { useLang } from '../i18n/langCore';
 import { ChevronDown, ChevronRight, BookOpen, Monitor, BarChart3, FlaskConical, Shield, Link2, FileText, Users, Search } from 'lucide-react';
 
 /**
@@ -9,7 +9,7 @@ import { ChevronDown, ChevronRight, BookOpen, Monitor, BarChart3, FlaskConical, 
 const chapters = [
   {
     id: 'ch0', icon: <Monitor size={16}/>, titleZh: '第0章：认识系统', titleEn: 'Ch.0: System Overview',
-    content: (t) => (<>
+    content: () => (<>
       <table className="hm-table"><thead><tr><th>模块</th><th>功能</th><th>回答的核心问题</th></tr></thead><tbody>
         <tr><td>📊 Live Portfolio</td><td>实盘组合管理</td><td>我的资产现在值多少？赚了多少？</td></tr>
         <tr><td>🧪 Strategy Lab</td><td>量化策略实验室</td><td>我该怎么配置？未来够不够花？</td></tr>

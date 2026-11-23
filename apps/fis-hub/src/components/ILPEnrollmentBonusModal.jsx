@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react';
-import { getEnrollmentBonusRate } from './ILPConfigPanel';
+import React, { useState } from 'react';
+import { getEnrollmentBonusRate } from '../utils/ilpConfigCalc';
 
 // ════════════════════════════════════════════════════════════════════════
 //  开户奖赏确认弹窗 — 支持手动修改奖赏率
@@ -20,21 +20,22 @@ function matchTier(premium) {
   return null;
 }
 
-const ILPEnrollmentBonusModal = ({ open, onClose, onConfirm, totalPremium, currentRate }) => {
-  const [customRate, setCustomRate] = useState(0);
-  const tier = matchTier(totalPremium || 0);
-
-  useEffect(() => {
-    if (open) {
-      // 初始化：优先用已有的 rate，否则用系统推荐
-      const initRate = currentRate !== null && currentRate !== undefined
-        ? currentRate
-        : getEnrollmentBonusRate(totalPremium || 0);
-      setCustomRate(parseFloat((initRate * 100).toFixed(2)));
-    }
-  }, [open, totalPremium, currentRate]);
-
+// 外层只负责「是否打开」；内层每次打开（或保费/当前奖赏率变化）时重新挂载，
+// 以惰性初始值完成表单初始化，不必在 effect 里同步 setState。
+const ILPEnrollmentBonusModal = ({ open, ...rest }) => {
   if (!open) return null;
+  return <ILPEnrollmentBonusModalBody key={`${rest.totalPremium}|${rest.currentRate}`} {...rest} />;
+};
+
+const ILPEnrollmentBonusModalBody = ({ onClose, onConfirm, totalPremium, currentRate }) => {
+  // 初始化：优先用已有的 rate，否则用系统推荐
+  const [customRate, setCustomRate] = useState(() => {
+    const initRate = currentRate !== null && currentRate !== undefined
+      ? currentRate
+      : getEnrollmentBonusRate(totalPremium || 0);
+    return parseFloat((initRate * 100).toFixed(2));
+  });
+  const tier = matchTier(totalPremium || 0);
 
   const rateDecimal = customRate / 100;
   const bonusAmount = (totalPremium || 0) * rateDecimal;

@@ -1,35 +1,33 @@
 import React, { useState, useEffect } from 'react';
-import { useLang } from '../i18n/LangContext';
+import { useLang } from '../i18n/langCore';
 
 
 const API = '/api';
 
 export function VerifyEmailOverlay({ token, onClose }) {
   const { t } = useLang();
-  const [status, setStatus] = useState('verifying'); // verifying, success, error
-  const [message, setMessage] = useState('');
+  // result 为空 = 验证中；没有 token 直接是失败结果（无需在 effect 里同步 setState）。
+  // 只存「服务端文案 / 兜底翻译 key」，翻译在渲染时做，这样切换语言不会重复请求验证接口。
+  const [result, setResult] = useState(
+    token ? null : { status: 'error', fallbackKey: 'auth.verifyFail' }
+  );
+  const status = result ? result.status : 'verifying';
+  const message = result ? (result.serverText || t(result.fallbackKey)) : '';
 
   useEffect(() => {
-    if (!token) {
-      setStatus('error');
-      setMessage(t('auth.verifyFail'));
-      return;
-    }
+    if (!token) return;
 
     fetch(`${API}/auth/verify-email?token=${token}`)
       .then(r => r.json().then(data => ({ ok: r.ok, data })))
       .then(({ ok, data }) => {
         if (ok) {
-          setStatus('success');
-          setMessage(data.message || t('auth.verifySuccess'));
+          setResult({ status: 'success', serverText: data.message, fallbackKey: 'auth.verifySuccess' });
         } else {
-          setStatus('error');
-          setMessage(data.detail || t('auth.verifyFail'));
+          setResult({ status: 'error', serverText: data.detail, fallbackKey: 'auth.verifyFail' });
         }
       })
       .catch(() => {
-        setStatus('error');
-        setMessage(t('auth.errNetwork'));
+        setResult({ status: 'error', fallbackKey: 'auth.errNetwork' });
       });
   }, [token]);
 
@@ -76,7 +74,7 @@ export function ResetPasswordOverlay({ token, onClose }) {
       } else {
         setError(data.detail || t('auth.errLoginFail'));
       }
-    } catch (err) {
+    } catch {
       setError(t('auth.errNetwork'));
     } finally {
       setLoading(false);

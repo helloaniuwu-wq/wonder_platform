@@ -25,41 +25,50 @@ export default function AdminPanel({ currentUser }) {
   const [filterRole, setFilterRole] = useState('all');
   const [search, setSearch] = useState('');
 
-  const fetchUsers = useCallback(async () => {
-    setLoading(true);
-    try {
-      const res = await fetch(`${API}/admin/users`, {
+  // loading 初始即为 true，首次加载无需再同步 setLoading(true)；
+  // 手动刷新走 fetchUsers（先置 loading 再加载）。
+  const loadUsers = useCallback(
+    () =>
+      fetch(`${API}/admin/users`, {
         headers: { ...authHeaders(), 'Content-Type': 'application/json' },
-      });
-      if (!res.ok) {
-        const errData = await res.json().catch(() => ({}));
-        throw new Error(errData.detail || `HTTP ${res.status}`);
-      }
-      const data = await res.json();
-      setUsers(Array.isArray(data) ? data : (data.users || []));
-    } catch (e) {
-      setError('无法加载用户列表：' + e.message);
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+      })
+        .then(async (res) => {
+          if (!res.ok) {
+            const errData = await res.json().catch(() => ({}));
+            throw new Error(errData.detail || `HTTP ${res.status}`);
+          }
+          return res.json();
+        })
+        .then((data) => setUsers(Array.isArray(data) ? data : (data.users || [])))
+        .catch((e) => setError('无法加载用户列表：' + e.message))
+        .finally(() => setLoading(false)),
+    []
+  );
 
-  const fetchStats = useCallback(async () => {
+  const loadStats = useCallback(
+    () =>
+      fetch(`${API}/admin/stats`, { headers: authHeaders() })
+        .then((res) => (res.ok ? res.json() : null))
+        .then((data) => { if (data) setStats(data); })
+        .catch(() => { /* 统计加载失败不阻塞页面 */ })
+        .finally(() => setStatsLoading(false)),
+    []
+  );
+
+  const fetchUsers = useCallback(() => {
+    setLoading(true);
+    return loadUsers();
+  }, [loadUsers]);
+
+  const fetchStats = useCallback(() => {
     setStatsLoading(true);
-    try {
-      const res = await fetch(`${API}/admin/stats`, {
-        headers: authHeaders(),
-      });
-      if (!res.ok) return;
-      setStats(await res.json());
-    } catch (_) {}
-    finally { setStatsLoading(false); }
-  }, []);
+    return loadStats();
+  }, [loadStats]);
 
   useEffect(() => {
-    fetchUsers();
-    fetchStats();
-  }, [fetchUsers, fetchStats]);
+    loadUsers();
+    loadStats();
+  }, [loadUsers, loadStats]);
 
   const showSuccessFeedback = (msg) => {
     setActionSuccess(msg);

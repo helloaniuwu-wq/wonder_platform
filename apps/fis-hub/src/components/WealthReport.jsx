@@ -9,7 +9,8 @@ import {
 // 使用 useRef + useEffect 控制 contentEditable DOM。
 // React 完全不在 re-render 时动 innerHTML，只在 fieldKey/editMode 切换时
 // 初始化一次内容；onBlur 时把用户输入持久化到 state。
-const EditableText = ({ fieldKey, tag: Tag = 'p', style, className, children, editMode, editableFields, onBlur }) => {
+const EditableText = ({ fieldKey, tag = 'p', style, className, children, editMode, editableFields, onBlur }) => {
+  const Tag = tag;
   const ref = React.useRef(null);
 
   // 每当 editMode 开启、或 fieldKey 变化时，将当前值同步到 DOM（仅一次）
@@ -48,19 +49,10 @@ const EditableText = ({ fieldKey, tag: Tag = 'p', style, className, children, ed
 };
 
 // ── 格式化工具 ────────────────────────────────────────────────
-function numFmt(val, decimals = 0) {
+function numFmt(val) {
   if (val === undefined || val === null || isNaN(val)) return '0';
   return Math.round(val).toLocaleString('zh-CN');
 }
-function currFmt(val, symbol = '$') {
-  if (val === undefined || val === null || isNaN(val)) return `${symbol}0`;
-  return `${symbol}${Math.round(val).toLocaleString('zh-CN')}`;
-}
-function pctFmt(val, decimals = 1) {
-  if (val === undefined || val === null || isNaN(val)) return '—';
-  return `${(val * 100).toFixed(decimals)}%`;
-}
-
 // ── 目标中文映射 ──────────────────────────────────────────────
 const GOAL_LABELS = {
   retirement: '退休收入保障',
@@ -134,9 +126,9 @@ function buildMilestones(chart, mcSettings, clientAge) {
 }
 
 // ── 主组件 ────────────────────────────────────────────────────
-const WealthReport = ({ labData, labMcSettings, insurancePlan, insuranceEnabled, clientInfo, onClose, onGenerateWord, reportLoading, onSwitchBrief }) => {
-  const mcResult = labData?.monte_carlo;
-  if (!mcResult) return null;
+// 内部组件：调用方已保证 labData.monte_carlo 存在，因此下面所有 hook 都是无条件调用。
+const WealthReportContent = ({ labData, labMcSettings, insurancePlan, insuranceEnabled, clientInfo, onClose, onGenerateWord, reportLoading, onSwitchBrief }) => {
+  const mcResult = labData.monte_carlo;
 
   // 兜底回撤数据，防止部分老缓存/加载的方案中没有 drawdown 引发白屏崩溃
   const dd = mcResult.drawdown || { p10: 0, p50: 0, p90: 0 };
@@ -166,7 +158,6 @@ const WealthReport = ({ labData, labMcSettings, insurancePlan, insuranceEnabled,
   // 纯投资组合终值（不含保险）
   const pureP10 = lastChartPoint.p10 || 0;
   const pureP50 = lastChartPoint.p50 || 0;
-  const pureP90 = lastChartPoint.p90 || 0;
   const realP50 = p50 / discountFactor;
 
   const successRate = (mcResult.success_rate * 100).toFixed(1);
@@ -1115,6 +1106,12 @@ const WealthReport = ({ labData, labMcSettings, insurancePlan, insuranceEnabled,
       </div>{/* end wealth-report-container */}
     </div>
   );
+};
+
+// 外层守卫：没有蒙特卡洛结果时不渲染（hook 不能放在提前 return 之后）。
+const WealthReport = (props) => {
+  if (!props.labData?.monte_carlo) return null;
+  return <WealthReportContent {...props} />;
 };
 
 export default WealthReport;

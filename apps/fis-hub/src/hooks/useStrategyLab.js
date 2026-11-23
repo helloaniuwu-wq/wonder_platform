@@ -13,7 +13,8 @@ export function useStrategyLab({ activeTab, currentUser }) {
   const [labLoading, setLabLoading] = useState(false);
   const [labError, setLabError] = useState(null);
   const [labDaysBack, setLabDaysBack] = useState(1825);
-  const [labMaxWeight, setLabMaxWeight] = useState(1.0);
+  // 仅「自动优化」模式使用：单一资产权重上限（自定义模式恒按 1.0 提交，行为与之前一致）
+  const [labMaxWeight, setLabMaxWeight] = useState(0.35);
   const [labMode, setLabMode] = useState('custom'); // 'auto' or 'custom'
   const [labCustomWeights, setLabCustomWeights] = useState({});
   const [insuranceEnabled, setInsuranceEnabled] = useState(false);
@@ -75,18 +76,24 @@ export function useStrategyLab({ activeTab, currentUser }) {
   //   - 用户直接修改保费时（在 ILPConfigPanel），仅更新 ilpConfig，不回写 capital
   //     （capital 是 MC 参数，保费跟随 capital，而非 capital 跟随保费）
 
-  // Effect 1: ILP 开启时 / capital 改变时 → 同步保费，强制 contribution=0
-  useEffect(() => {
-    if (!ilpEnabled || !labMcSettings) return;
-    const capital = parseFloat(labMcSettings.capital) || 0;
-    setIlpConfig(prev => {
-      if (prev.totalPremium === capital) return prev; // 值不变则不更新，避免触发 Effect 2
-      return { ...prev, totalPremium: capital };
-    });
-    setLabMcSettings(prev =>
-      prev && prev.contribution !== 0 ? { ...prev, contribution: 0 } : prev
-    );
-  }, [ilpEnabled, labMcSettings?.capital]); // eslint-disable-line react-hooks/exhaustive-deps
+  // ILP 开启时 / capital 改变时 → 同步保费，强制 contribution=0。
+  // 渲染期按 key（仅 ILP 开启时有值，值为 capital）比较，代替 effect 里同步 setState；
+  // 触发时机与原 effect（依赖 [ilpEnabled, capital]）完全一致，数据流仍是 capital → 保费的单向同步。
+  const ilpSyncKey = ilpEnabled && labMcSettings ? String(labMcSettings.capital) : null;
+  const [ilpSyncedKey, setIlpSyncedKey] = useState(null);
+  if (ilpSyncKey !== ilpSyncedKey) {
+    setIlpSyncedKey(ilpSyncKey);
+    if (ilpSyncKey !== null) {
+      const capital = parseFloat(labMcSettings.capital) || 0;
+      setIlpConfig(prev => {
+        if (prev.totalPremium === capital) return prev; // 值不变则不更新
+        return { ...prev, totalPremium: capital };
+      });
+      setLabMcSettings(prev =>
+        prev && prev.contribution !== 0 ? { ...prev, contribution: 0 } : prev
+      );
+    }
+  }
 
 
 
@@ -211,14 +218,14 @@ export function useStrategyLab({ activeTab, currentUser }) {
   };
 
   // ─── Scenarios: Save / Load / Delete ───────────────────────────────────────
-  const fetchSavedScenarios = async () => {
-    try {
-      const res = await fetch('/api/lab/scenarios');
-      if (!res.ok) { console.warn('fetchSavedScenarios: backend not ready (status', res.status, ')'); return; }
-      const data = await res.json();
-      setSavedScenarios(Array.isArray(data) ? data : []);
-    } catch (e) { console.error('fetchSavedScenarios:', e); }
-  };
+  const fetchSavedScenarios = () =>
+    fetch('/api/lab/scenarios')
+      .then(async (res) => {
+        if (!res.ok) { console.warn('fetchSavedScenarios: backend not ready (status', res.status, ')'); return; }
+        const data = await res.json();
+        setSavedScenarios(Array.isArray(data) ? data : []);
+      })
+      .catch((e) => console.error('fetchSavedScenarios:', e));
 
   useEffect(() => {
     if (activeTab === 'lab') {
@@ -233,6 +240,9 @@ export function useStrategyLab({ activeTab, currentUser }) {
       // Build a lean summary from current labData
       const target = labData[labData.mc_target_label];
       const mc = labData.monte_carlo;
+      const optimizerWeightsPct = Object.fromEntries(
+        Object.entries(target?.allocations || {}).map(([isin, w]) => [isin, Number((w * 100).toFixed(2))])
+      );
       const summary = {
         expected_return: target?.expected_return,
         volatility: target?.volatility,
@@ -252,7 +262,8 @@ export function useStrategyLab({ activeTab, currentUser }) {
         body: JSON.stringify({
           name: scenarioName.trim(),
           assets: labIsins,
-          custom_weights: labCustomWeights,
+          // 自动模式下保存优化器给出的权重，加载后即可在自定义模式复现
+          custom_weights: labMode === 'auto' ? optimizerWeightsPct : labCustomWeights,
           mc_settings: labMcSettings,
           summary,
           chart_data: mc?.chart || [],
@@ -432,7 +443,7 @@ export function useStrategyLab({ activeTab, currentUser }) {
       const payload = { 
         isins: labIsins, 
         days_back: labDaysBack, 
-        max_weight: labMaxWeight, 
+        max_weight: labMode === 'auto' ? labMaxWeight : 1.0,
         risk_free_rate: 0.04,
         mc_capital: Number(labMcSettings.capital),
         mc_contribution: Number(labMcSettings.contribution),
@@ -486,6 +497,7 @@ export function useStrategyLab({ activeTab, currentUser }) {
   };
 
   const applyLabTemplate = (isins, specificWeights = null) => {
+    setLabMode('custom'); // 套用模板意味着由模板给出权重
     setLabIsins(isins);
     if (specificWeights) {
       setLabCustomWeights(specificWeights);

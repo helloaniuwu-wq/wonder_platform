@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { useLang } from './i18n/LangContext';
+import { useLang } from './i18n/langCore';
 import WealthReport from './components/WealthReport';
 import ClientBriefReport from './components/ClientBriefReport';
 import Sidebar from './components/Sidebar';
@@ -28,7 +28,7 @@ import { useComposition } from './hooks/useComposition';
 import { useRebalance } from './hooks/useRebalance';
 import { useStrategyLab } from './hooks/useStrategyLab';
 import ImmigrationShowcase from './components/ImmigrationShowcase';
-import { useTheme } from './theme/ThemeContext';
+import { useTheme } from './theme/themeCore';
 import { Menu, Briefcase, Activity, FolderOpen, BookOpen, Sun, Moon, ShieldAlert } from 'lucide-react';
 
 
@@ -209,21 +209,6 @@ function App() {
   } = useStrategyLab({ activeTab, currentUser });
 
 
-  const handleAuthSuccess = (user) => {
-    setCurrentUser(user);
-    setAuthModalOpen(false);
-    // Token is now in localStorage — re-fetch portfolios so admin/advisor sees all
-    setTimeout(() => fetchPortfolios(), 100);
-  };
-
-  const handleLogout = () => {
-    authStorage.clear();
-    setCurrentUser(null);
-    // Re-fetch without token to show only public portfolios
-    setTimeout(() => fetchPortfolios(), 100);
-  };
-  
-
   const [newPf, setNewPf] = useState({
     name: '',
     budget: 1000000,
@@ -236,10 +221,6 @@ function App() {
 
   const totalWeight = newPf.allocations.reduce((sum, a) => sum + parseFloat(a.weight || 0), 0);
   
-  useEffect(() => {
-    fetchPortfolios();
-  }, []);
-
   // Asset allocation widgets（纯计算见 utils/portfolioStats.js）
   const sectorData = React.useMemo(() => buildSectorData(data), [data]);
   const top10Data = React.useMemo(() => buildTop10Data(data), [data]);
@@ -263,10 +244,40 @@ function App() {
   };
 
   useEffect(() => {
+    fetchPortfolios();
+  }, []);
+
+  const handleAuthSuccess = (user) => {
+    setCurrentUser(user);
+    setAuthModalOpen(false);
+    // Token is now in localStorage — re-fetch portfolios so admin/advisor sees all
+    setTimeout(() => fetchPortfolios(), 100);
+  };
+
+  const handleLogout = () => {
+    authStorage.clear();
+    setCurrentUser(null);
+    // Re-fetch without token to show only public portfolios
+    setTimeout(() => fetchPortfolios(), 100);
+  };
+
+  // 切换组合时的状态重置：渲染期按 activeId 比较（React 官方推荐的「按 key 重置状态」写法），
+  // 不在 effect 里同步 setState；effect 只负责异步取数。
+  const [loadedPortfolioId, setLoadedPortfolioId] = useState(null);
+  if (activeId !== loadedPortfolioId) {
+    setLoadedPortfolioId(activeId);
     if (activeId) {
       setLoading(true);
       setHistoryData([]); // Clear old history
-      
+    } else {
+      setData(null);
+      setHistoryData([]);
+      setDivProjData(null);
+    }
+  }
+
+  useEffect(() => {
+    if (activeId) {
       // 1. Fetch Core Data
       fetch(`/api/report/${activeId}`)
         .then(res => res.json())
@@ -297,10 +308,6 @@ function App() {
         })
         .catch(err => console.error("History fetch error:", err));
 
-      } else {
-      setData(null);
-      setHistoryData([]);
-      setDivProjData(null);
     }
   }, [activeId]);
 
@@ -338,16 +345,23 @@ function App() {
         } else if (prevNav === null) {
           lastNavRef.current = currNav;
         }
-      } catch (_) {}
+      } catch { /* 心跳失败静默，下个周期重试 */ }
     };
 
     const interval = setInterval(pollHeartbeat, 10_000);
     return () => clearInterval(interval);
   }, [activeId]);
 
+  // 进入「收入与预测」或其参数变化时先置 loading（渲染期比较 key，不在 effect 里同步 setState）
+  const divKey = activeId && activeSubTab === 'dividends' ? `${activeId}|${taxRate}|${dripMode}` : null;
+  const [loadedDivKey, setLoadedDivKey] = useState(null);
+  if (divKey !== loadedDivKey) {
+    setLoadedDivKey(divKey);
+    if (divKey) setDivLoading(true);
+  }
+
   useEffect(() => {
     if (activeId && activeSubTab === 'dividends') {
-       setDivLoading(true);
        fetch(`/api/portfolios/dividends/projections/${activeId}?tax_rate=${taxRate}&drip=${dripMode}`)
          .then(res => {
            if (!res.ok) throw new Error(`Server returned ${res.status}`);

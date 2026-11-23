@@ -1,5 +1,5 @@
 import React, { useState, useMemo } from 'react';
-import { useLang } from '../i18n/LangContext';
+import { useLang } from '../i18n/langCore';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
   PieChart, Pie, Cell, AreaChart, Area, ComposedChart
@@ -24,7 +24,7 @@ const PortfolioView = ({
   handleOpenCompModal, handleOpenManageDivModal,
   handleRebalancePreview, handleUndoRebalance,
   canEdit,
-  ilpEnabled, ilpConfig, setIlpConfig, setIlpEnabled,
+  ilpEnabled, ilpConfig,
   onOpenIlpEnrollmentModal,
 }) => {
   const { t } = useLang();

@@ -1,5 +1,5 @@
 import React from 'react';
-import { useLang } from '../i18n/LangContext';
+import { useLang } from '../i18n/langCore';
 import { ShieldAlert } from 'lucide-react';
 
 // ── 合规确认弹窗（首次进入时展示）──────────────────────────────────────────

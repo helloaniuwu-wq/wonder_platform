@@ -3,7 +3,7 @@ import { Trash2 } from 'lucide-react';
 
 const CompositionModal = ({
   showCompModal, setShowCompModal,
-  compTxs, compTargets, compEditing,
+  compTxs, compEditing,
   compNewAsset, setCompNewAsset,
   handleCompEdit, handleCompSave, handleCompDelete, handleCompAddAsset,
 }) => {

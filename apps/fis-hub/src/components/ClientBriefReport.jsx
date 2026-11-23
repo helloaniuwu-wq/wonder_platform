@@ -12,16 +12,6 @@ function numFmt(val) {
   return Math.round(val).toLocaleString('zh-CN');
 }
 
-// ── 生活化类比：把钱翻译成生活 ────────────────────────────
-function lifeAnalogy(amount, years) {
-  if (!amount || amount <= 0) return null;
-  const monthly = amount / 12;
-  return {
-    monthly: Math.round(monthly),
-    years,
-  };
-}
-
 const ClientBriefReport = ({ labData, labMcSettings, insurancePlan, insuranceEnabled, clientInfo, onClose, onSwitchProfessional }) => {
   const mcResult = labData?.monte_carlo;
   if (!mcResult) return null;
@@ -33,10 +23,8 @@ const ClientBriefReport = ({ labData, labMcSettings, insurancePlan, insuranceEna
   const reportDate = new Date().toLocaleDateString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric' });
 
   const runYears = parseInt(labMcSettings.years) || 40;
-  const inflationDec = parseFloat(labMcSettings.inflation) / 100 || 0;
   const capital = parseFloat(labMcSettings.capital) || 0;
   const withdrawal = parseFloat(labMcSettings.withdrawal) || 0;
-  const withdrawStart = parseInt(labMcSettings.withdrawal_start) || 0;
 
   const lastChartPoint = mcResult.chart[mcResult.chart.length - 1] || {};
   const isCombined = insuranceEnabled && lastChartPoint.combined_p50 !== undefined;
@@ -181,7 +169,7 @@ const ClientBriefReport = ({ labData, labMcSettings, insurancePlan, insuranceEna
               </ResponsiveContainer>
               <div style={{ display: 'flex', gap: 20, justifyContent: 'center', marginTop: 8, fontSize: '0.78rem', color: '#64748b' }}>
                 <span><span style={{ display: 'inline-block', width: 20, height: 3, background: '#2563eb', marginRight: 6, verticalAlign: 'middle' }} />预期路径</span>
-                <span><span style={{ display: 'inline-block', width: 20, height: 2, background: '#dc2626', marginRight: 6, verticalAlign: 'middle', borderTop: '2px dashed #dc2626', background: 'transparent' }} />保守路径</span>
+                <span><span style={{ display: 'inline-block', width: 20, height: 2, marginRight: 6, verticalAlign: 'middle', borderTop: '2px dashed #dc2626', background: 'transparent' }} />保守路径</span>
               </div>
             </div>
           </div>

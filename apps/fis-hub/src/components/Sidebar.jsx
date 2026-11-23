@@ -1,7 +1,7 @@
 import React, { useState, useRef } from 'react';
 import { Briefcase, Activity, Plus, Trash2, Users, UserCheck, GripVertical, Link, BookOpen, X } from 'lucide-react';
 import ILPSettingsModal from './ILPSettingsModal';
-import { useLang } from '../i18n/LangContext';
+import { useLang } from '../i18n/langCore';
 
 /**
  * Sidebar component — Nordic Gallery Catalog & Off-canvas Drawer on Tablet/Mobile.

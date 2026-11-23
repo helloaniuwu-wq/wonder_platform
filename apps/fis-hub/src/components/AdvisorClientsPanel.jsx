@@ -35,29 +35,35 @@ export default function AdvisorClientsPanel({ currentUser, onAssignPortfolio }) 
     userEmail: '' 
   });
 
-  const fetchClients = useCallback(async () => {
+  // loading 初始为 true、error 初始为空，首次加载不必在 effect 里同步 setState；
+  // 手动刷新走 fetchClients。
+  const loadClients = useCallback(
+    () =>
+      fetch(`${API}/advisor/clients`, {
+        headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+      })
+        .then(async (res) => {
+          if (!res.ok) {
+            const errData = await res.json().catch(() => ({}));
+            throw new Error(errData.detail || `HTTP ${res.status}`);
+          }
+          return res.json();
+        })
+        .then((data) => setClients(Array.isArray(data) ? data : (data.clients || [])))
+        .catch((e) => setError('无法加载客户列表：' + e.message))
+        .finally(() => setLoading(false)),
+    []
+  );
+
+  const fetchClients = useCallback(() => {
     setLoading(true);
     setError('');
-    try {
-      const res = await fetch(`${API}/advisor/clients`, {
-        headers: { ...authHeaders(), 'Content-Type': 'application/json' },
-      });
-      if (!res.ok) {
-        const errData = await res.json().catch(() => ({}));
-        throw new Error(errData.detail || `HTTP ${res.status}`);
-      }
-      const data = await res.json();
-      setClients(Array.isArray(data) ? data : (data.clients || []));
-    } catch (e) {
-      setError('无法加载客户列表：' + e.message);
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+    return loadClients();
+  }, [loadClients]);
 
   useEffect(() => {
-    fetchClients();
-  }, [fetchClients]);
+    loadClients();
+  }, [loadClients]);
 
   const handleExpandClient = async (clientId) => {
     if (expandedId === clientId) {
@@ -78,7 +84,7 @@ export default function AdvisorClientsPanel({ currentUser, onAssignPortfolio }) 
         ...prev,
         [clientId]: Array.isArray(data) ? data : (data.portfolios || [])
       }));
-    } catch (e) {
+    } catch {
       setClientPortfolios(prev => ({ ...prev, [clientId]: [] }));
     } finally {
       setPortfolioLoading(prev => ({ ...prev, [clientId]: false }));

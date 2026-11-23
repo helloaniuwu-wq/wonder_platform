@@ -1617,3 +1617,140 @@ input:checked + .slider:before {
     page-break-inside: avoid;
   }
 }
+
+
+/* ==========================================================================
+   Strategy Lab — 权重模式分段控件
+   ========================================================================== */
+.lab-segmented {
+  display: inline-flex;
+  padding: 3px;
+  gap: 2px;
+  background: var(--surface-subtle);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--card-radius);
+}
+.lab-segmented button {
+  min-block-size: 0;
+  padding: 5px 14px;
+  border: 0;
+  border-radius: calc(var(--card-radius) - 2px);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  transition: background-color 0.18s ease, color 0.18s ease, box-shadow 0.18s ease;
+}
+.lab-segmented button:hover:not([aria-pressed='true']) { color: var(--text-primary); }
+.lab-segmented button[aria-pressed='true'] {
+  background: var(--surface-elevated);
+  color: var(--accent-color);
+  box-shadow: 0 1px 2px rgba(20, 20, 19, 0.08), inset 0 0 0 1px var(--border-strong);
+}
+.lab-segmented button:focus-visible { outline: 2px solid var(--accent-color); outline-offset: 1px; }
+@media (pointer: coarse) { .lab-segmented button { padding: 10px 16px; } }
+
+
+/* ==========================================================================
+   Strategy Lab — 经典组合库
+   ========================================================================== */
+.classic-modal {
+  max-width: 1120px;
+  width: 94%;
+  max-height: 88dvh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.classic-modal-head {
+  display: flex; justify-content: space-between; align-items: flex-start; gap: 16px;
+  padding-bottom: 14px; margin-bottom: 14px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.classic-toolbar {
+  display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap;
+  gap: 12px; margin-bottom: 16px;
+}
+.lab-segmented button:disabled { opacity: 0.55; cursor: not-allowed; }
+.classic-legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 0.72rem; color: var(--text-secondary); }
+.classic-legend span { display: inline-flex; align-items: center; gap: 5px; }
+.classic-legend i, .classic-holdings i {
+  display: inline-block; width: 8px; height: 8px; border-radius: 2px; flex-shrink: 0;
+}
+.classic-grid {
+  display: grid; gap: 14px;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+}
+.classic-card {
+  display: flex; flex-direction: column; gap: 10px;
+  padding: 16px 16px 14px;
+  background: var(--surface-card);
+  border: 1px solid var(--border-subtle);
+  border-top: 2px solid var(--accent-color);
+  border-radius: var(--card-radius);
+  transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
+}
+.classic-card:hover {
+  border-color: var(--border-strong);
+  box-shadow: var(--card-shadow);
+  transform: translateY(-1px);
+}
+.classic-card header { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.classic-card h3 { margin: 0; font-size: 1.22rem; line-height: 1.2; }
+.classic-origin {
+  font-size: 0.72rem; color: var(--accent-secondary);
+  letter-spacing: 0.04em; text-transform: uppercase;
+}
+.classic-risk {
+  flex-shrink: 0; font-size: 0.68rem; font-weight: 600; padding: 2px 8px;
+  border-radius: 999px; border: 1px solid currentColor; white-space: nowrap;
+}
+.classic-risk-low { color: var(--success); }
+.classic-risk-lowMid { color: var(--info); }
+.classic-risk-mid { color: var(--warning); }
+.classic-risk-midHigh { color: var(--danger); }
+.classic-bar {
+  display: flex; height: 8px; border-radius: 4px; overflow: hidden;
+  background: var(--surface-inset); gap: 1px;
+}
+.classic-bar span { display: block; height: 100%; }
+.classic-holdings {
+  display: flex; flex-wrap: wrap; gap: 4px 12px; margin: 0; padding: 0; list-style: none;
+  font-family: var(--font-mono); font-size: 0.74rem; color: var(--text-secondary);
+}
+.classic-holdings li { display: inline-flex; align-items: center; gap: 5px; }
+.classic-holdings b { color: var(--text-primary); font-weight: 600; }
+.classic-idea { margin: 0; font-size: 0.84rem; line-height: 1.6; color: var(--text-secondary); }
+.classic-note {
+  margin: 0; font-size: 0.78rem; line-height: 1.55; color: var(--text-muted);
+  font-style: italic; border-left: 2px solid var(--border-strong); padding-left: 10px;
+}
+.classic-apply { margin-top: auto; padding: 0.55rem 1rem; font-size: 0.82rem; }
+.classic-disclaimer {
+  margin-top: 18px; padding-top: 12px; border-top: 1px solid var(--border-subtle);
+  font-size: 0.74rem; line-height: 1.6; color: var(--text-secondary);
+}
+.classic-disclaimer p { margin: 0 0 4px; }
+@media (prefers-reduced-motion: reduce) {
+  .classic-card { transition: none; }
+  .classic-card:hover { transform: none; }
+}
+
+/* 经典组合库：资产类别配色（Nordic Gallery 的克制色系，六色在浅/深主题下均可区分） */
+:root {
+  --ac-equity: #1E4D3B;     /* 森林绿 */
+  --ac-bond: #28547A;       /* 墨蓝 */
+  --ac-reit: #7B4E8C;       /* 暗李紫 */
+  --ac-gold: #C79A2E;       /* 亮古铜金 */
+  --ac-commodity: #B5532C;  /* 赤陶 */
+  --ac-cash: #8A847C;       /* 暖灰 */
+}
+[data-theme="obsidian"] {
+  --ac-equity: #4FA37E;
+  --ac-bond: #6FA3D4;
+  --ac-reit: #B58BC4;
+  --ac-gold: #D9AC4E;
+  --ac-commodity: #DE8A62;
+  --ac-cash: #8F8A82;
+}

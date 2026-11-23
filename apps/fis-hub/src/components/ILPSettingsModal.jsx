@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { authHeaders } from '../utils/auth';
-import { getEnrollmentBonusRate } from './ILPConfigPanel';
+import { getEnrollmentBonusRate } from '../utils/ilpConfigCalc';
 
 // ════════════════════════════════════════════════════════════════════════
 //  ILPSettingsModal — 通用 ILP 配置弹窗
@@ -37,12 +37,22 @@ const ILPSettingsModal = ({
     ? `/api/ilp/config/${targetUserId}`
     : '/api/ilp/config';
 
+  // 打开 / 切换目标用户时重置加载状态：
+  // 用「渲染期按 key 比较」代替 effect 里同步 setState（React 官方推荐的重置方式）。
+  const loadKey = open ? apiUrl : null;
+  const [loadedKey, setLoadedKey] = useState(null);
+  if (loadKey !== loadedKey) {
+    setLoadedKey(loadKey);
+    if (loadKey) {
+      setLoading(true);
+      setError('');
+      setSaved(false);
+    }
+  }
+
   // 加载现有配置（切换目标用户时重新加载）
   useEffect(() => {
     if (!open) return;
-    setLoading(true);
-    setError('');
-    setSaved(false);
     fetch(apiUrl, { headers: authHeaders() })
       .then(r => r.ok ? r.json() : Promise.reject(r.status))
       .then(data => {
@@ -265,7 +275,7 @@ const ILPSettingsModal = ({
                   <span style={{ color: 'rgba(255,255,255,0.45)', fontSize: '0.85rem' }}>%</span>
                   {config.enrollment_rate !== null && (
                     <button onClick={() => update('enrollment_rate', null)}
-                      style={{ background: 'transparent', border: 'none', color: 'rgba(255,255,255,0.35)',
+                      style={{ background: 'transparent', color: 'rgba(255,255,255,0.35)',
                         cursor: 'pointer', fontSize: '0.78rem', padding: '2px 8px',
                         borderRadius: '4px', border: '1px solid rgba(255,255,255,0.1)' }}>
                       重置

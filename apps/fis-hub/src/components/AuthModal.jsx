@@ -1,6 +1,6 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { authStorage } from '../utils/auth';
-import { useLang } from '../i18n/LangContext';
+import { useLang } from '../i18n/langCore';
 
 
 const API = '/api';
@@ -44,10 +44,6 @@ export default function AuthModal({ onSuccess, onClose }) {
   const [regPwd2,      setRegPwd2]      = useState('');
   const [showRegPwd,   setShowRegPwd]   = useState(false);
   const [showRegPwd2,  setShowRegPwd2]  = useState(false);
-  const [regType,      setRegType]      = useState('free');    // free | premium
-  const [advisorId,    setAdvisorId]    = useState('');        // 选中的顾问 ID
-  const [advisors,     setAdvisors]     = useState([]);        // 顾问列表
-  const [advisorLoading, setAdvisorLoading] = useState(false);
   const [agreedTerms,  setAgreedTerms]  = useState(false);
 
   const [loading, setLoading] = useState(false);
@@ -64,17 +60,6 @@ export default function AuthModal({ onSuccess, onClose }) {
     return () => window.removeEventListener('keydown', h);
   }, [onClose]);
 
-  /* ── 拉取顾问列表（注册模式 + 选择 premium 才拉） ── */
-  useEffect(() => {
-    if (mode !== 'register' || regType !== 'premium') return;
-    setAdvisorLoading(true);
-    fetch(`${API}/auth/advisors`)
-      .then(r => r.ok ? r.json() : [])
-      .then(list => setAdvisors(Array.isArray(list) ? list : []))
-      .catch(() => setAdvisors([]))
-      .finally(() => setAdvisorLoading(false));
-  }, [mode, regType]);
-
   /* ── 切换模式时清空 ── */
   const switchMode = (m) => {
     setMode(m);
@@ -82,28 +67,28 @@ export default function AuthModal({ onSuccess, onClose }) {
     setSuccess('');
   };
 
-  /* ── 校验 ── */
-  const validateLogin = () => {
-    if (!loginEmail.trim())      return t('auth.errEmailReq');
-    if (!loginPwd)               return t('auth.errPwdReq');
-    return null;
-  };
-
-  const validateRegister = () => {
-    if (!regName.trim())         return t('auth.errNameReq');
-    if (!regEmail.trim())        return t('auth.errEmailReq');
-    if (!/\S+@\S+\.\S+/.test(regEmail)) return t('auth.errEmailInvalid');
-    if (regPwd.length < 6)       return t('auth.errPwdMin');
-    if (regPwd !== regPwd2)      return t('auth.errPwdMatch');
-    if (regType === 'premium' && !advisorId) return t('auth.errAdvisorReq');
-    if (!agreedTerms)             return t('auth.errTermsReq');
-    return null;
-  };
-
   /* ── 提交 ── */
   const handleSubmit = useCallback(async (e) => {
     e.preventDefault();
     setError('');
+
+    /* ── 校验 ── */
+    const validateLogin = () => {
+      if (!loginEmail.trim())      return t('auth.errEmailReq');
+      if (!loginPwd)               return t('auth.errPwdReq');
+      return null;
+    };
+
+    const validateRegister = () => {
+      if (!regName.trim())         return t('auth.errNameReq');
+      if (!regEmail.trim())        return t('auth.errEmailReq');
+      if (!/\S+@\S+\.\S+/.test(regEmail)) return t('auth.errEmailInvalid');
+      if (regPwd.length < 6)       return t('auth.errPwdMin');
+      if (regPwd !== regPwd2)      return t('auth.errPwdMatch');
+      if (!agreedTerms)             return t('auth.errTermsReq');
+      return null;
+    };
+
 
     const err = mode === 'login' ? validateLogin() : validateRegister();
     if (err) { setError(err); return; }
@@ -158,7 +143,7 @@ export default function AuthModal({ onSuccess, onClose }) {
           headers: { 'Authorization': `Bearer ${tokenValue}` }
         });
         userInfo = meRes.ok ? await meRes.json() : null;
-      } catch (_) { userInfo = null; }
+      } catch { userInfo = null; }
 
       const user = userInfo || {
         id: data.user_id || data.id,
@@ -179,7 +164,7 @@ export default function AuthModal({ onSuccess, onClose }) {
     } finally {
       setLoading(false);
     }
-  }, [mode, loginEmail, loginPwd, regEmail, regPwd, regPwd2, regName, regType, advisorId, agreedTerms, onSuccess]);
+  }, [t, mode, loginEmail, loginPwd, regEmail, regPwd, regPwd2, regName, agreedTerms, onSuccess]);
 
   /* ═══════════════════════════════════════════════════════════════ */
   return (
@@ -249,7 +234,7 @@ export default function AuthModal({ onSuccess, onClose }) {
               } else {
                 setError(data.detail || '请求失败');
               }
-            } catch (err) {
+            } catch {
               setError('网络错误');
             } finally {
               setLoading(false);

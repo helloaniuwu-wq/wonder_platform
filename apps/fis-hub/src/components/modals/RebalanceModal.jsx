@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useMemo } from 'react';
 import { TrendingUp, Calendar, ChevronRight, RefreshCw, Search } from 'lucide-react';
 import { getCurrencySymbol } from '../../utils/currency';
 
@@ -26,26 +26,17 @@ const RebalanceModal = ({
   const [localTargets, setLocalTargets] = useState({});     // { ISIN: '25' } (pct string)
   const [calculating, setCalculating]   = useState(false);
 
-  // Reset sub-step each time the modal opens
-  useEffect(() => {
+  // 每次打开弹窗时重置本地步骤：渲染期按「是否打开」比较，代替 effect 里同步 setState。
+  // （父级的 rebalancePreview 已由 handleRebalancePreview 在打开前置空，这里无需再改父状态。）
+  const [wasOpen, setWasOpen] = useState(showRebalanceModal);
+  if (showRebalanceModal !== wasOpen) {
+    setWasOpen(showRebalanceModal);
     if (showRebalanceModal) {
       setSubStep('date');
       setLiveWeights([]);
       setLocalTargets({});
-      setRebalancePreview(null);
     }
-  }, [showRebalanceModal]);
-
-  // Pre-fill targets from saved draft AFTER live weights are fetched
-  useEffect(() => {
-    if (subStep === 'edit' && liveWeights.length > 0) {
-      const init = {};
-      for (const [isin, dec] of Object.entries(rebalanceDraftTargets || {})) {
-        if (dec > 0) init[isin] = String(r2(dec * 100));
-      }
-      setLocalTargets(init);
-    }
-  }, [subStep, liveWeights, rebalanceDraftTargets]);
+  }
 
   // All derived values (hooks must be above early return)
   const totalTargetPct = useMemo(
@@ -68,7 +59,16 @@ const RebalanceModal = ({
       if (rebalanceDate) params.set('as_of_date', rebalanceDate);
       const res  = await fetch(`/api/portfolios/current_weights/${portfolioId}?${params}`, { headers: authHeaders() });
       const json = await res.json();
-      setLiveWeights(json.weights || []);
+      const weights = json.weights || [];
+      setLiveWeights(weights);
+      // 取到实时权重后，用已保存的草稿目标预填输入框
+      if (weights.length > 0) {
+        const init = {};
+        for (const [isin, dec] of Object.entries(rebalanceDraftTargets || {})) {
+          if (dec > 0) init[isin] = String(r2(dec * 100));
+        }
+        setLocalTargets(init);
+      }
       setSubStep('edit');
     } catch (e) {
       console.error(e);

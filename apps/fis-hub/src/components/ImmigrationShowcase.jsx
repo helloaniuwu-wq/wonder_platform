@@ -127,7 +127,7 @@ const PORTFOLIOS = {
   ],
 }
 
-function PortfolioCard({ p, lang }) {
+function PortfolioCard({ p }) {
   const [tab, setTab] = useState(0)
   const tabContent = [p.analysis, p.risk, p.persona]
 
@@ -272,7 +272,6 @@ export default function ImmigrationShowcase({ lang = 'zh', onBack }) {
     },
   }
 
-  const consultUrl = `${window.location.origin.replace('5176', '3000')}/immigration`
 
   return (
     <div style={S.root}>
@@ -298,7 +297,7 @@ export default function ImmigrationShowcase({ lang = 'zh', onBack }) {
       </div>
 
       <div style={S.grid}>
-        {portfolios.map(p => <PortfolioCard key={p.id} p={p} lang={lang} />)}
+        {portfolios.map(p => <PortfolioCard key={p.id} p={p} />)}
       </div>
 
       <div style={S.ctaBox}>
