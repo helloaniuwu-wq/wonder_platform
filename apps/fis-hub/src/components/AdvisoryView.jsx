@@ -159,6 +159,7 @@ const AdvisoryView = ({
   // ── AI 归因分析状态 ────────────────────────────────────────────────────────
   const [aiModel, setAiModel] = useState('deepseek-pro');
   const [aiLoading, setAiLoading] = useState(false);
+  const [aiProgress, setAiProgress] = useState(null);
   const [aiError, setAiError] = useState('');
   const [aiAnalysis, setAiAnalysis] = useState(null);
   const [selectedBasketIndex, setSelectedBasketIndex] = useState(0);
@@ -318,6 +319,7 @@ const AdvisoryView = ({
     if (!basket) return;
 
     setAiLoading(true);
+    setAiProgress({ elapsed: 0, stage: 'connecting', model: aiModel, reasoning_chars: 0, content_chars: 0 });
     setAiError('');
     try {
       const payload = {
@@ -338,18 +340,75 @@ const AdvisoryView = ({
         },
         recommendation: basket,
         model: aiModel,
+        stream: true,
       };
 
       const res = await fetch('/api/quant/recommend/explain', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'text/event-stream, application/json',
+          ...authHeaders(),
+        },
         body: JSON.stringify(payload),
       });
 
-      const json = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        throw new Error(json.detail || json.error || `HTTP ${res.status}`);
+      const contentType = (res.headers.get('content-type') || '').toLowerCase();
+      let json = null;
+
+      if (res.ok && contentType.includes('text/event-stream') && res.body?.getReader) {
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        const processBlock = (block) => {
+          if (!block.trim()) return;
+          let eventName = 'message';
+          const dataLines = [];
+          for (const line of block.split(/\r?\n/)) {
+            if (line.startsWith('event:')) eventName = line.slice(6).trim();
+            else if (line.startsWith('data:')) dataLines.push(line.slice(5).trim());
+          }
+          if (dataLines.length === 0) return;
+          const rawData = dataLines.join('\n');
+          let parsed = null;
+          try {
+            parsed = JSON.parse(rawData);
+          } catch {
+            return;
+          }
+          if (eventName === 'progress') {
+            setAiProgress(parsed);
+          } else if (eventName === 'result') {
+            json = parsed;
+          } else if (eventName === 'error') {
+            throw new Error(parsed?.detail || 'AI generation failed');
+          }
+        };
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const parts = buffer.split(/\r?\n\r?\n/);
+          buffer = parts.pop() ?? '';
+          for (const part of parts) {
+            processBlock(part);
+          }
+        }
+        if (buffer.trim()) {
+          processBlock(buffer);
+        }
+        if (!json) {
+          throw new Error(isEn ? 'Stream ended without final AI result' : '连接已结束但未收到完整研判结果，请重试');
+        }
+      } else {
+        json = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          throw new Error(json.detail || json.error || `HTTP ${res.status}`);
+        }
       }
+
       setAiAnalysis(json);
       if (activeSavedId) {
         setSavedProfiles((prev) => {
@@ -366,6 +425,7 @@ const AdvisoryView = ({
       setAiError(err.message || 'AI generation failed');
     } finally {
       setAiLoading(false);
+      setAiProgress(null);
     }
   };
 
@@ -1245,7 +1305,11 @@ const AdvisoryView = ({
                 >
                   <Sparkles size={14} />
                   {aiLoading
-                    ? (isEn ? 'Analyzing Macro & Valuation...' : 'AI 研判测算中...')
+                    ? (aiProgress
+                        ? (isEn
+                            ? `Thinking (${aiProgress.elapsed || 0}s)...`
+                            : `AI 深度推理中 (${aiProgress.elapsed || 0}s)...`)
+                        : (isEn ? 'Analyzing Macro & Valuation...' : 'AI 研判测算中...'))
                     : (aiAnalysis ? (isEn ? 'Regenerate Analysis' : '重新生成 AI 报告') : (isEn ? 'Generate AI Attribution' : '生成 AI 配置研判报告'))}
                 </button>
               </div>
@@ -1254,6 +1318,41 @@ const AdvisoryView = ({
             {aiError && (
               <div style={{ color: 'var(--danger)', background: 'var(--danger-bg)', padding: '8px 12px', borderRadius: '4px', fontSize: '0.82rem' }}>
                 {aiError}
+              </div>
+            )}
+
+            {aiLoading && aiProgress && (
+              <div
+                style={{
+                  padding: '10px 14px',
+                  borderRadius: '6px',
+                  background: 'rgba(var(--accent-secondary-rgb), 0.08)',
+                  border: '1px solid rgba(var(--accent-secondary-rgb), 0.28)',
+                  fontSize: '0.8rem',
+                  color: 'var(--text-secondary)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  flexWrap: 'wrap',
+                  gap: '8px',
+                }}
+              >
+                <span>
+                  {isEn
+                    ? `Streaming deep analysis (${aiProgress.model || aiModel}) · Stage: ${aiProgress.stage || 'thinking'}`
+                    : `正在实时流式推理（${aiProgress.model || aiModel}）· 阶段：${
+                        aiProgress.stage === 'writing'
+                          ? '撰写正式报告'
+                          : aiProgress.stage === 'thinking'
+                            ? '深度思维推演'
+                            : '连接模型'
+                      }`}
+                </span>
+                <span style={{ fontFamily: 'var(--font-mono)', fontSize: '0.75rem', color: 'var(--accent-secondary)' }}>
+                  {aiProgress.elapsed || 0}s
+                  {aiProgress.reasoning_chars > 0 ? ` · ${isEn ? 'Reasoning' : '思考'} ${aiProgress.reasoning_chars.toLocaleString()} ${isEn ? 'chars' : '字'}` : ''}
+                  {aiProgress.content_chars > 0 ? ` · ${isEn ? 'Report' : '正文'} ${aiProgress.content_chars.toLocaleString()} ${isEn ? 'chars' : '字'}` : ''}
+                </span>
               </div>
             )}
 
@@ -1561,8 +1660,8 @@ const AdvisoryView = ({
               >
                 <div style={{ marginBottom: '8px', fontWeight: 600 }}>
                   {isEn
-                    ? 'Deep macro regime analysis combines current USD yields (4.5%+) and equity ERP compression with client special needs.'
-                    : 'AI 投资顾问将结合【当前美元高利率环境】、【美股高估值与 ERP 压缩现状】以及【客户特定诉求与久期】出具买方机构视角的深度归因报告。'}
+                    ? 'AI Wealth Advisor evaluates real-time macro yields, equity valuation percentiles, core-satellite roles, and client constraints.'
+                    : 'AI 首席投顾将结合当期实时宏观利率与估值分位数据、核心—卫星选基纪律及客户特定诉求与久期，出具买方机构视角的深度归因与换基建议。'}
                 </div>
                 <button
                   type="button"

@@ -43,11 +43,22 @@ export function normalizeModelPreference(pref?: string): NormalizedModelPreferen
   }
 }
 
+export interface LlmProgressInfo {
+  provider: "deepseek" | "openrouter";
+  model: string;
+  reasoningChars: number;
+  contentChars: number;
+  stage: "connecting" | "thinking" | "writing";
+}
+
 export interface LlmChatOptions {
   modelPreference?: ModelPreference;
   temperature?: number;
   maxTokens?: number;
   systemPrompt?: string;
+  useUpstreamStream?: boolean;
+  attemptTimeoutMs?: number;
+  onProgress?: (info: LlmProgressInfo) => void;
 }
 
 export interface LlmChatResult {
@@ -95,6 +106,77 @@ export interface TacticalAdjustmentPayload {
   lab_directives: TacticalLabDirectives;
 }
 
+async function consumeOpenAiResponse(
+  res: Response,
+  provider: "deepseek" | "openrouter",
+  model: string,
+  onProgress?: (info: LlmProgressInfo) => void
+): Promise<{ text: string; reasoning?: string }> {
+  const ctype = (res.headers.get("content-type") || "").toLowerCase();
+  if (!ctype.includes("text/event-stream") || !res.body) {
+    const json = (await res.json()) as any;
+    const choice = json.choices?.[0];
+    return {
+      text: String(choice?.message?.content || ""),
+      reasoning: choice?.message?.reasoning_content || choice?.message?.reasoning || undefined,
+    };
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let text = "";
+  let reasoning = "";
+  let lastEmitChars = 0;
+
+  const emit = (force = false) => {
+    if (!onProgress) return;
+    const totalChars = text.length + reasoning.length;
+    if (!force && totalChars - lastEmitChars < 120) return;
+    lastEmitChars = totalChars;
+    onProgress({
+      provider,
+      model,
+      reasoningChars: reasoning.length,
+      contentChars: text.length,
+      stage: text.length > 0 ? "writing" : "thinking",
+    });
+  };
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split(/\r?\n/);
+    buffer = lines.pop() ?? "";
+
+    for (const rawLine of lines) {
+      const line = rawLine.trim();
+      if (!line.startsWith("data:")) continue;
+      const payloadStr = line.slice(5).trim();
+      if (!payloadStr || payloadStr === "[DONE]") continue;
+      try {
+        const chunk = JSON.parse(payloadStr) as any;
+        const delta = chunk?.choices?.[0]?.delta;
+        if (!delta) continue;
+        const rc = delta.reasoning_content || delta.reasoning || "";
+        const ct = delta.content || "";
+        if (rc) reasoning += String(rc);
+        if (ct) text += String(ct);
+        if (rc || ct) emit(false);
+      } catch {
+        // Ignore partial or non-JSON keepalive frames
+      }
+    }
+  }
+
+  emit(true);
+  return {
+    text,
+    reasoning: reasoning || undefined,
+  };
+}
+
 /**
  * 结构化投资顾问与宏观量化分析 LLM 调用服务
  * 优先采用深度推理与高性价比模型矩阵（DeepSeek V4 Pro 官方直连 / OpenRouter Gemini 3.8 Flash / Qwen 3.7 Plus / Claude Sonnet 5.5）
@@ -110,6 +192,8 @@ export async function callLlmChat(
     "你是一位资深的买方量化投资顾问与财富规划专家。请基于客户画像、底层资产真实量化指标以及当期宏观利率、权益估值与大宗商品实时观测数据，客观中立地评估宏观周期位置，遵循核心—卫星配置原则给出严谨、专业、结构清晰且具有实操性的配置归因与战术建议。";
   const temperature = options.temperature ?? 0.35;
   const maxTokens = options.maxTokens ?? 4096;
+  const useStream = Boolean(options.useUpstreamStream || options.onProgress);
+  const attemptTimeoutMs = options.attemptTimeoutMs ?? (useStream ? 115000 : 55000);
 
   const errors: string[] = [];
 
@@ -121,30 +205,46 @@ export async function callLlmChat(
 
   const tryDeepseekDirect = async (): Promise<LlmChatResult | null> => {
     if (!deepseekKey) return null;
-    try {
-      const baseUrl = (env.DEEPSEEK_BASE_URL || "https://api.deepseek.com").replace(/\/+$/, "");
-      const configuredModel = (env.DEEPSEEK_MODEL || "").trim();
-      const isFlash = pref === "deepseek-flash";
-      const modelName = isFlash
-        ? "deepseek-flash"
-        : configuredModel && !["deepseek-chat", "deepseek-reasoner"].includes(configuredModel)
-          ? configuredModel
-          : "deepseek-v4-pro";
+    const baseUrl = (env.DEEPSEEK_BASE_URL || "https://api.deepseek.com").replace(/\/+$/, "");
+    const configuredModel = (env.DEEPSEEK_MODEL || "").trim();
+    const isFlash = pref === "deepseek-flash";
+    const modelName = isFlash
+      ? "deepseek-flash"
+      : configuredModel && !["deepseek-chat", "deepseek-reasoner"].includes(configuredModel)
+        ? configuredModel
+        : "deepseek-v4-pro";
 
-      const isThinkingPro = modelName !== "deepseek-flash";
-      const payload: Record<string, unknown> = {
+    const isThinkingPro = modelName !== "deepseek-flash";
+    const payload: Record<string, unknown> = {
+      model: modelName,
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userPrompt },
+      ],
+      temperature: isThinkingPro ? 1.0 : temperature,
+      max_tokens: isThinkingPro ? Math.max(maxTokens, 16384) : Math.max(maxTokens, 6144),
+    };
+    if (useStream) {
+      payload.stream = true;
+    }
+    if (isThinkingPro) {
+      payload.thinking = { type: "enabled" };
+      // 实测 low 在保持严谨深度链的同时避免 >120s 阻塞超时
+      payload.reasoning_effort = "low";
+    } else {
+      payload.thinking = { type: "disabled" };
+    }
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), attemptTimeoutMs);
+    try {
+      options.onProgress?.({
+        provider: "deepseek",
         model: modelName,
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: userPrompt },
-        ],
-        temperature: isThinkingPro ? 1.0 : temperature,
-        max_tokens: isThinkingPro ? Math.max(maxTokens, 6144) : Math.max(maxTokens, 4096),
-      };
-      if (isThinkingPro) {
-        payload.thinking = { type: "enabled" };
-        payload.reasoning_effort = "high";
-      }
+        reasoningChars: 0,
+        contentChars: 0,
+        stage: "connecting",
+      });
 
       const res = await fetch(`${baseUrl}/chat/completions`, {
         method: "POST",
@@ -153,22 +253,29 @@ export async function callLlmChat(
           "Content-Type": "application/json",
         },
         body: JSON.stringify(payload),
+        signal: controller.signal,
       });
 
       if (res.ok) {
-        const json = (await res.json()) as any;
-        const choice = json.choices?.[0];
-        const text = choice?.message?.content || "";
-        const reasoning = choice?.message?.reasoning_content || undefined;
-        if (text) {
-          return { text, modelUsed: modelName, provider: "deepseek", reasoning };
+        const parsed = await consumeOpenAiResponse(res, "deepseek", modelName, options.onProgress);
+        if (parsed.text.trim()) {
+          return {
+            text: parsed.text,
+            modelUsed: modelName,
+            provider: "deepseek",
+            reasoning: parsed.reasoning,
+          };
         }
+        errors.push(`DeepSeek [${modelName}] empty content (reasoning consumed token budget)`);
       } else {
         const errText = await res.text().catch(() => "");
         errors.push(`DeepSeek HTTP ${res.status}: ${errText.slice(0, 160)}`);
       }
     } catch (err: any) {
-      errors.push(`DeepSeek fetch error: ${err.message || String(err)}`);
+      const msg = err?.name === "AbortError" ? `timeout after ${attemptTimeoutMs}ms` : err?.message || String(err);
+      errors.push(`DeepSeek fetch error: ${msg}`);
+    } finally {
+      clearTimeout(timer);
     }
     return null;
   };
@@ -209,11 +316,43 @@ export async function callLlmChat(
       /\/+$/,
       ""
     );
-    const effectiveMaxTokens =
-      pref === "deepseek-flash" ? Math.max(maxTokens, 4096) : Math.max(maxTokens, 6144);
+    const budgetMap: Record<NormalizedModelPreference, number> = {
+      "deepseek-pro": 16384,
+      "qwen-deep": 16384,
+      "gemini-deep": 12288,
+      "claude-sonnet": 8192,
+      "deepseek-flash": 6144,
+    };
+    const effectiveMaxTokens = Math.max(maxTokens, budgetMap[pref] || 12288);
 
     for (const m of modelsToTry) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), attemptTimeoutMs);
       try {
+        options.onProgress?.({
+          provider: "openrouter",
+          model: m,
+          reasoningChars: 0,
+          contentChars: 0,
+          stage: "connecting",
+        });
+
+        const reqBody: Record<string, unknown> = {
+          model: m,
+          messages: [
+            { role: "system", content: systemPrompt },
+            { role: "user", content: userPrompt },
+          ],
+          temperature,
+          max_tokens: effectiveMaxTokens,
+        };
+        if (useStream) {
+          reqBody.stream = true;
+        }
+        if (pref === "deepseek-pro" || pref === "qwen-deep") {
+          reqBody.reasoning = { effort: "low" };
+        }
+
         const res = await fetch(`${baseUrl}/chat/completions`, {
           method: "POST",
           headers: {
@@ -222,33 +361,30 @@ export async function callLlmChat(
             "HTTP-Referer": "https://fis.wonderwisdom.online",
             "X-Title": "Wonder Quant Advisory",
           },
-          body: JSON.stringify({
-            model: m,
-            messages: [
-              { role: "system", content: systemPrompt },
-              { role: "user", content: userPrompt },
-            ],
-            temperature,
-            max_tokens: effectiveMaxTokens,
-          }),
+          body: JSON.stringify(reqBody),
+          signal: controller.signal,
         });
 
         if (res.ok) {
-          const json = (await res.json()) as any;
-          const text = json.choices?.[0]?.message?.content || "";
-          const reasoning =
-            json.choices?.[0]?.message?.reasoning ||
-            json.choices?.[0]?.message?.reasoning_content ||
-            undefined;
-          if (text) {
-            return { text, modelUsed: m, provider: "openrouter", reasoning };
+          const parsed = await consumeOpenAiResponse(res, "openrouter", m, options.onProgress);
+          if (parsed.text.trim()) {
+            return {
+              text: parsed.text,
+              modelUsed: m,
+              provider: "openrouter",
+              reasoning: parsed.reasoning,
+            };
           }
+          errors.push(`OpenRouter [${m}] empty content (reasoning consumed token budget)`);
         } else {
           const errText = await res.text().catch(() => "");
           errors.push(`OpenRouter [${m}] HTTP ${res.status}: ${errText.slice(0, 160)}`);
         }
       } catch (err: any) {
-        errors.push(`OpenRouter [${m}] error: ${err.message || String(err)}`);
+        const msg = err?.name === "AbortError" ? `timeout after ${attemptTimeoutMs}ms` : err?.message || String(err);
+        errors.push(`OpenRouter [${m}] error: ${msg}`);
+      } finally {
+        clearTimeout(timer);
       }
     }
     return null;

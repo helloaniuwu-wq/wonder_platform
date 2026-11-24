@@ -841,8 +841,8 @@ describe("callLlmChat deep-analysis model routing", () => {
       expect(calls[0].url).toBe("https://api.deepseek.com/chat/completions");
       expect(calls[0].body.model).toBe("deepseek-v4-pro");
       expect(calls[0].body.thinking).toEqual({ type: "enabled" });
-      expect(calls[0].body.reasoning_effort).toBe("high");
-      expect(calls[0].body.max_tokens).toBeGreaterThanOrEqual(6144);
+      expect(calls[0].body.reasoning_effort).toBe("low");
+      expect(calls[0].body.max_tokens).toBeGreaterThanOrEqual(16384);
       expect(res.provider).toBe("deepseek");
       expect(res.modelUsed).toBe("deepseek-v4-pro");
       expect(res.reasoning).toContain("SPY ERP");
@@ -850,6 +850,54 @@ describe("callLlmChat deep-analysis model routing", () => {
       // Legacy "auto" should also map to deepseek-pro
       const resLegacy = await callLlmChat(env, "分析组合", { modelPreference: "auto" });
       expect(resLegacy.modelUsed).toBe("deepseek-v4-pro");
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("streams upstream SSE chunks and fires onProgress callbacks without starving content", async () => {
+    const progressEvents: any[] = [];
+    const encoder = new TextEncoder();
+    const sseBody = new ReadableStream({
+      start(controller) {
+        const chunks = [
+          `data: ${JSON.stringify({ choices: [{ delta: { reasoning_content: "先评估客户流动性与利率周期。" } }] })}\n\n`,
+          `data: ${JSON.stringify({ choices: [{ delta: { content: "### 一、宏观研判\n" } }] })}\n\n`,
+          `data: ${JSON.stringify({ choices: [{ delta: { content: "正文结论完整。" } }] })}\n\n`,
+          "data: [DONE]\n\n",
+        ];
+        for (const ch of chunks) controller.enqueue(encoder.encode(ch));
+        controller.close();
+      },
+    });
+
+    const spy = vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+      const reqBody = init?.body ? JSON.parse(String(init.body)) : {};
+      expect(reqBody.stream).toBe(true);
+      expect(reqBody.max_tokens).toBeGreaterThanOrEqual(16384);
+      return new Response(sseBody, {
+        status: 200,
+        headers: { "Content-Type": "text/event-stream" },
+      });
+    });
+
+    try {
+      const env: any = {
+        DEEPSEEK_API_KEY: "ds-test-key",
+        DEEPSEEK_BASE_URL: "https://api.deepseek.com",
+        DEEPSEEK_MODEL: "deepseek-v4-pro",
+      };
+      const res = await callLlmChat(env, "分析组合", {
+        modelPreference: "deepseek-pro",
+        useUpstreamStream: true,
+        onProgress: (info) => progressEvents.push(info),
+      });
+
+      expect(res.provider).toBe("deepseek");
+      expect(res.reasoning).toContain("流动性与利率周期");
+      expect(res.text).toBe("### 一、宏观研判\n正文结论完整。");
+      expect(progressEvents.length).toBeGreaterThanOrEqual(2);
+      expect(progressEvents[progressEvents.length - 1].stage).toBe("writing");
     } finally {
       spy.mockRestore();
     }

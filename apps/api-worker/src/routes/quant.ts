@@ -632,7 +632,7 @@ ${macroBlock}
 ### 四、多宏观情景推演与极端压力韧性（利率上行/降息周期、滞胀、权益回调下的表现预案与退出复位纪律）
 ### 五、量身定制的操作建议与后续跟踪要点（建仓节奏、再平衡阈值、分红再投资建议）
 
-要求：专业严谨、数据扎实、结构清晰，不要将正文包裹在 \`\`\`markdown 代码块中。
+要求：专业严谨、数据扎实、结构清晰；每节精炼在 180–300 字（总正文约 1200–1600 字，直击数据与决策，避免冗长套话），不要将正文包裹在 \`\`\`markdown 代码块中。
 
 【重要：结构化战术调仓、换基与实验室参数指令输出】
 在整份正文报告的**最末尾**，请务必紧跟一段严格合法的 JSON（用 <tactical_json> 和 </tactical_json> 标签包裹），把你的分析结论转化为可直接指导「权重修正 / 换基增配」与「策略实验室模拟」的结构化指令：
@@ -664,27 +664,129 @@ ${ilasConstraintRule}
 }
 </tactical_json>`;
 
-  const llmResult = await callLlmChat(c.env, prompt, {
-    modelPreference: model,
-    temperature: 0.35,
-    maxTokens: 8192,
+  const wantStream =
+    body.stream === true ||
+    (c.req.header("accept") || "").toLowerCase().includes("text/event-stream");
+
+  if (!wantStream) {
+    const llmResult = await callLlmChat(c.env, prompt, {
+      modelPreference: model,
+      temperature: 0.35,
+      maxTokens: 16384,
+      useUpstreamStream: true,
+    });
+
+    const { cleanMarkdown, tacticalAdjustment } = extractAndNormalizeTacticalJson(
+      llmResult.text,
+      profile,
+      rec,
+      candidatePool
+    );
+
+    return c.json({
+      analysis: cleanMarkdown,
+      tactical_adjustment: tacticalAdjustment,
+      model_used: llmResult.modelUsed,
+      provider: llmResult.provider,
+      reasoning: llmResult.reasoning || null,
+      fallback_reason: llmResult.fallbackReason || null,
+      candidate_pool_count: candidatePool.length,
+    });
+  }
+
+  const encoder = new TextEncoder();
+  const startedAt = Date.now();
+  let latestProgress = {
+    stage: "connecting" as "connecting" | "thinking" | "writing",
+    model: String(model || "deepseek-pro"),
+    reasoning_chars: 0,
+    content_chars: 0,
+  };
+
+  const sseStream = new ReadableStream({
+    async start(controller) {
+      let closed = false;
+      const sendEvent = (eventName: string, dataObj: unknown) => {
+        if (closed) return;
+        try {
+          controller.enqueue(
+            encoder.encode(`event: ${eventName}\ndata: ${JSON.stringify(dataObj)}\n\n`)
+          );
+        } catch {
+          closed = true;
+        }
+      };
+
+      sendEvent("progress", {
+        elapsed: 0,
+        ...latestProgress,
+      });
+
+      const heartbeatTimer = setInterval(() => {
+        sendEvent("progress", {
+          elapsed: Math.round((Date.now() - startedAt) / 1000),
+          ...latestProgress,
+        });
+      }, 2500);
+
+      try {
+        const llmResult = await callLlmChat(c.env, prompt, {
+          modelPreference: model,
+          temperature: 0.35,
+          maxTokens: 16384,
+          useUpstreamStream: true,
+          onProgress: (info) => {
+            latestProgress = {
+              stage: info.stage,
+              model: info.model,
+              reasoning_chars: info.reasoningChars,
+              content_chars: info.contentChars,
+            };
+            sendEvent("progress", {
+              elapsed: Math.round((Date.now() - startedAt) / 1000),
+              ...latestProgress,
+            });
+          },
+        });
+
+        const { cleanMarkdown, tacticalAdjustment } = extractAndNormalizeTacticalJson(
+          llmResult.text,
+          profile,
+          rec,
+          candidatePool
+        );
+
+        sendEvent("result", {
+          analysis: cleanMarkdown,
+          tactical_adjustment: tacticalAdjustment,
+          model_used: llmResult.modelUsed,
+          provider: llmResult.provider,
+          reasoning: llmResult.reasoning || null,
+          fallback_reason: llmResult.fallbackReason || null,
+          candidate_pool_count: candidatePool.length,
+        });
+      } catch (err: any) {
+        sendEvent("error", {
+          detail: err?.message || "AI 投顾生成失败，请稍后重试",
+        });
+      } finally {
+        clearInterval(heartbeatTimer);
+        if (!closed) {
+          closed = true;
+          try {
+            controller.close();
+          } catch {
+            // ignore
+          }
+        }
+      }
+    },
   });
 
-  const { cleanMarkdown, tacticalAdjustment } = extractAndNormalizeTacticalJson(
-    llmResult.text,
-    profile,
-    rec,
-    candidatePool
-  );
-
-  return c.json({
-    analysis: cleanMarkdown,
-    tactical_adjustment: tacticalAdjustment,
-    model_used: llmResult.modelUsed,
-    provider: llmResult.provider,
-    reasoning: llmResult.reasoning || null,
-    fallback_reason: llmResult.fallbackReason || null,
-    candidate_pool_count: candidatePool.length,
+  return c.body(sseStream, 200, {
+    "Content-Type": "text/event-stream; charset=utf-8",
+    "Cache-Control": "no-cache, no-transform",
+    "X-Accel-Buffering": "no",
   });
 });
 

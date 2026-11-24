@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import app, { isAllowedOrigin } from "../index";
 import { createAccessToken } from "../utils/auth";
 import type { Env } from "../types";
@@ -337,5 +337,89 @@ describe("Observability & Request ID", () => {
     expect(errRes.status).toBe(400);
     const body = (await errRes.json()) as { detail: string; request_id: string };
     expect(body.request_id).toBe("req-123");
+  });
+
+  it("preserves CORS headers on POST /api/quant/recommend/explain SSE responses", async () => {
+    const env = makeEnv(makeState(), { DEEPSEEK_API_KEY: "ds-test-key" });
+    const token = await createAccessToken({ sub: "adv-1" }, env);
+
+    const enc = new TextEncoder();
+    const upstreamSse = new ReadableStream({
+      start(controller) {
+        controller.enqueue(
+          enc.encode(
+            `data: ${JSON.stringify({
+              choices: [{ delta: { reasoning_content: "评估利率周期与核心卫星结构..." } }],
+            })}\n\n`
+          )
+        );
+        controller.enqueue(
+          enc.encode(
+            `data: ${JSON.stringify({
+              choices: [
+                {
+                  delta: {
+                    content:
+                      '### 一、客观研判\n维持核心配置。\n<tactical_json>{"tactical_summary_zh":"维持核心","adjusted_holdings":[{"lab_id":"VOO","adjusted_weight_pct":100,"reason_zh":"核心保留"}],"lab_directives":{"cma_mode":"historical","capital":100000,"years":5}}</tactical_json>',
+                  },
+                },
+              ],
+            })}\n\n`
+          )
+        );
+        controller.enqueue(enc.encode("data: [DONE]\n\n"));
+        controller.close();
+      },
+    });
+
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(upstreamSse, {
+        status: 200,
+        headers: { "Content-Type": "text/event-stream; charset=utf-8" },
+      })
+    );
+
+    try {
+      const res = await app.fetch(
+        new Request("http://localhost/api/quant/recommend/explain", {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            Origin: "https://fis.wonderwisdom.online",
+            "Content-Type": "application/json",
+            Accept: "text/event-stream",
+          },
+          body: JSON.stringify({
+            model: "deepseek-pro",
+            stream: true,
+            profile: { initial_capital: 100000, horizon_years: 5 },
+            recommendation: {
+              basket: [
+                {
+                  lab_id: "VOO",
+                  code: "VOO",
+                  name: "Vanguard S&P 500 ETF",
+                  bucket: "CORE_EQUITY",
+                  weight_pct: 100,
+                },
+              ],
+            },
+          }),
+        }),
+        env
+      );
+
+      expect(res.status).toBe(200);
+      expect(res.headers.get("Access-Control-Allow-Origin")).toBe("https://fis.wonderwisdom.online");
+      expect(res.headers.get("Access-Control-Allow-Credentials")).toBe("true");
+      expect(res.headers.get("Content-Type")).toContain("text/event-stream");
+
+      const text = await res.text();
+      expect(text).toContain("event: progress");
+      expect(text).toContain("event: result");
+      expect(text).toContain("维持核心配置");
+    } finally {
+      fetchSpy.mockRestore();
+    }
   });
 });
