@@ -1,312 +1,849 @@
 import React from 'react';
-import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine } from 'recharts';
+import {
+  AreaChart,
+  Area,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  ResponsiveContainer,
+  ReferenceLine,
+} from 'recharts';
+import {
+  Printer,
+  FileText,
+  UserCog,
+  Download,
+  X,
+  ShieldCheck,
+  TrendingUp,
+  Layers,
+  AlertTriangle,
+} from 'lucide-react';
 
-function fmt(val) {
-  if (!val) return '$0';
-  if (val >= 1000000) return `$${(val / 1000000).toFixed(1)}M`;
-  if (val >= 1000) return `$${(val / 1000).toFixed(0)}K`;
-  return `$${Math.round(val).toLocaleString()}`;
+const CURRENCY_SYMBOL_MAP = {
+  USD: '$',
+  HKD: 'HK$',
+  SGD: 'S$',
+  CNY: '¥',
+  RMB: '¥',
+  EUR: '€',
+  GBP: '£',
+  JPY: '¥',
+};
+
+function currencySymbol(code) {
+  const key = String(code || 'USD').toUpperCase();
+  return CURRENCY_SYMBOL_MAP[key] || `${key} `;
 }
-function numFmt(val) {
-  if (!val) return '0';
-  return Math.round(val).toLocaleString('zh-CN');
+
+function fmtMoney(val, currency = 'USD') {
+  const num = Number(val);
+  if (!Number.isFinite(num)) return '—';
+  const sym = currencySymbol(currency);
+  const absFormatted = Math.round(Math.abs(num)).toLocaleString('en-US');
+  return num < 0 ? `-${sym}${absFormatted}` : `${sym}${absFormatted}`;
 }
 
-const ClientBriefReport = ({ labData, labMcSettings, insurancePlan, insuranceEnabled, clientInfo, onClose, onSwitchProfessional }) => {
-  const mcResult = labData?.monte_carlo;
-  if (!mcResult) return null;
+function fmtCompact(val, currency = 'USD') {
+  const num = Number(val);
+  if (!Number.isFinite(num)) return '—';
+  const sym = currencySymbol(currency);
+  if (Math.abs(num) >= 1_000_000) return `${sym}${(num / 1_000_000).toFixed(2)}M`;
+  if (Math.abs(num) >= 1_000) return `${sym}${Math.round(num / 1_000)}k`;
+  return `${sym}${Math.round(num)}`;
+}
 
-  const ci = clientInfo || {};
-  const clientName = ci.name || '';
-  const clientAge = ci.age ? parseInt(ci.age) : null;
-  const advisorName = ci.advisor || '';
-  const reportDate = new Date().toLocaleDateString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric' });
+function fmtPct(ratio, digits = 1, alreadyPct = false) {
+  const num = Number(ratio);
+  if (!Number.isFinite(num)) return '—';
+  const pctVal = alreadyPct ? num : num * 100;
+  return `${pctVal.toFixed(digits)}%`;
+}
 
-  const runYears = parseInt(labMcSettings.years) || 40;
-  const capital = parseFloat(labMcSettings.capital) || 0;
-  const withdrawal = parseFloat(labMcSettings.withdrawal) || 0;
-
-  const lastChartPoint = mcResult.chart[mcResult.chart.length - 1] || {};
-  const isCombined = insuranceEnabled && lastChartPoint.combined_p50 !== undefined;
-  const p10 = isCombined ? (lastChartPoint.combined_p10 || lastChartPoint.p10 || 0) : (lastChartPoint.p10 || 0);
-  const p50 = isCombined ? (lastChartPoint.combined_p50 || lastChartPoint.p50 || 0) : (lastChartPoint.p50 || 0);
-  const p90 = isCombined ? (lastChartPoint.combined_p90 || lastChartPoint.p90 || 0) : (lastChartPoint.p90 || 0);
-  const successRate = (mcResult.success_rate * 100).toFixed(0);
-  const irr = ((mcResult.irr?.p50 || 0) * 100).toFixed(1);
-
-  // 每10年里程碑
-  const milestoneYears = [];
-  for (let y = 10; y <= runYears; y += 10) milestoneYears.push(y);
-  if (!milestoneYears.includes(runYears)) milestoneYears.push(runYears);
-  const chartMap = {};
-  (mcResult.chart || []).forEach(pt => { chartMap[pt.year] = pt; });
-  const milestones = milestoneYears.map(y => {
-    const pt = chartMap[y] || {};
-    return {
-      year: y,
-      age: clientAge ? clientAge + y : null,
-      p50: isCombined ? (pt.combined_p50 || pt.p50 || 0) : (pt.p50 || 0),
-      p10: isCombined ? (pt.combined_p10 || pt.p10 || 0) : (pt.p10 || 0),
-    };
-  }).filter(m => m.p50 > 0);
-
-  // 提取计划：换算成月收入表述
-  const monthlyWithdrawal = withdrawal > 0 ? Math.round(withdrawal / 12) : 0;
-
-  // 图表数据：简化，只展示P50和P10
-  const chartData = (mcResult.chart || []).filter((_, i) => i % 2 === 0 || i === mcResult.chart.length - 1)
-    .map(pt => ({
-      year: `第${pt.year}年`,
-      '预期净值': Math.round(isCombined ? (pt.combined_p50 || pt.p50 || 0) : (pt.p50 || 0)),
-      '保守预估': Math.round(isCombined ? (pt.combined_p10 || pt.p10 || 0) : (pt.p10 || 0)),
-    }));
-
-  // 保险简介
-  const insLabel = insurancePlan?.label || '分红储蓄保险';
-  let insTotalPremium = 0;
-  if (insurancePlan?.years) {
-    insurancePlan.years.forEach(py => { insTotalPremium += (py.premium || 0); });
+function resolveRationale(isin, weightPct, stats, clientInfo) {
+  const map = clientInfo?.holdings_rationale;
+  if (map && typeof map === 'object' && !Array.isArray(map)) {
+    const direct = map[isin] || map[String(isin).toUpperCase()];
+    if (direct && String(direct).trim()) return String(direct).trim();
   }
+  const cls = String(stats?.asset_class || stats?.category || '').toLowerCase();
+  const dy = Number(stats?.dividend_yield || 0);
+  if (cls.includes('cash') || cls.includes('money') || cls.includes('bond') || cls.includes('treasury')) {
+    return '防御流动性与利率压舱石，平抑极端回撤并承接现金流需求';
+  }
+  if (dy >= 0.035 || dy >= 3.5) {
+    return '高息内生现金流来源，降低熊市期被动卖出本金的序列风险';
+  }
+  if (weightPct >= 25) {
+    return '核心配置底层锚定资产，承担长期复利与组合 beta 驱动主力';
+  }
+  return '多元分散因子补充，增强跨周期夏普比率与抗通胀韧性';
+}
 
+const BriefTooltip = ({ active, payload, label, currency }) => {
+  if (!active || !payload || payload.length === 0) return null;
+  const row = payload[0]?.payload || {};
   return (
-    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.55)', zIndex: 9999, overflowY: 'auto', display: 'flex', alignItems: 'flex-start', justifyContent: 'center', padding: '24px 12px' }}>
-      <div onClick={e => e.stopPropagation()} style={{ background: '#fff', borderRadius: 16, maxWidth: 860, width: '100%', boxShadow: '0 24px 80px rgba(0,0,0,0.3)' }}>
-
-        {/* ── 顶部工具栏 */}
-        <div className="no-print" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '16px 24px', borderBottom: '1px solid #e2e8f0', flexWrap: 'wrap' }}>
-          <button onClick={() => window.print()} style={{ background: '#1e3a8a', color: '#fff', border: 'none', padding: '9px 18px', borderRadius: 8, cursor: 'pointer', fontWeight: 700, fontSize: '0.88rem' }}>
-            🖨️ 打印 / 导出 PDF
-          </button>
-          <button onClick={onSwitchProfessional} style={{ background: 'rgba(99,102,241,0.1)', color: '#6366f1', border: '1px solid rgba(99,102,241,0.3)', padding: '9px 18px', borderRadius: 8, cursor: 'pointer', fontWeight: 600, fontSize: '0.88rem' }}>
-            📊 查看专业版报告
-          </button>
-          <button onClick={onClose} style={{ background: 'transparent', color: '#94a3b8', border: '1px solid #e2e8f0', padding: '9px 18px', borderRadius: 8, cursor: 'pointer', marginLeft: 'auto' }}>
-            ✖ 返回
-          </button>
-        </div>
-
-        <div style={{ padding: '32px 36px' }} id="client-brief-printable">
-
-          {/* ── 封面头部 */}
-          <div style={{ textAlign: 'center', marginBottom: 36, paddingBottom: 28, borderBottom: '2px solid #e2e8f0' }}>
-            <div style={{ display: 'inline-block', background: 'linear-gradient(135deg, #1e3a8a, #2563eb)', color: '#fff', fontSize: '0.72rem', letterSpacing: '3px', padding: '5px 16px', borderRadius: 20, marginBottom: 18, fontWeight: 700 }}>
-              个人财富蓝图
-            </div>
-            <h1 style={{ margin: '0 0 8px', fontSize: '2rem', color: '#0f172a', fontWeight: 800 }}>
-              {clientName ? `${clientName}的财富规划` : '您的财富规划'}
-            </h1>
-            <p style={{ color: '#64748b', fontSize: '1rem', margin: '0 0 20px' }}>
-              一份写给您自己的简明财富说明书
-            </p>
-            <div style={{ display: 'flex', justifyContent: 'center', gap: 24, fontSize: '0.82rem', color: '#94a3b8' }}>
-              <span>规划日期：{reportDate}</span>
-              {advisorName && <span>您的顾问：{advisorName}</span>}
-              <span>规划周期：{runYears} 年</span>
-            </div>
-          </div>
-
-          {/* ── 模块 1：一句话摘要 */}
-          <div style={{ background: 'linear-gradient(135deg, #eff6ff, #f0fdf4)', border: '1px solid #bfdbfe', borderRadius: 16, padding: '28px 32px', marginBottom: 28, textAlign: 'center' }}>
-            <div style={{ fontSize: '0.85rem', color: '#1d4ed8', fontWeight: 700, marginBottom: 12, letterSpacing: 1 }}>📌 核心结论</div>
-            <div style={{ fontSize: '1.25rem', color: '#0f172a', lineHeight: 1.8, fontWeight: 500 }}>
-              您投入 <strong style={{ color: '#1e3a8a', fontSize: '1.4rem' }}>{fmt(capital)}</strong>，
-              经过 {runYears} 年的稳健增长，
-              {withdrawal > 0 ? (
-                <>同时每年领取生活费约 <strong style={{ color: '#047857', fontSize: '1.4rem' }}>{fmt(withdrawal)}</strong>，</>
-              ) : null}
-              <br />
-              资产预计增长至 <strong style={{ color: '#1e3a8a', fontSize: '1.7rem' }}>{fmt(p50)}</strong>，
-              实现概率约 <strong style={{ color: parseInt(successRate) >= 80 ? '#059669' : '#d97706', fontSize: '1.5rem' }}>{successRate}%</strong>。
-            </div>
-          </div>
-
-          {/* ── 模块 2：三个关键数字 */}
-          <div style={{ marginBottom: 28 }}>
-            <h2 style={{ fontSize: '1.1rem', color: '#334155', fontWeight: 700, marginBottom: 16, display: 'flex', alignItems: 'center', gap: 8 }}>
-              <span style={{ background: '#1e3a8a', color: '#fff', borderRadius: '50%', width: 26, height: 26, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.8rem', flexShrink: 0 }}>1</span>
-              {runYears} 年后，您的钱可能变成多少？
-            </h2>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 14 }}>
-              {[
-                { emoji: '☁️', label: '如果遇到市场下行', sublabel: '最坏10%情景的底线', val: p10, color: '#dc2626', bg: '#fef2f2', border: '#fca5a5', desc: '即使遇到经济寒冬，您至少还有这些' },
-                { emoji: '⭐', label: '正常市场下', sublabel: '最有可能发生的结果', val: p50, color: '#1e3a8a', bg: '#eff6ff', border: '#bfdbfe', desc: '这是我们规划的核心基准数字', highlight: true },
-                { emoji: '🚀', label: '如果市场表现好', sublabel: '顺风情景的潜在空间', val: p90, color: '#059669', bg: '#f0fdf4', border: '#86efac', desc: '市场给长期投资者的额外奖励' },
-              ].map(c => (
-                <div key={c.label} style={{ background: c.bg, border: `${c.highlight ? 2 : 1}px solid ${c.border}`, borderRadius: 12, padding: '20px 16px', textAlign: 'center', boxShadow: c.highlight ? '0 4px 20px rgba(30,58,138,0.12)' : 'none' }}>
-                  <div style={{ fontSize: '1.6rem', marginBottom: 8 }}>{c.emoji}</div>
-                  <div style={{ fontSize: '0.8rem', color: '#64748b', fontWeight: 600, marginBottom: 4 }}>{c.label}</div>
-                  <div style={{ fontSize: '0.7rem', color: '#94a3b8', marginBottom: 12 }}>{c.sublabel}</div>
-                  <div style={{ fontSize: '1.9rem', fontWeight: 900, color: c.color }}>{fmt(c.val)}</div>
-                  <div style={{ fontSize: '0.72rem', color: '#64748b', marginTop: 10, lineHeight: 1.5 }}>{c.desc}</div>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          {/* ── 模块 3：财富成长路线图（图表） */}
-          <div style={{ marginBottom: 28 }}>
-            <h2 style={{ fontSize: '1.1rem', color: '#334155', fontWeight: 700, marginBottom: 16, display: 'flex', alignItems: 'center', gap: 8 }}>
-              <span style={{ background: '#1e3a8a', color: '#fff', borderRadius: '50%', width: 26, height: 26, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.8rem', flexShrink: 0 }}>2</span>
-              财富成长路线图
-            </h2>
-            <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 12, padding: '20px 16px' }}>
-              <ResponsiveContainer width="100%" height={240}>
-                <AreaChart data={chartData} margin={{ top: 8, right: 16, left: 16, bottom: 4 }}>
-                  <defs>
-                    <linearGradient id="briefGrad" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="#2563eb" stopOpacity={0.15} />
-                      <stop offset="95%" stopColor="#2563eb" stopOpacity={0.01} />
-                    </linearGradient>
-                  </defs>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                  <XAxis dataKey="year" tick={{ fill: '#64748b', fontSize: 11 }} interval={Math.floor(chartData.length / 6)} />
-                  <YAxis tickFormatter={v => fmt(v)} tick={{ fill: '#64748b', fontSize: 11 }} width={70} />
-                  <Tooltip formatter={(v, n) => [fmt(v), n]} contentStyle={{ borderRadius: 8, border: '1px solid #e2e8f0', fontSize: '0.82rem' }} />
-                  <Area type="monotone" dataKey="预期净值" stroke="#2563eb" strokeWidth={2.5} fill="url(#briefGrad)" />
-                  <Area type="monotone" dataKey="保守预估" stroke="#dc2626" strokeWidth={1.5} strokeDasharray="4 3" fill="none" />
-                  {capital > 0 && <ReferenceLine y={capital} stroke="#94a3b8" strokeDasharray="4 3" label={{ value: '初始投入', position: 'insideTopLeft', fontSize: 11, fill: '#94a3b8' }} />}
-                </AreaChart>
-              </ResponsiveContainer>
-              <div style={{ display: 'flex', gap: 20, justifyContent: 'center', marginTop: 8, fontSize: '0.78rem', color: '#64748b' }}>
-                <span><span style={{ display: 'inline-block', width: 20, height: 3, background: '#2563eb', marginRight: 6, verticalAlign: 'middle' }} />预期路径</span>
-                <span><span style={{ display: 'inline-block', width: 20, height: 2, marginRight: 6, verticalAlign: 'middle', borderTop: '2px dashed #dc2626', background: 'transparent' }} />保守路径</span>
-              </div>
-            </div>
-          </div>
-
-          {/* ── 模块 4：每10年净值快照 */}
-          {milestones.length > 0 && (
-            <div style={{ marginBottom: 28 }}>
-              <h2 style={{ fontSize: '1.1rem', color: '#334155', fontWeight: 700, marginBottom: 16, display: 'flex', alignItems: 'center', gap: 8 }}>
-                <span style={{ background: '#1e3a8a', color: '#fff', borderRadius: '50%', width: 26, height: 26, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.8rem', flexShrink: 0 }}>3</span>
-                重要时间节点的财富快照
-              </h2>
-              <div style={{ display: 'grid', gridTemplateColumns: `repeat(${Math.min(milestones.length, 4)}, 1fr)`, gap: 12 }}>
-                {milestones.map(m => (
-                  <div key={m.year} style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 10, padding: '16px 14px', textAlign: 'center' }}>
-                    <div style={{ fontSize: '0.78rem', color: '#94a3b8', marginBottom: 4 }}>第 {m.year} 年</div>
-                    {m.age && <div style={{ fontSize: '0.78rem', color: '#64748b', marginBottom: 8, fontWeight: 600 }}>{m.age} 岁</div>}
-                    <div style={{ fontSize: '1.4rem', fontWeight: 800, color: '#1e3a8a' }}>{fmt(m.p50)}</div>
-                    <div style={{ fontSize: '0.72rem', color: '#dc2626', marginTop: 6 }}>最差情景：{fmt(m.p10)}</div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* ── 模块 5：您的现金流安排 */}
-          {withdrawal > 0 && (
-            <div style={{ marginBottom: 28 }}>
-              <h2 style={{ fontSize: '1.1rem', color: '#334155', fontWeight: 700, marginBottom: 16, display: 'flex', alignItems: 'center', gap: 8 }}>
-                <span style={{ background: '#1e3a8a', color: '#fff', borderRadius: '50%', width: 26, height: 26, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.8rem', flexShrink: 0 }}>4</span>
-                您的现金流安排
-              </h2>
-              <div style={{ background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 12, padding: '20px 24px' }}>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20 }}>
-                  <div>
-                    <div style={{ fontSize: '0.82rem', color: '#047857', fontWeight: 700, marginBottom: 8 }}>💰 提取计划</div>
-                    <div style={{ fontSize: '0.9rem', color: '#065f46', lineHeight: 1.8 }}>
-                      <p style={{ margin: '0 0 6px' }}>每年可提取：<strong style={{ fontSize: '1.15rem' }}>{fmt(withdrawal)}</strong></p>
-                      <p style={{ margin: '0 0 6px' }}>折算月均：约 <strong>{fmt(monthlyWithdrawal)} / 月</strong></p>
-                      <p style={{ margin: 0 }}>提取期限：第 {labMcSettings.withdrawal_start} 年 — 第 {labMcSettings.withdrawal_end} 年</p>
-                      {labMcSettings.withdrawal_2 > 0 && (
-                        <p style={{ margin: '6px 0 0', color: '#047857' }}>
-                          第二阶段：{fmt(labMcSettings.withdrawal_2)} / 年（第{labMcSettings.withdrawal_start_2}–{labMcSettings.withdrawal_end_2}年）
-                        </p>
-                      )}
-                    </div>
-                  </div>
-                  <div style={{ borderLeft: '1px solid #bbf7d0', paddingLeft: 20 }}>
-                    <div style={{ fontSize: '0.82rem', color: '#047857', fontWeight: 700, marginBottom: 8 }}>📋 通胀说明</div>
-                    <div style={{ fontSize: '0.88rem', color: '#065f46', lineHeight: 1.7 }}>
-                      {labMcSettings.withdrawal_inflation
-                        ? `提取金额每年随通胀（${labMcSettings.inflation}%）自动调整，确保实际购买力不缩水。`
-                        : `提取金额固定不变。请注意通胀（${labMcSettings.inflation}%/年）会逐年降低实际购买力，建议定期与顾问复盘。`}
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* ── 模块 6：保险底座（如有） */}
-          {insuranceEnabled && insurancePlan && (
-            <div style={{ marginBottom: 28 }}>
-              <h2 style={{ fontSize: '1.1rem', color: '#334155', fontWeight: 700, marginBottom: 16, display: 'flex', alignItems: 'center', gap: 8 }}>
-                <span style={{ background: '#059669', color: '#fff', borderRadius: '50%', width: 26, height: 26, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.8rem', flexShrink: 0 }}>5</span>
-                您的安全底座：保险
-              </h2>
-              <div style={{ background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 12, padding: '20px 24px' }}>
-                <p style={{ margin: '0 0 12px', color: '#065f46', fontSize: '0.95rem', lineHeight: 1.7 }}>
-                  🛡️ 您的方案中包含 <strong>{insLabel}</strong>，
-                  {insTotalPremium > 0 && <>总保费 <strong>${numFmt(insTotalPremium)}</strong>，</>}
-                  它的作用就像一道「防火墙」——
-                  <strong>无论市场如何波动，保险的现金价值不会随股市下跌</strong>，为您的财富提供刚性底线保障。
-                </p>
-                <div style={{ background: 'rgba(5,150,105,0.08)', borderRadius: 8, padding: '12px 16px', fontSize: '0.85rem', color: '#047857' }}>
-                  💡 <strong>通俗理解：</strong>把您的财富想象成一座楼——投资组合是楼层（越建越高），保险是地基（永远稳固）。地基越牢，楼才能建得越高、越安心。
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* ── 模块 7：方案的可靠性 */}
-          <div style={{ marginBottom: 28 }}>
-            <h2 style={{ fontSize: '1.1rem', color: '#334155', fontWeight: 700, marginBottom: 16, display: 'flex', alignItems: 'center', gap: 8 }}>
-              <span style={{ background: '#1e3a8a', color: '#fff', borderRadius: '50%', width: 26, height: 26, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.8rem', flexShrink: 0 }}>{insuranceEnabled ? '6' : '5'}</span>
-              这个方案有多可靠？
-            </h2>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
-              <div style={{ background: parseInt(successRate) >= 80 ? '#f0fdf4' : '#fffbeb', border: `1px solid ${parseInt(successRate) >= 80 ? '#bbf7d0' : '#fde68a'}`, borderRadius: 12, padding: '20px', textAlign: 'center' }}>
-                <div style={{ fontSize: '0.85rem', color: '#64748b', marginBottom: 8 }}>目标达成概率</div>
-                <div style={{ fontSize: '3rem', fontWeight: 900, color: parseInt(successRate) >= 80 ? '#059669' : '#d97706' }}>{successRate}%</div>
-                <div style={{ fontSize: '0.78rem', color: '#64748b', marginTop: 8, lineHeight: 1.5 }}>
-                  在 10,000 次模拟中，有 {successRate}% 的情况下，<br />您的资产能达到既定目标。
-                </div>
-              </div>
-              <div style={{ background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 12, padding: '20px', textAlign: 'center' }}>
-                <div style={{ fontSize: '0.85rem', color: '#64748b', marginBottom: 8 }}>预期年化收益率</div>
-                <div style={{ fontSize: '3rem', fontWeight: 900, color: '#1e3a8a' }}>{irr}%</div>
-                <div style={{ fontSize: '0.78rem', color: '#64748b', marginTop: 8, lineHeight: 1.5 }}>
-                  经过科学优化的组合，<br />在历史数据下的长期平均表现。
-                </div>
-              </div>
-            </div>
-          </div>
-
-          {/* ── 模块 8：您值得拥有的持续服务 */}
-          <div style={{ marginBottom: 28, background: 'linear-gradient(135deg, #1e3a8a, #1d4ed8)', borderRadius: 16, padding: '28px 32px', color: '#fff' }}>
-            <h2 style={{ fontSize: '1.1rem', fontWeight: 700, marginBottom: 16, color: '#fff', display: 'flex', alignItems: 'center', gap: 8 }}>
-              🤝 我们对您的承诺
-            </h2>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20 }}>
-              {[
-                { icon: '⚖️', title: '动态再平衡', desc: '市场变动时，我们会主动调整配置，让您的财富始终走在正确的轨道上。' },
-                { icon: '📅', title: '每半年深度复盘', desc: '每半年一次全面财务检视，确保方案始终与您的人生阶段同步。' },
-                { icon: '🚨', title: '风险预警陪伴', desc: '市场出现重大波动时，您会第一时间收到分析和应对建议。' },
-                { icon: '💬', title: '随时响应咨询', desc: '您的任何财务疑问，都有专属顾问为您解答和跟进。' },
-              ].map(s => (
-                <div key={s.title} style={{ display: 'flex', gap: 12 }}>
-                  <span style={{ fontSize: '1.4rem', flexShrink: 0 }}>{s.icon}</span>
-                  <div>
-                    <div style={{ fontWeight: 700, marginBottom: 4, color: '#bfdbfe' }}>{s.title}</div>
-                    <div style={{ fontSize: '0.82rem', color: 'rgba(255,255,255,0.7)', lineHeight: 1.6 }}>{s.desc}</div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          {/* ── 免责声明（简化版） */}
-          <div style={{ fontSize: '0.75rem', color: '#94a3b8', lineHeight: 1.7, borderTop: '1px solid #e2e8f0', paddingTop: 16 }}>
-            <strong>重要说明：</strong>本报告中所有财富预测数据均来自蒙特卡洛统计模拟，基于历史数据测算，不代表实际投资结果，不构成任何投资或保险购买建议。所有投资均涉及风险，包括本金损失的可能性。具体决策请在专业顾问指导下进行。
-            {advisorName && ` | 制作顾问：${advisorName}`}
-          </div>
-
-        </div>
+    <div
+      style={{
+        background: '#FAF8F3',
+        border: '1px solid #C8C1B4',
+        borderRadius: '4px',
+        padding: '10px 12px',
+        boxShadow: '0 4px 14px rgba(24, 32, 28, 0.12)',
+        color: '#18201C',
+        minWidth: '200px',
+        fontSize: '0.78rem',
+      }}
+    >
+      <div
+        style={{
+          fontFamily: 'var(--font-display)',
+          fontWeight: 700,
+          fontSize: '0.92rem',
+          borderBottom: '1px solid #E5DFD3',
+          paddingBottom: '4px',
+          marginBottom: '6px',
+        }}
+      >
+        第 {label} 年财富推演快照
       </div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: '14px', padding: '2px 0' }}>
+        <span style={{ color: '#9A6F38', fontWeight: 600 }}>乐观情景 (P90)</span>
+        <span className="ips-mono" style={{ fontWeight: 700 }}>{fmtMoney(row.p90Val, currency)}</span>
+      </div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: '14px', padding: '2px 0' }}>
+        <span style={{ color: '#1E4D3B', fontWeight: 600 }}>中性预期 (P50)</span>
+        <span className="ips-mono" style={{ fontWeight: 700, color: '#1E4D3B' }}>{fmtMoney(row.p50Val, currency)}</span>
+      </div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: '14px', padding: '2px 0' }}>
+        <span style={{ color: '#8C3B32', fontWeight: 600 }}>防御底线 (P10)</span>
+        <span className="ips-mono" style={{ fontWeight: 700, color: '#8C3B32' }}>{fmtMoney(row.p10Val, currency)}</span>
+      </div>
+      {row.realP50Val != null && (
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: '14px', padding: '4px 0 0', marginTop: '4px', borderTop: '1px dashed #E5DFD3' }}>
+          <span style={{ color: '#5F6662' }}>折现购买力 (P50)</span>
+          <span className="ips-mono">{fmtMoney(row.realP50Val, currency)}</span>
+        </div>
+      )}
+      {row.divGenerated > 0 && (
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: '14px', padding: '2px 0' }}>
+          <span style={{ color: '#1E4D3B' }}>当年内生分红</span>
+          <span className="ips-mono">+{fmtMoney(row.divGenerated, currency)}</span>
+        </div>
+      )}
     </div>
   );
 };
 
-export default ClientBriefReport;
+export default function ClientBriefReport({
+  labData,
+  labMcSettings,
+  labBaseCurrency = 'USD',
+  stressTestData = null,
+  insuranceEnabled = false,
+  insurancePlan = null,
+  clientInfo = null,
+  onOpenClientInfo,
+  onGenerateWord,
+  reportLoading = false,
+  onClose,
+  onSwitchProfessional,
+}) {
+  if (!labData || !labData.monte_carlo) return null;
+
+  const mc = labData.monte_carlo;
+  const settings = labMcSettings || {};
+  const currency = labBaseCurrency || 'USD';
+  const years = Number(settings.years || (mc.chart?.length ? mc.chart[mc.chart.length - 1].year : 20) || 20);
+  const capital = Number(settings.capital || 1000000);
+  const target = Number(settings.target || 0);
+  const inflation = Number(settings.inflation || 0);
+  const hasInflation = inflation > 0;
+  const contribution = Number(settings.contribution || 0);
+  const withdrawal1 = Number(settings.withdrawal || 0);
+  const withdrawal2 = Number(settings.withdrawal_2 || 0);
+  const hasWithdrawal = withdrawal1 > 0 || withdrawal2 > 0;
+
+  const targetKey = labData.mc_target_label || (labData.custom_portfolio ? 'custom_portfolio' : 'max_sharpe');
+  const targetPf = labData[targetKey] || labData.custom_portfolio || labData.max_sharpe || labData.min_volatility || labData.risk_parity || {};
+
+  const rawChart = Array.isArray(mc.chart) ? mc.chart : [];
+  const insuranceIsActive = Boolean(
+    insuranceEnabled && insurancePlan && rawChart.length > 1 && rawChart[1]?.ins_cv_p50 !== undefined
+  );
+
+  const chartSeries = rawChart.map((row) => {
+    const p10Val = Number(insuranceIsActive && row.combined_p10 !== undefined ? row.combined_p10 : row.p10 ?? 0);
+    const p50Val = Number(insuranceIsActive && row.combined_p50 !== undefined ? row.combined_p50 : row.p50 ?? 0);
+    const p90Val = Number(insuranceIsActive && row.combined_p90 !== undefined ? row.combined_p90 : row.p90 ?? 0);
+    const realRaw = insuranceIsActive && row.combined_real_p50 !== undefined ? row.combined_real_p50 : row.real_p50;
+    return {
+      year: row.year,
+      p10Val,
+      p50Val,
+      p90Val,
+      corridor: [p10Val, p90Val],
+      realP50Val: hasInflation && realRaw !== undefined ? Number(realRaw) : null,
+      divGenerated: Number(row.div_generated || 0),
+      actualDraw: row.actual_draw_p50 !== undefined ? Number(row.actual_draw_p50) : null,
+    };
+  });
+
+  const lastRow = chartSeries[chartSeries.length - 1] || { p10Val: capital, p50Val: capital, p90Val: capital };
+  const firstYearRow = chartSeries.find((r) => Number(r.year) === 1) || chartSeries[1] || lastRow;
+
+  const allocationsEntries = Object.entries(targetPf.allocations || {})
+    .map(([isin, rawW]) => {
+      const numW = parseFloat(rawW) || 0;
+      const weightPct = numW > 1.001 ? numW : numW * 100;
+      return {
+        isin,
+        weightPct,
+        amount: capital * (weightPct / 100),
+        stats: labData.asset_stats?.[isin] || {},
+      };
+    })
+    .filter((item) => item.weightPct > 0.01)
+    .sort((a, b) => b.weightPct - a.weightPct);
+
+  const drawdownObj = (insuranceIsActive && mc.combined_drawdown) ? mc.combined_drawdown : mc.drawdown;
+  const p50DdStr = drawdownObj?.p50 != null ? `${(drawdownObj.p50 * 100).toFixed(1)}%` : '—';
+  const p10DdStr = drawdownObj?.p10 != null ? (drawdownObj.p10 <= -0.999 ? '账户枯竭' : `${(drawdownObj.p10 * 100).toFixed(1)}%`) : '—';
+
+  // Milestones at ~1/3, ~2/3, and final horizon
+  const candidateYears = Array.from(
+    new Set([
+      Math.max(1, Math.round(years / 3)),
+      Math.max(2, Math.round((years * 2) / 3)),
+      years,
+    ])
+  ).sort((a, b) => a - b);
+  const milestoneRows = candidateYears
+    .map((yr) => chartSeries.find((r) => Number(r.year) === yr) || chartSeries[Math.min(yr, chartSeries.length - 1)])
+    .filter(Boolean);
+
+  const availableStressScenarios = Array.isArray(stressTestData?.scenarios)
+    ? stressTestData.scenarios.filter((s) => s.available)
+    : [];
+
+  const solvencyRate = mc.solvency_rate;
+  const successRate = mc.success_rate;
+  const useSolvencyPrimary = hasWithdrawal && solvencyRate != null;
+
+  const clientName = (clientInfo?.client_name || clientInfo?.name || '').trim() || '尊贵客户';
+  const riskBadge = clientInfo?.risk_label_zh || clientInfo?.risk_level || '稳健均衡型';
+  const cmaLabel = settings.cma_mode === 'forward_looking' ? '前瞻估值利率修正 CMA' : '历史收缩均衡 CMA';
+  const todayStr = new Date().toISOString().slice(0, 10);
+
+  return (
+    <div className="wealth-report-overlay" onClick={onClose}>
+      <div className="wealth-report-container" onClick={(e) => e.stopPropagation()}>
+        {/* Top Floating Controls (hidden in PDF print) */}
+        <div className="wealth-report-controls no-print">
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+            <span
+              style={{
+                fontFamily: 'var(--font-display)',
+                fontWeight: 700,
+                fontSize: '1.05rem',
+                color: '#1E4D3B',
+                letterSpacing: '0.02em',
+              }}
+            >
+              WONDER ATELIER · 客户执行简报 (2-Page Brief)
+            </span>
+            {clientInfo?.basket_title && (
+              <span className="ips-badge bronze">{clientInfo.basket_title}</span>
+            )}
+          </div>
+
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+            <button
+              type="button"
+              className="btn-report primary"
+              onClick={() => window.print()}
+              style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}
+            >
+              <Printer size={15} aria-hidden="true" />
+              导出 PDF / 打印
+            </button>
+
+            {onSwitchProfessional && (
+              <button
+                type="button"
+                className="btn-report secondary"
+                onClick={onSwitchProfessional}
+                style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}
+              >
+                <FileText size={15} aria-hidden="true" />
+                切换完整建议书 (6章 IPS)
+              </button>
+            )}
+
+            {onOpenClientInfo && (
+              <button
+                type="button"
+                className="btn-report secondary"
+                onClick={onOpenClientInfo}
+                style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}
+              >
+                <UserCog size={15} aria-hidden="true" />
+                客户与诉求设置
+              </button>
+            )}
+
+            {onGenerateWord && (
+              <button
+                type="button"
+                className="btn-report secondary"
+                disabled={reportLoading}
+                onClick={() => onGenerateWord()}
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  opacity: reportLoading ? 0.65 : 1,
+                }}
+              >
+                <Download size={15} aria-hidden="true" />
+                {reportLoading ? '生成 Word 中...' : '下载 Word (.docx)'}
+              </button>
+            )}
+
+            <button
+              type="button"
+              className="btn-report close"
+              onClick={onClose}
+              style={{ display: 'inline-flex', alignItems: 'center', gap: '5px' }}
+            >
+              <X size={15} aria-hidden="true" />
+              返回
+            </button>
+          </div>
+        </div>
+
+        {/* Printable 2-Page Nordic Private Bank Brief */}
+        <div id="printable-report" className="wealth-report-content ips-paper">
+          {/* Masthead */}
+          <header className="ips-masthead">
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '12px' }}>
+              <div>
+                <div className="ips-brand-overline">WONDER ATELIER · PRIVATE WEALTH EXECUTIVE BRIEF</div>
+                <h1 className="ips-title">专户资产配置与财富推演执行摘要</h1>
+                <div className="ips-subtitle">
+                  客户专案委托书执行简版 · {riskBadge} · {years} 年规划周期 · 计价本币 {currency}
+                </div>
+              </div>
+              <div style={{ textAlign: 'right', fontSize: '0.78rem', color: '#5F6662' }}>
+                <div className="ips-mono" style={{ fontWeight: 600, color: '#1E4D3B' }}>
+                  BRIEF-IPS-{todayStr.replaceAll('-', '')}
+                </div>
+                <div>编制日期：{todayStr}</div>
+                <div>估值模型：{cmaLabel}</div>
+              </div>
+            </div>
+
+            <div className="ips-meta-grid">
+              <div>
+                <div className="ips-meta-label">委托客户 / 年龄</div>
+                <div className="ips-meta-value">
+                  {clientName}
+                  {clientInfo?.age ? ` · ${clientInfo.age} 岁` : ''}
+                </div>
+              </div>
+              <div>
+                <div className="ips-meta-label">风险偏好与评分</div>
+                <div className="ips-meta-value">
+                  {riskBadge}
+                  {clientInfo?.risk_score != null ? ` (${clientInfo.risk_score})` : ''}
+                </div>
+              </div>
+              <div>
+                <div className="ips-meta-label">首期委托本金 / 目标</div>
+                <div className="ips-meta-value ips-mono">
+                  {fmtMoney(capital, currency)}
+                  {target > 0 ? ` → ${fmtCompact(target, currency)}` : ''}
+                </div>
+              </div>
+              <div>
+                <div className="ips-meta-label">现金流安排</div>
+                <div className="ips-meta-value">
+                  {hasWithdrawal
+                    ? `年提领 ${fmtMoney(withdrawal1, currency)}`
+                    : contribution > 0
+                      ? `年定投 ${fmtMoney(contribution, currency)}`
+                      : '纯复利累积阶段'}
+                </div>
+              </div>
+            </div>
+          </header>
+
+          {/* 4 Core KPI Cards */}
+          <section className="ips-kpi-grid ips-block-keep" aria-label="核心量化摘要指标">
+            <div className="ips-kpi-card">
+              <div className="ips-kpi-label">
+                {useSolvencyPrimary ? '现金流永续保障率 (SOLVENCY)' : '目标达成概率 (GOAL REACH)'}
+              </div>
+              <div className="ips-kpi-value ips-mono">
+                {useSolvencyPrimary
+                  ? fmtPct(solvencyRate, 1)
+                  : successRate != null
+                    ? fmtPct(successRate, 1)
+                    : '—'}
+              </div>
+              <div className="ips-kpi-sub">
+                {useSolvencyPrimary
+                  ? `期满零枯竭率 · 期末净值达标率 ${successRate != null ? fmtPct(successRate, 1) : '—'}`
+                  : '1,000 次蒙特卡洛路径达标概率'}
+              </div>
+            </div>
+
+            <div className="ips-kpi-card bronze">
+              <div className="ips-kpi-label">组合预期年化收益 / 分红</div>
+              <div className="ips-kpi-value ips-mono">
+                {fmtPct(targetPf.expected_return, 2)}
+              </div>
+              <div className="ips-kpi-sub">
+                年化波动 {fmtPct(targetPf.volatility, 2)} · 内生股息 {fmtPct(targetPf.dividend_yield, 2)}
+              </div>
+            </div>
+
+            <div className="ips-kpi-card slate">
+              <div className="ips-kpi-label">第 {years} 年中性净值 (P50)</div>
+              <div className="ips-kpi-value ips-mono">
+                {fmtCompact(lastRow.p50Val, currency)}
+              </div>
+              <div className="ips-kpi-sub">
+                {hasInflation && lastRow.realP50Val != null
+                  ? `折合今日购买力 ${fmtCompact(lastRow.realP50Val, currency)} (@${inflation}%)`
+                  : `夏普比率 ${(targetPf.sharpe_ratio ?? 0).toFixed(2)}`}
+              </div>
+            </div>
+
+            <div className="ips-kpi-card risk">
+              <div className="ips-kpi-label">极端防守底线 (P10 FLOOR)</div>
+              <div className="ips-kpi-value ips-mono">
+                {fmtCompact(lastRow.p10Val, currency)}
+              </div>
+              <div className="ips-kpi-sub">
+                P50 回撤 {p50DdStr} · P10 回撤 {p10DdStr}
+              </div>
+            </div>
+          </section>
+
+          {/* Section 1: Client Mandate & Extra Notes */}
+          <section className="ips-chapter ips-block-keep">
+            <div className="ips-chapter-header">
+              <div className="ips-chapter-title-wrap">
+                <span className="ips-chapter-num">01</span>
+                <span className="ips-chapter-title">委托诉求与核心配置思路</span>
+              </div>
+              <span className="ips-chapter-en">CLIENT MANDATE & THESIS</span>
+            </div>
+
+            <p className="ips-prose" style={{ marginBottom: '10px' }}>
+              {clientInfo?.tactical_summary_zh ||
+                `基于客户 ${riskBadge} 的风险承载特征，本方案采用跨资产核心-卫星架构，首期投入 ${fmtMoney(capital, currency)}，兼顾 ${years} 年期中枢复合增长、波动率预算控制及${hasWithdrawal ? '稳定现金流提领连续性' : '长期通胀购买力保值'}。`}
+            </p>
+
+            {(clientInfo?.extra_notes || clientInfo?.target_envelope || clientInfo?.ai_analysis_text) && (
+              <div className="ips-callout forest">
+                {clientInfo?.target_envelope && (
+                  <div style={{ marginBottom: '4px', fontSize: '0.82rem' }}>
+                    <strong>组合目标框架：</strong>
+                    {clientInfo.target_envelope}
+                  </div>
+                )}
+                {clientInfo?.extra_notes && (
+                  <div style={{ marginBottom: clientInfo?.ai_analysis_text ? '6px' : 0, fontSize: '0.84rem' }}>
+                    <strong>客户个性化补充约束：</strong>
+                    {clientInfo.extra_notes}
+                  </div>
+                )}
+                {clientInfo?.ai_analysis_text && (
+                  <div style={{ fontSize: '0.82rem', color: '#424A46', lineHeight: 1.65 }}>
+                    <strong>AI 投研摘要：</strong>
+                    {clientInfo.ai_analysis_text.length > 360
+                      ? `${clientInfo.ai_analysis_text.slice(0, 360)}...`
+                      : clientInfo.ai_analysis_text}
+                  </div>
+                )}
+              </div>
+            )}
+          </section>
+
+          {/* Section 2: Initial Portfolio Allocation & Funding Schedule */}
+          <section className="ips-chapter">
+            <div className="ips-chapter-header">
+              <div className="ips-chapter-title-wrap">
+                <span className="ips-chapter-num">02</span>
+                <span className="ips-chapter-title">首期建仓配置与金额一览表</span>
+              </div>
+              <span className="ips-chapter-en">CAPITAL ALLOCATION & EXECUTION</span>
+            </div>
+
+            <table className="ips-table">
+              <thead>
+                <tr>
+                  <th style={{ width: '110px' }}>资产代码</th>
+                  <th style={{ width: '24%' }}>标的 / 策略名称</th>
+                  <th style={{ width: '76px', textAlign: 'right' }}>配置权重</th>
+                  <th style={{ width: '118px', textAlign: 'right' }}>首期建仓金额 ({currency})</th>
+                  <th style={{ width: '72px', textAlign: 'right' }}>参考股息</th>
+                  <th>战略定位与风控角色</th>
+                </tr>
+              </thead>
+              <tbody>
+                {allocationsEntries.map((row) => {
+                  const displayName = row.stats?.name && row.stats.name !== row.isin ? row.stats.name : row.isin;
+                  const rawDy = row.stats?.dividend_yield;
+                  const dyStr = rawDy != null
+                    ? `${(Number(rawDy) > 1 ? Number(rawDy) : Number(rawDy) * 100).toFixed(2)}%`
+                    : '—';
+                  return (
+                    <tr key={row.isin}>
+                      <td>
+                        <span className="ips-badge">{row.isin}</span>
+                      </td>
+                      <td style={{ fontWeight: 600, color: '#18201C' }}>{displayName}</td>
+                      <td className="ips-mono" style={{ textAlign: 'right', fontWeight: 700, color: '#1E4D3B' }}>
+                        {row.weightPct.toFixed(1)}%
+                      </td>
+                      <td className="ips-mono" style={{ textAlign: 'right', fontWeight: 600 }}>
+                        {fmtMoney(row.amount, currency)}
+                      </td>
+                      <td className="ips-mono" style={{ textAlign: 'right', color: '#5F6662' }}>
+                        {dyStr}
+                      </td>
+                      <td style={{ fontSize: '0.79rem', color: '#424A46', lineHeight: 1.5 }}>
+                        {resolveRationale(row.isin, row.weightPct, row.stats, clientInfo)}
+                      </td>
+                    </tr>
+                  );
+                })}
+                <tr style={{ background: '#F3EFE6', fontWeight: 700 }}>
+                  <td colSpan={2} style={{ color: '#1E4D3B' }}>组合合计 ({allocationsEntries.length} 项资产)</td>
+                  <td className="ips-mono" style={{ textAlign: 'right', color: '#1E4D3B' }}>
+                    {allocationsEntries.reduce((s, r) => s + r.weightPct, 0).toFixed(1)}%
+                  </td>
+                  <td className="ips-mono" style={{ textAlign: 'right', color: '#1E4D3B' }}>
+                    {fmtMoney(capital, currency)}
+                  </td>
+                  <td className="ips-mono" style={{ textAlign: 'right', color: '#9A6F38' }}>
+                    {fmtPct(targetPf.dividend_yield, 2)}
+                  </td>
+                  <td style={{ fontSize: '0.78rem', color: '#5F6662' }}>
+                    {labData.portfolio_diagnostics?.weighted_fee_pct != null
+                      ? `加权年费率 ${Number(labData.portfolio_diagnostics.weighted_fee_pct).toFixed(2)}% · 历史最大回撤 ${fmtPct(labData.portfolio_diagnostics.max_drawdown, 2)}`
+                      : '跨资产再平衡后组合基准口径'}
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </section>
+
+          {/* Section 3: Wealth Corridor Chart & Life Milestones */}
+          <section className="ips-chapter ips-block-keep" style={{ pageBreakBefore: 'auto' }}>
+            <div className="ips-chapter-header">
+              <div className="ips-chapter-title-wrap">
+                <span className="ips-chapter-num">03</span>
+                <span className="ips-chapter-title">全周期财富走廊推演与关键里程碑</span>
+              </div>
+              <span className="ips-chapter-en">MONTE CARLO WEALTH CORRIDOR</span>
+            </div>
+
+            <div className="ips-chart-box" style={{ marginBottom: '14px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px', fontSize: '0.78rem', color: '#5F6662' }}>
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', fontWeight: 600, color: '#1E4D3B' }}>
+                  <TrendingUp size={14} aria-hidden="true" />
+                  10th / 50th / 90th 分位净值推演曲线{insuranceIsActive ? ' (含保单合并基础价值)' : ''}
+                </span>
+                <span className="ips-mono">
+                  本金 {fmtCompact(capital, currency)} → 中性期末 {fmtCompact(lastRow.p50Val, currency)}
+                </span>
+              </div>
+              <div style={{ width: '100%', height: 245 }}>
+                <ResponsiveContainer width="100%" height="100%">
+                  <AreaChart data={chartSeries} margin={{ top: 8, right: 16, left: 6, bottom: 0 }}>
+                    <defs>
+                      <linearGradient id="ipsBriefForestFill" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="5%" stopColor="#1E4D3B" stopOpacity={0.22} />
+                        <stop offset="95%" stopColor="#1E4D3B" stopOpacity={0.02} />
+                      </linearGradient>
+                    </defs>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#E5DFD3" />
+                    <XAxis
+                      dataKey="year"
+                      tick={{ fill: '#5F6662', fontSize: 11, fontFamily: 'var(--font-mono)' }}
+                      stroke="#D7D0C3"
+                      tickFormatter={(v) => `Y${v}`}
+                    />
+                    <YAxis
+                      tick={{ fill: '#5F6662', fontSize: 11, fontFamily: 'var(--font-mono)' }}
+                      stroke="#D7D0C3"
+                      tickFormatter={(v) => fmtCompact(v, currency)}
+                      width={68}
+                    />
+                    <Tooltip content={<BriefTooltip currency={currency} />} />
+                    {target > 0 && (
+                      <ReferenceLine
+                        y={target}
+                        stroke="#9A6F38"
+                        strokeDasharray="4 4"
+                        label={{
+                          value: `目标 ${fmtCompact(target, currency)}`,
+                          position: 'insideTopLeft',
+                          fill: '#9A6F38',
+                          fontSize: 11,
+                        }}
+                      />
+                    )}
+                    <Area
+                      type="monotone"
+                      dataKey="corridor"
+                      stroke="none"
+                      fill="#1E4D3B"
+                      fillOpacity={0.09}
+                      isAnimationActive={false}
+                      name="P10–P90 概率置信带"
+                    />
+                    <Area
+                      type="monotone"
+                      dataKey="p90Val"
+                      stroke="#9A6F38"
+                      strokeWidth={1.6}
+                      strokeDasharray="4 4"
+                      fill="none"
+                      isAnimationActive={false}
+                      name="乐观情景 (P90)"
+                    />
+                    <Area
+                      type="monotone"
+                      dataKey="p50Val"
+                      stroke="#1E4D3B"
+                      strokeWidth={2.4}
+                      fill="url(#ipsBriefForestFill)"
+                      isAnimationActive={false}
+                      name="中性预期 (P50)"
+                    />
+                    <Area
+                      type="monotone"
+                      dataKey="p10Val"
+                      stroke="#8C3B32"
+                      strokeWidth={1.6}
+                      strokeDasharray="4 4"
+                      fill="none"
+                      isAnimationActive={false}
+                      name="防御底线 (P10)"
+                    />
+                    {hasInflation && (
+                      <Area
+                        type="monotone"
+                        dataKey="realP50Val"
+                        stroke="#64748b"
+                        strokeWidth={1.3}
+                        strokeDasharray="2 3"
+                        fill="none"
+                        isAnimationActive={false}
+                        name="通胀折现购买力"
+                      />
+                    )}
+                  </AreaChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+
+            {/* Milestones strip */}
+            <div
+              style={{
+                display: 'grid',
+                gridTemplateColumns: `repeat(${Math.max(milestoneRows.length, 1)}, minmax(0, 1fr))`,
+                gap: '12px',
+              }}
+            >
+              {milestoneRows.map((m) => (
+                <div
+                  key={m.year}
+                  style={{
+                    background: '#F4F1EA',
+                    border: '1px solid #DFD9CC',
+                    borderTop: '2px solid #9A6F38',
+                    borderRadius: '4px',
+                    padding: '10px 12px',
+                  }}
+                >
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
+                    <span style={{ fontSize: '0.76rem', fontWeight: 700, color: '#9A6F38' }}>
+                      第 {m.year} 年里程碑
+                    </span>
+                    {m.divGenerated > 0 && (
+                      <span className="ips-mono" style={{ fontSize: '0.7rem', color: '#1E4D3B' }}>
+                        年分红 +{fmtCompact(m.divGenerated, currency)}
+                      </span>
+                    )}
+                  </div>
+                  <div className="ips-mono" style={{ fontSize: '1.1rem', fontWeight: 700, color: '#18201C' }}>
+                    {fmtMoney(m.p50Val, currency)}
+                  </div>
+                  <div style={{ fontSize: '0.72rem', color: '#5F6662', marginTop: '3px' }}>
+                    P10 防守底线 {fmtCompact(m.p10Val, currency)}
+                    {m.realP50Val != null ? ` · 实质购买力 ${fmtCompact(m.realP50Val, currency)}` : ''}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </section>
+
+          {/* Section 4: Cashflow, Insurance & Stress-Test Summary */}
+          <section className="ips-chapter ips-block-keep">
+            <div className="ips-chapter-header">
+              <div className="ips-chapter-title-wrap">
+                <span className="ips-chapter-num">04</span>
+                <span className="ips-chapter-title">现金流永续安排、风险预算与历史危机回放</span>
+              </div>
+              <span className="ips-chapter-en">CASHFLOW & STRESS RESILIENCE</span>
+            </div>
+
+            <div
+              style={{
+                display: 'grid',
+                gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))',
+                gap: '12px',
+                marginBottom: availableStressScenarios.length > 0 ? '14px' : 0,
+              }}
+            >
+              <div style={{ background: '#F4F1EA', border: '1px solid #DFD9CC', borderRadius: '4px', padding: '12px 14px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.8rem', fontWeight: 700, color: '#1E4D3B', marginBottom: '6px' }}>
+                  <Layers size={14} aria-hidden="true" />
+                  收支现金流与分红缓冲
+                </div>
+                <div style={{ fontSize: '0.8rem', color: '#333B37', lineHeight: 1.65 }}>
+                  <div>
+                    <strong>首年预计内生分红：</strong>
+                    <span className="ips-mono">{fmtMoney(firstYearRow.divGenerated, currency)}</span>
+                    {' · '}
+                    <strong>期末年分红：</strong>
+                    <span className="ips-mono">{fmtMoney(lastRow.divGenerated, currency)}</span>
+                  </div>
+                  <div>
+                    <strong>定投 / 提取结构：</strong>
+                    {contribution > 0
+                      ? `第 ${settings.contribution_start || 1}–${settings.contribution_years || 10} 年年定投 ${fmtMoney(contribution, currency)}`
+                      : '无追加定投'}
+                    {' · '}
+                    {hasWithdrawal
+                      ? `第 ${settings.withdrawal_start || 1}–${settings.withdrawal_end || years} 年年提取 ${fmtMoney(withdrawal1, currency)}${settings.withdrawal_inflation ? ' (随通胀上调)' : ''}`
+                      : '暂未设定固定提款'}
+                  </div>
+                </div>
+              </div>
+
+              <div style={{ background: '#F4F1EA', border: '1px solid #DFD9CC', borderRadius: '4px', padding: '12px 14px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.8rem', fontWeight: 700, color: '#9A6F38', marginBottom: '6px' }}>
+                  <ShieldCheck size={14} aria-hidden="true" />
+                  波动边界与保底护城河
+                </div>
+                <div style={{ fontSize: '0.8rem', color: '#333B37', lineHeight: 1.65 }}>
+                  <div>
+                    <strong>路径最大回撤：</strong>
+                    中性 P50 <span className="ips-mono">{p50DdStr}</span> · 极端 P10 <span className="ips-mono" style={{ color: '#8C3B32' }}>{p10DdStr}</span>
+                  </div>
+                  {mc.insurance_stats ? (
+                    <div>
+                      <strong>保单护城河叠加：</strong>
+                      分摊总提款需求{' '}
+                      <span className="ips-mono">{Number(mc.insurance_stats.withdrawal_coverage_pct || 0).toFixed(1)}%</span>
+                      ，期满保单 CV 中值 <span className="ips-mono">{fmtCompact(mc.insurance_stats.avg_cv_at_year_end?.mid, currency)}</span>
+                    </div>
+                  ) : (
+                    <div>
+                      <strong>风控纪律：</strong>
+                      建议每年检视股债再平衡阈值 (±5%)，避免单一资产波动偏离风险预算
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {availableStressScenarios.length > 0 && (
+              <div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.78rem', fontWeight: 700, color: '#5F6662', marginBottom: '8px' }}>
+                  <AlertTriangle size={13} style={{ color: '#9A6F38' }} aria-hidden="true" />
+                  历史极端市场危机压力回放 (Actual Weight Replay)
+                </div>
+                <table className="ips-table">
+                  <thead>
+                    <tr>
+                      <th>历史危机情景</th>
+                      <th>回放区间</th>
+                      <th style={{ textAlign: 'right' }}>底层数据覆盖率</th>
+                      <th style={{ textAlign: 'right' }}>区间累计收益</th>
+                      <th style={{ textAlign: 'right' }}>最大深水回撤</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {availableStressScenarios.map((s) => (
+                      <tr key={s.id}>
+                        <td style={{ fontWeight: 600 }}>{s.label || s.label_en}</td>
+                        <td className="ips-mono" style={{ fontSize: '0.76rem', color: '#5F6662' }}>
+                          {s.start} → {s.end}
+                        </td>
+                        <td className="ips-mono" style={{ textAlign: 'right' }}>{s.coverage_weight}%</td>
+                        <td
+                          className="ips-mono"
+                          style={{
+                            textAlign: 'right',
+                            fontWeight: 700,
+                            color: (s.total_return_pct || 0) >= 0 ? '#1E4D3B' : '#8C3B32',
+                          }}
+                        >
+                          {(s.total_return_pct || 0) >= 0 ? '+' : ''}
+                          {s.total_return_pct}%
+                        </td>
+                        <td className="ips-mono" style={{ textAlign: 'right', fontWeight: 700, color: '#8C3B32' }}>
+                          {s.max_drawdown_pct}%
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </section>
+
+          {/* Compliance Signoff Footer */}
+          <footer
+            style={{
+              marginTop: '22px',
+              paddingTop: '14px',
+              borderTop: '1px solid #C8C1B4',
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'flex-end',
+              gap: '20px',
+              flexWrap: 'wrap',
+              fontSize: '0.74rem',
+              color: '#5F6662',
+              lineHeight: 1.55,
+            }}
+          >
+            <div style={{ flex: '1 1 380px' }}>
+              <div style={{ fontWeight: 700, color: '#18201C', marginBottom: '3px' }}>
+                重要合规披露与投资风险提示 (IMPORTANT DISCLOSURE)
+              </div>
+              本执行简报由 Wonder Atelier 量化投资引擎基于客户风险问卷、{cmaLabel}及蒙特卡洛 1,000 次随机路径生成，仅供专属财富配置方案沟通之用。历史绩效与压力测试回放不代表未来表现，实际建仓需结合流动性窗口与个人税务框架确认。
+            </div>
+            <div style={{ textAlign: 'right', minWidth: '180px' }}>
+              <div style={{ borderBottom: '1px solid #8D867A', paddingBottom: '4px', marginBottom: '4px', color: '#18201C', fontWeight: 600 }}>
+                Wonder Atelier Advisory Desk
+              </div>
+              <div>Client Signature / Date: ____________</div>
+            </div>
+          </footer>
+        </div>
+      </div>
+    </div>
+  );
+}

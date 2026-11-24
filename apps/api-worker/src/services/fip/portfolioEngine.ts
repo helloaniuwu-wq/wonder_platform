@@ -7,14 +7,18 @@ import {
   getHistoricalSeries,
   getMarketData,
   guessCurrencyFromIsin,
+  resolveAssetCurrency,
 } from "./dataProvider";
 
 export interface Transaction {
+  id?: number;
   date: string;
   isin: string;
   type: string;
   shares: number;
   price: number;
+  batch_id?: string | null;
+  notes?: string | null;
 }
 
 export interface PortfolioMeta {
@@ -43,6 +47,14 @@ export interface HoldingItem {
   rebalance_diff?: number;
 }
 
+function resolveCashFlowAmount(shares: number, price: number): number {
+  // 兼容旧版 /portfolios/new 误将金额写入 shares 且 price=1.0 的历史 CASH_IN 记录
+  if (shares > 1 && Math.abs(price) === 1) {
+    return shares * price;
+  }
+  return price;
+}
+
 export class PortfolioEngine {
   db: D1Database;
   portfolioId: number;
@@ -59,6 +71,16 @@ export class PortfolioEngine {
   constructor(db: D1Database, portfolioId: number) {
     this.db = db;
     this.portfolioId = portfolioId;
+  }
+
+  static async clearStatsCache(db: D1Database, portfolioId: number): Promise<void> {
+    try {
+      if (db && typeof db.prepare === "function") {
+        await db.prepare("DELETE FROM portfolio_stats_cache WHERE portfolio_id = ?").bind(portfolioId).run();
+      }
+    } catch {
+      // ignore if cache table doesn't exist
+    }
   }
 
   async init() {
@@ -133,12 +155,12 @@ export class PortfolioEngine {
 
       if (t === "CASH_IN") {
         const cKey = isin.startsWith("CASH_") ? isin : "CASH_USD";
-        cashBalances[cKey] = (cashBalances[cKey] || 0) + p;
+        cashBalances[cKey] = (cashBalances[cKey] || 0) + resolveCashFlowAmount(q, p);
         continue;
       }
       if (t === "CASH_OUT") {
         const cKey = isin.startsWith("CASH_") ? isin : "CASH_USD";
-        cashBalances[cKey] = (cashBalances[cKey] || 0) + p; // p already negative for outflows
+        cashBalances[cKey] = (cashBalances[cKey] || 0) + resolveCashFlowAmount(q, p); // p already negative for outflows
         continue;
       }
 
@@ -149,7 +171,7 @@ export class PortfolioEngine {
 
       if (t === "BUY") {
         const cashNeeded = q * p;
-        const currency = guessCurrencyFromIsin(isin);
+        const currency = await resolveAssetCurrency(this.db, isin);
         const cKey = `CASH_${currency}`;
         cashBalances[cKey] = (cashBalances[cKey] || 0) - cashNeeded;
         const newShares = curr.shares + q;
@@ -159,12 +181,12 @@ export class PortfolioEngine {
         curr.shares = newShares;
       } else if (t === "SELL") {
         const cashGained = q * p;
-        const currency = guessCurrencyFromIsin(isin);
+        const currency = await resolveAssetCurrency(this.db, isin);
         const cKey = `CASH_${currency}`;
         cashBalances[cKey] = (cashBalances[cKey] || 0) + cashGained;
         curr.shares -= q;
       } else if (t === "DIV_CASH") {
-        const currency = guessCurrencyFromIsin(isin);
+        const currency = await resolveAssetCurrency(this.db, isin);
         const cKey = `CASH_${currency}`;
         const divAmt = q * p;
         const baseCcy = this.meta.base_currency || "USD";
@@ -377,8 +399,8 @@ export class PortfolioEngine {
         name,
         sector,
         country,
-        shares: Math.round(data.shares),
-        price: Math.round(currPrice * 100) / 100,
+        shares: Math.round(data.shares * 10000) / 10000,
+        price: Math.round(currPrice * 10000) / 10000,
         market_value: Math.round(marketVal * 100) / 100,
         total_cost: Math.round(cost * 100) / 100,
         dividends: Math.round(divReceived * 100) / 100,
@@ -416,7 +438,7 @@ export class PortfolioEngine {
       const ccy = tx.isin.startsWith("CASH_") ? tx.isin.slice(5) : baseCcy;
       const fx = ccy && ccy !== baseCcy ? await getFxRate(this.db, ccy, baseCcy) : 1.0;
       // CASH_OUT 的 price 本身已为负数，直接累加即可
-      investedCapital += tx.price * fx;
+      investedCapital += resolveCashFlowAmount(tx.shares, tx.price) * fx;
     }
     // 无入金记录时退回持仓成本，避免除零
     if (!hasCashFlow || investedCapital <= 0) {
@@ -906,14 +928,20 @@ export class PortfolioEngine {
       Math.ceil((todayObj.getTime() - startDateObj.getTime()) / (86400 * 1000)) + 15
     );
 
-    // 2. 并行拉取所有持仓资产的历史序列
+    // 2. 并行拉取所有持仓资产的原始净值/收盘价序列（useTotalReturn = false，因为步骤 3 已显式计入分红现金流）
     const historicalData: Record<string, Record<string, number>> = {};
+    const sortedPriceDates: Record<string, string[]> = {};
     await Promise.all(
       uniqueIsins.map(async (isin) => {
         try {
-          historicalData[isin] = await getHistoricalSeries(this.db, isin, daysSinceStart);
+          const rawSeries = await getHistoricalSeries(this.db, isin, daysSinceStart, false);
+          historicalData[isin] = rawSeries;
+          sortedPriceDates[isin] = Object.keys(rawSeries)
+            .filter((dt) => dt > "1990-01-01" && rawSeries[dt] > 0)
+            .sort();
         } catch {
           historicalData[isin] = {};
+          sortedPriceDates[isin] = [];
         }
       })
     );
@@ -996,7 +1024,7 @@ export class PortfolioEngine {
 
         // CASH_OUT 的 price 本身已是负数（与 buildBaseHoldings / investedCapital 口径一致），
         // 必须直接累加；写成 cash -= p 会把出金反过来做成入金。
-        if (t === "CASH_IN" || t === "CASH_OUT") cash += p * fx;
+        if (t === "CASH_IN" || t === "CASH_OUT") cash += resolveCashFlowAmount(q, p) * fx;
         else if (t === "DIVIDEND") {
           const divAmt = q * p;
           if (this.meta.dividend_strategy === "REINVEST") {
@@ -1029,25 +1057,30 @@ export class PortfolioEngine {
           const prices = historicalData[isin] || {};
           let price = prices[d];
 
-          // 往前寻找最近有效交易日报价 (最多 40 天)
+          // 从预排序历史日期中二分查找 <= d 的最近有效交易日收盘价（无 40 天窗口截断）
           if (!price || price <= 0) {
-            const dObj = new Date(d);
-            for (let b = 1; b <= 40; b++) {
-              const prevDateStr = new Date(dObj.getTime() - b * 86400000).toISOString().slice(0, 10);
-              if (prices[prevDateStr] && prices[prevDateStr] > 0) {
-                price = prices[prevDateStr];
-                break;
+            const availDates = sortedPriceDates[isin] || [];
+            let lo = 0;
+            let hi = availDates.length - 1;
+            let bestDate = "";
+            while (lo <= hi) {
+              const mid = (lo + hi) >> 1;
+              if (availDates[mid] <= d) {
+                bestDate = availDates[mid];
+                lo = mid + 1;
+              } else {
+                hi = mid - 1;
               }
+            }
+            if (bestDate && prices[bestDate] > 0) {
+              price = prices[bestDate];
             }
           }
 
-          // 成本基准兜底
+          // 仅在完全没有任何历史行情时回退至买入成本，保留真实市价波动与派息除权曲线
           const avgCost = avgCosts[isin] || 0;
           if (!price || price <= 0) {
             if (avgCost > 0) price = avgCost;
-          } else if (avgCost > 0 && price < avgCost) {
-            // 建仓初期低谷平滑
-            price = avgCost;
           }
 
           if (price && price > 0) {
@@ -1106,14 +1139,14 @@ export class PortfolioEngine {
         ? await getHistoricalPrice(this.db, isin, asOfDate)
         : (await getMarketData(this.db, isin)).price;
       if (!(px > 0)) continue;
-      const ccy = guessCurrencyFromIsin(isin);
+      const ccy = await resolveAssetCurrency(this.db, isin);
       const fx = await getFxRate(this.db, ccy, "USD");
       const mv = data.shares * px * fx;
       const meta = await getAssetMetadata(this.db, isin);
       rows.push({
         isin,
         name: meta.name || isin,
-        shares: Math.round(data.shares),
+        shares: Math.round(data.shares * 10000) / 10000,
         price: Math.round(px * 10000) / 10000,
         currency: ccy,
         market_value_usd: Math.round(mv * 100) / 100,
@@ -1132,15 +1165,25 @@ export class PortfolioEngine {
     };
   }
 
-  /** 再平衡 Step 2：按目标权重生成交易清单（含现金池伪行） */
-  async getRebalancePreview(asOfDate?: string) {
+  /** 再平衡 Step 2：按目标权重生成交易清单（支持 AIA 4位小数份额与 ETF 整手/现金缓冲） */
+  async getRebalancePreview(
+    asOfDate?: string,
+    options?: {
+      wrapperType?: "AIA_TMP2" | "BROKER_ETF" | "HYBRID";
+      cashBufferPct?: number;
+      lotSizes?: Record<string, number>;
+    }
+  ) {
     const targets = this.meta.target_allocations || {};
     const baseCcy = this.meta.base_currency || "USD";
     const dateStr = asOfDate || new Date().toISOString().slice(0, 10);
+    const wrapperType = options?.wrapperType || "AIA_TMP2";
+    const cashBufferPct = options?.cashBufferPct ?? (wrapperType === "BROKER_ETF" ? 0.015 : 0);
     const empty = {
       trades: [] as any[],
       as_of_date: dateStr,
       base_currency: baseCcy,
+      wrapper_type: wrapperType,
       total_nav_usd: 0,
       total_nav_base: 0,
       total_cash_usd: 0,
@@ -1151,6 +1194,8 @@ export class PortfolioEngine {
 
     const { portfolio, cashBalances } = await this.getCurrentPortfolio(asOfDate);
     const prices: Record<string, number> = {};
+    const currencies: Record<string, string> = {};
+    const fxRates: Record<string, number> = {};
     const assetMv: Record<string, number> = {};
     let totalAssets = 0;
 
@@ -1161,8 +1206,10 @@ export class PortfolioEngine {
         : (await getMarketData(this.db, isin)).price;
       if (!(px > 0)) continue;
       prices[isin] = px;
-      const ccy = guessCurrencyFromIsin(isin);
+      const ccy = await resolveAssetCurrency(this.db, isin);
       const fx = await getFxRate(this.db, ccy, baseCcy);
+      currencies[isin] = ccy;
+      fxRates[isin] = fx;
       const mv = data.shares * px * fx;
       assetMv[isin] = mv;
       totalAssets += mv;
@@ -1190,6 +1237,8 @@ export class PortfolioEngine {
       ...Object.keys(portfolio).filter((i) => !i.startsWith("CASH_") && portfolio[i].shares > 0),
     ]);
 
+    // 先处理 SELL 再评估可用现金（BROKER_ETF 模式保留现金缓冲 + 港股整手约束）
+    const effectiveDeployBudget = Math.max(0, totalValue * (1 - cashBufferPct));
     const trades: any[] = [];
     for (const isin of allIsins) {
       const tw = normTarget(targets[isin]);
@@ -1200,12 +1249,23 @@ export class PortfolioEngine {
           : (await getMarketData(this.db, isin)).price;
       }
       if (!(px > 0)) continue;
-      const ccy = guessCurrencyFromIsin(isin);
-      const fx = await getFxRate(this.db, ccy, baseCcy);
-      const targetShares = Math.floor((totalValue * tw) / (px * fx));
+      const ccy = currencies[isin] || (await resolveAssetCurrency(this.db, isin));
+      const fx = fxRates[isin] || (await getFxRate(this.db, ccy, baseCcy));
       const currentShares = portfolio[isin]?.shares || 0;
-      const diff = targetShares - currentShares;
-      if (diff === 0) continue;
+      const rawTargetShares = (effectiveDeployBudget * tw) / (px * fx);
+
+      let targetShares: number;
+      if (wrapperType === "BROKER_ETF" && isin.toUpperCase().endsWith(".HK")) {
+        const lot = options?.lotSizes?.[isin] || 100;
+        targetShares = Math.floor(rawTargetShares / lot) * lot;
+      } else {
+        targetShares = Math.round(rawTargetShares * 10000) / 10000;
+      }
+
+      const diff = Math.round((targetShares - currentShares) * 10000) / 10000;
+      const diffNotionalBase = Math.abs(diff) * px * fx;
+      if (Math.abs(diff) < 0.0001 || diffNotionalBase < 1) continue;
+
       const meta = await getAssetMetadata(this.db, isin);
       const amount = Math.abs(diff) * px;
       trades.push({
@@ -1222,6 +1282,12 @@ export class PortfolioEngine {
         target_weight: Math.round(tw * 10000) / 100,
       });
     }
+
+    // 先卖后买排序
+    trades.sort((a, b) => {
+      if (a.action === b.action) return b.amount_usd - a.amount_usd;
+      return a.action === "SELL" ? -1 : 1;
+    });
 
     trades.push({
       isin: `CASH_${baseCcy}`,
@@ -1241,6 +1307,7 @@ export class PortfolioEngine {
       trades,
       as_of_date: dateStr,
       base_currency: baseCcy,
+      wrapper_type: wrapperType,
       total_nav_usd: Math.round(totalValue * 100) / 100,
       total_nav_base: Math.round(totalValue * 100) / 100,
       total_cash_usd: Math.round(totalCashBase * 100) / 100,
@@ -1249,22 +1316,42 @@ export class PortfolioEngine {
     };
   }
 
-  /** 再平衡执行：只写 BUY/SELL，现金由账本推导，不额外写 CASH_IN/OUT 以免双计 */
-  async executeRebalance(asOfDate?: string) {
-    const preview = await this.getRebalancePreview(asOfDate);
+  /** 再平衡执行：只写 BUY/SELL 并附带统一 batch_id，同时清理统计缓存 */
+  async executeRebalance(
+    asOfDate?: string,
+    options?: { wrapperType?: "AIA_TMP2" | "BROKER_ETF" | "HYBRID"; batchId?: string; notes?: string }
+  ) {
+    const preview = await this.getRebalancePreview(asOfDate, { wrapperType: options?.wrapperType });
     const dateStr = asOfDate || new Date().toISOString().slice(0, 10);
-    const stmts: D1PreparedStatement[] = [];
-    for (const t of preview.trades) {
-      if (t.is_cash || t.shares == null || t.price == null) continue;
-      stmts.push(
-        this.db
-          .prepare(
-            "INSERT INTO transactions (portfolio_id, date, isin, type, shares, price) VALUES (?, ?, ?, ?, ?, ?)"
-          )
-          .bind(this.portfolioId, dateStr, t.isin, t.action, t.shares, t.price)
-      );
+    const batchId =
+      options?.batchId || `reb_${dateStr.replace(/-/g, "")}_${crypto.randomUUID().slice(0, 8)}`;
+    const notesStr = options?.notes || `Rebalance (${preview.wrapper_type || "AIA_TMP2"})`;
+    const tradeRows = preview.trades.filter((t) => !t.is_cash && t.shares != null && t.price != null);
+
+    if (tradeRows.length > 0) {
+      try {
+        const stmts = tradeRows.map((t) =>
+          this.db
+            .prepare(
+              "INSERT INTO transactions (portfolio_id, date, isin, type, shares, price, batch_id, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+            )
+            .bind(this.portfolioId, dateStr, t.isin, t.action, t.shares, t.price, batchId, notesStr)
+        );
+        await this.db.batch(stmts);
+      } catch {
+        // 兼容尚未执行 0008 迁移的本地库
+        const stmts = tradeRows.map((t) =>
+          this.db
+            .prepare(
+              "INSERT INTO transactions (portfolio_id, date, isin, type, shares, price) VALUES (?, ?, ?, ?, ?, ?)"
+            )
+            .bind(this.portfolioId, dateStr, t.isin, t.action, t.shares, t.price)
+        );
+        await this.db.batch(stmts);
+      }
     }
-    if (stmts.length > 0) await this.db.batch(stmts);
-    return { inserted: stmts.length, date: dateStr };
+
+    await PortfolioEngine.clearStatsCache(this.db, this.portfolioId);
+    return { inserted: tradeRows.length, date: dateStr, batch_id: batchId };
   }
 }

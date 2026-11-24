@@ -1566,10 +1566,215 @@ input:checked + .slider:before {
   padding: 1.125rem 1.25rem;
 }
 
+/* ── Nordic Private Bank IPS Report System ─────────────────────────────── */
+.ips-paper {
+  background: #FAF8F3 !important;
+  color: #141413 !important;
+  border: 1px solid #D5CFC3;
+  border-top: 5px solid #1E4D3B;
+  font-family: var(--font-sans);
+}
+.ips-masthead {
+  border-bottom: 1.5px solid #1E4D3B;
+  padding-bottom: 20px;
+  margin-bottom: 24px;
+}
+.ips-brand-overline {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: #9A6F38;
+  margin-bottom: 8px;
+}
+.ips-title {
+  font-family: var(--font-display);
+  font-size: clamp(1.75rem, 2.8vw, 2.35rem);
+  font-weight: 700;
+  color: #141413 !important;
+  line-height: 1.15;
+  margin: 0 0 8px 0;
+  letter-spacing: -0.02em;
+}
+.ips-meta-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 8px 18px;
+  margin-top: 14px;
+  padding: 12px 16px;
+  background: #FFFFFF;
+  border: 1px solid #DFDBD2;
+  border-radius: 4px;
+  font-size: 0.8rem;
+  color: #57534E;
+}
+.ips-meta-grid strong {
+  color: #141413;
+  font-weight: 600;
+}
+.ips-kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 18px;
+}
+.ips-kpi-card {
+  background: #FFFFFF;
+  border: 1px solid #DFDBD2;
+  border-top: 3px solid #1E4D3B;
+  border-radius: 4px;
+  padding: 14px 14px 12px;
+}
+.ips-kpi-card.bronze { border-top-color: #9A6F38; }
+.ips-kpi-card.slate { border-top-color: #28547A; }
+.ips-kpi-card.risk { border-top-color: #991B1B; }
+.ips-kpi-label {
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #78736A;
+  margin-bottom: 6px;
+}
+.ips-kpi-value {
+  font-family: var(--font-display);
+  font-size: 1.65rem;
+  font-weight: 700;
+  color: #1E4D3B;
+  line-height: 1.15;
+  font-variant-numeric: lining-nums tabular-nums;
+}
+.ips-kpi-sub {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  color: #57534E;
+  margin-top: 6px;
+}
+.ips-chapter {
+  margin-bottom: 28px;
+}
+.ips-chapter-header {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  border-bottom: 1px solid #C5BEB0;
+  padding-bottom: 6px;
+  margin-bottom: 14px;
+}
+.ips-chapter-num {
+  font-family: var(--font-mono);
+  font-size: 0.86rem;
+  font-weight: 700;
+  color: #9A6F38;
+  letter-spacing: 0.06em;
+}
+.ips-chapter-title {
+  font-family: var(--font-display);
+  font-size: 1.38rem;
+  font-weight: 700;
+  color: #1E4D3B !important;
+  margin: 0;
+}
+.ips-chapter-en {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #8A847C;
+}
+.ips-prose {
+  font-size: 0.92rem;
+  line-height: 1.78;
+  color: #292524;
+  margin: 0 0 12px 0;
+  white-space: pre-wrap;
+}
+.ips-callout {
+  background: #FFFFFF;
+  border: 1px solid #DFDBD2;
+  border-left: 3.5px solid #9A6F38;
+  border-radius: 0 4px 4px 0;
+  padding: 12px 16px;
+  font-size: 0.86rem;
+  line-height: 1.68;
+  color: #292524;
+  margin-bottom: 14px;
+}
+.ips-callout.forest {
+  border-left-color: #1E4D3B;
+}
+.ips-table {
+  width: 100%;
+  border-collapse: collapse;
+  background: #FFFFFF;
+  border: 1px solid #DFDBD2;
+  font-size: 0.82rem;
+}
+.ips-table thead th {
+  background: #1E4D3B;
+  color: #FAF8F3;
+  font-weight: 600;
+  padding: 9px 10px;
+  text-align: left;
+  font-size: 0.76rem;
+  letter-spacing: 0.03em;
+}
+.ips-table tbody td {
+  padding: 9px 10px;
+  border-bottom: 1px solid #EFECE4;
+  color: #141413;
+  vertical-align: top;
+}
+.ips-table tbody tr:nth-child(even) td {
+  background: #FAF8F3;
+}
+.ips-table tfoot td {
+  background: #EFECE4;
+  font-weight: 700;
+  padding: 9px 10px;
+  border-top: 1.5px solid #1E4D3B;
+  color: #141413;
+}
+.ips-mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+.ips-badge {
+  display: inline-block;
+  padding: 2px 7px;
+  border-radius: 3px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  font-family: var(--font-mono);
+  background: rgba(30, 77, 59, 0.09);
+  color: #1E4D3B;
+  border: 1px solid rgba(30, 77, 59, 0.25);
+}
+.ips-badge.bronze {
+  background: rgba(154, 111, 56, 0.11);
+  color: #9A6F38;
+  border-color: rgba(154, 111, 56, 0.28);
+}
+.ips-chart-box {
+  background: #FFFFFF;
+  border: 1px solid #DFDBD2;
+  border-radius: 4px;
+  padding: 14px 14px 10px;
+  margin-bottom: 14px;
+}
+
+@media (max-width: 720px) {
+  .ips-kpi-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
 @media print {
   @page {
-    size: A4;
-    margin: 14mm 16mm 14mm 16mm;
+    size: A4 portrait;
+    margin: 12mm 14mm 12mm 14mm;
   }
 
   body, html, #root, .app-layout {
@@ -1587,10 +1792,15 @@ input:checked + .slider:before {
   .wealth-report-overlay {
     position: static !important;
     overflow: visible !important;
-    background: transparent;
-    display: block;
-    padding: 0;
-    margin: 0;
+    background: transparent !important;
+    display: block !important;
+    padding: 0 !important;
+    margin: 0 !important;
+  }
+
+  .wealth-report-container {
+    max-width: none !important;
+    width: 100% !important;
   }
 
   #printable-report, #printable-report * {
@@ -1598,18 +1808,28 @@ input:checked + .slider:before {
   }
 
   #printable-report {
-    position: static;
-    width: 100%;
-    margin: 0;
-    padding: 0;
-    box-shadow: none;
-    border: none;
+    position: static !important;
+    width: 100% !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    box-shadow: none !important;
+    border: none !important;
+    background: #ffffff !important;
   }
 
   .no-print {
     display: none !important;
   }
 
+  .ips-table thead {
+    display: table-header-group;
+  }
+
+  .ips-table tr,
+  .ips-kpi-grid,
+  .ips-callout,
+  .ips-chart-box,
+  .ips-block-keep,
   .page-break-inside-avoid,
   .milestone-table,
   .insurance-chapter-grid {

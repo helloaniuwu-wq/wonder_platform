@@ -3,7 +3,7 @@
  * 从 App.jsx 原样搬出，行为不变。
  */
 import { useState } from 'react';
-import { authHeaders } from '../utils/auth';
+import { apiFetch } from '../api/client';
 import { reloadReportAndHistory } from '../utils/reportApi';
 
 export function useRebalance({ activeId, setData, setHistoryData, setLoading, setCompTargets }) {
@@ -23,9 +23,8 @@ export function useRebalance({ activeId, setData, setHistoryData, setLoading, se
   const handleUndoConfirmed = async () => {
     setUndoConfirmOpen(false);
     try {
-      const res = await fetch(`/api/portfolios/rebalance/undo/${activeId}`, {
+      const res = await apiFetch(`/api/portfolios/rebalance/undo/${activeId}`, {
         method: 'POST',
-        headers: authHeaders()
       });
       const data = await res.json();
       if (data.status === 'success') {
@@ -43,9 +42,9 @@ export function useRebalance({ activeId, setData, setHistoryData, setLoading, se
     if (!activeId) return;
     try {
       // Load current saved targets to pre-populate the editor
-      const txRes = await fetch(`/api/portfolios/transactions/${activeId}`, { headers: authHeaders() });
-      const txData = await txRes.json();
-      const savedTargets = txData.target_allocations || {};
+      const pfRes = await apiFetch(`/api/portfolios/${activeId}`);
+      const pfData = await pfRes.json();
+      const savedTargets = pfData.target_allocations || {};
       setRebalanceDraftTargets(savedTargets);
       setRebalancePreview(null); // reset preview so modal starts on Step 1
       setShowRebalanceModal(true);
@@ -58,15 +57,14 @@ export function useRebalance({ activeId, setData, setHistoryData, setLoading, se
   const handleRebalanceSaveAndCalc = async (draftTargets) => {
     if (!activeId) return;
     // 1. Persist the edited targets
-    await fetch(`/api/portfolios/${activeId}`, {
+    await apiFetch(`/api/portfolios/${activeId}`, {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json', ...authHeaders() },
-      body: JSON.stringify({ target_allocations: draftTargets })
+      body: { target_allocations: draftTargets }
     });
     // 2. Fetch the preview with updated targets
     const params = new URLSearchParams();
     if (rebalanceDate) params.set('as_of_date', rebalanceDate);
-    const res = await fetch(`/api/portfolios/rebalance/preview/${activeId}?${params}`);
+    const res = await apiFetch(`/api/portfolios/rebalance/preview/${activeId}?${params}`);
     const json = await res.json();
     setRebalancePreview(json);
     // Also sync compTargets so composition modal stays consistent
@@ -78,10 +76,9 @@ export function useRebalance({ activeId, setData, setHistoryData, setLoading, se
     setLoading(true);
     setShowRebalanceModal(false);
     try {
-      const rbRes = await fetch(`/api/portfolios/rebalance/${activeId}`, {
+      const rbRes = await apiFetch(`/api/portfolios/rebalance/${activeId}`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...authHeaders() },
-        body: JSON.stringify({ as_of_date: rebalanceDate || null })
+        body: { as_of_date: rebalanceDate || null }
       });
       if (!rbRes.ok) {
         const err = await rbRes.json().catch(() => ({ detail: 'Unknown server error' }));

@@ -1,5 +1,5 @@
 import React, { useState, useRef } from 'react';
-import { Briefcase, Activity, Plus, Trash2, Users, UserCheck, GripVertical, Link, BookOpen, X } from 'lucide-react';
+import { Briefcase, Activity, Database, Compass, Plus, Trash2, Users, UserCheck, GripVertical, Link, BookOpen, X, ShieldCheck } from 'lucide-react';
 import ILPSettingsModal from './ILPSettingsModal';
 import { useLang } from '../i18n/langCore';
 
@@ -120,10 +120,31 @@ const Sidebar = ({
           </button>
           <button
             type="button"
+            onClick={() => { setActiveTab('funds'); closeDrawer(); }}
+            className={`sidebar-mode-btn ${activeTab === 'funds' ? 'active' : ''}`}
+          >
+            <Database size={14} aria-hidden="true" /> {t('sidebar.funds')}
+          </button>
+          <button
+            type="button"
             onClick={() => { setActiveTab('lab'); }}
             className={`sidebar-mode-btn ${activeTab === 'lab' ? 'active' : ''}`}
           >
             <Activity size={14} aria-hidden="true" /> {t('sidebar.lab')}
+          </button>
+          <button
+            type="button"
+            onClick={() => { setActiveTab('advisory'); closeDrawer(); }}
+            className={`sidebar-mode-btn ${activeTab === 'advisory' ? 'active' : ''}`}
+          >
+            <Compass size={14} aria-hidden="true" /> {t('sidebar.advisory')}
+          </button>
+          <button
+            type="button"
+            onClick={() => { setActiveTab('monitor'); closeDrawer(); }}
+            className={`sidebar-mode-btn ${activeTab === 'monitor' ? 'active' : ''}`}
+          >
+            <ShieldCheck size={14} aria-hidden="true" /> {t('sidebar.monitor') !== 'sidebar.monitor' ? t('sidebar.monitor') : '組合監控'}
           </button>
         </div>
 

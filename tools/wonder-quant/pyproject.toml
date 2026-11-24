@@ -1,0 +1,49 @@
+[project]
+name = "wonder-quant"
+version = "0.1.0"
+description = "Wonder Platform quantitative fund ingestion, analytics, D1 sync and Obsidian writeback engine"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "typer>=0.15.0",
+    "pydantic>=2.10.0",
+    "pydantic-settings>=2.7.0",
+    "httpx>=0.28.0",
+    "yfinance>=1.0.0",
+    "akshare>=1.16.0",
+    "pandas>=2.2.0",
+    "numpy>=2.0.0",
+    "pyarrow>=18.0.0",
+    "PyYAML>=6.0.2",
+    "python-dotenv>=1.0.1",
+    "pypdf>=7.1.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3.0",
+    "pytest-cov>=6.0.0",
+    "respx>=0.22.0",
+    "ruff>=0.8.0",
+]
+
+[project.scripts]
+wq = "wonder_quant.cli:app"
+
+[build-system]
+requires = ["hatchling>=1.26.0"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/wonder_quant"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 110
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["E501", "B008"]

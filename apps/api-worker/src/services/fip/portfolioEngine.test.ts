@@ -243,4 +243,42 @@ describe("PortfolioEngine.applyDividends", () => {
 
     expect(portfolio.VOO.total_div_cash).toBeCloseTo(100, 10);
   });
+
+  it("CASH_IN 兼容 shares=1/price=金额 与旧版 shares=金额/price=1 两种写法", async () => {
+    const standard = makeEngine([
+      tx("2024-01-01", "CASH_USD", "CASH_IN", 1, 500000),
+      tx("2024-01-01", "VOO", "BUY", 5000, 100),
+    ]);
+    const legacy = makeEngine([
+      tx("2024-01-01", "CASH_USD", "CASH_IN", 500000, 1),
+      tx("2024-01-01", "VOO", "BUY", 5000, 100),
+    ]);
+
+    const b1 = await standard.buildBaseHoldings();
+    const b2 = await legacy.buildBaseHoldings();
+
+    expect(b1.cashBalances.CASH_USD).toBeCloseTo(0, 6);
+    expect(b2.cashBalances.CASH_USD).toBeCloseTo(0, 6);
+  });
+
+  it("AIA_TMP2 再平衡保留 4 位小数基金单位数，不被强制截断为整数", async () => {
+    vi.mocked(dataProvider.getHistoricalPrice).mockResolvedValue(15.25);
+    const engine = makeEngine(
+      [
+        tx("2024-01-01", "CASH_USD", "CASH_IN", 1, 10000),
+        tx("2024-01-01", "F51", "BUY", 327.8689, 15.25), // 5000 USD
+        tx("2024-01-01", "F02", "BUY", 327.8689, 15.25), // 5000 USD
+      ],
+      { target_allocations: { F51: 0.6, F02: 0.4 } }
+    );
+    vi.spyOn(engine, "getDividendDetails").mockResolvedValue([]);
+
+    const preview = await engine.getRebalancePreview("2024-06-01", { wrapperType: "AIA_TMP2" });
+    const f51Trade = preview.trades.find((t) => t.isin === "F51");
+    expect(f51Trade).toBeDefined();
+    expect(f51Trade.action).toBe("BUY");
+    // 6000 / 15.25 = 393.4426 - 327.8689 = 65.5737 units (4 decimal precision preserved)
+    expect(f51Trade.shares).toBeCloseTo(65.5737, 4);
+    expect(Number.isInteger(f51Trade.shares)).toBe(false);
+  });
 });

@@ -3,7 +3,7 @@
  * 从 App.jsx 原样搬出，行为不变。
  */
 import { useState } from 'react';
-import { authHeaders } from '../utils/auth';
+import { apiFetch } from '../api/client';
 
 export function useDividends({ activeId, setData }) {
   const [showDivModal, setShowDivModal] = useState(false);
@@ -17,21 +17,20 @@ export function useDividends({ activeId, setData }) {
 
   const handleManualDiv = async (e) => {
     e.preventDefault();
-    await fetch(`/api/portfolios/dividend/manual/${activeId}`, {
+    await apiFetch(`/api/portfolios/dividend/manual/${activeId}`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...authHeaders() },
-      body: JSON.stringify({ isin: mDiv.isin, date: mDiv.date, amount_per_share: parseFloat(mDiv.amount) })
+      body: { isin: mDiv.isin, date: mDiv.date, amount_per_share: parseFloat(mDiv.amount) }
     });
     setShowDivModal(false);
     // Refresh report
-    const res = await fetch(`/api/report/${activeId}`);
+    const res = await apiFetch(`/api/report/${activeId}`);
     setData(await res.json());
   };
 
   const handleOpenManageDivModal = async () => {
     if (!activeId) return;
     try {
-      const res = await fetch(`/api/portfolios/dividends/export/${activeId}`);
+      const res = await apiFetch(`/api/portfolios/dividends/export/${activeId}`);
       if (!res.ok) throw new Error("Failed to fetch dividends");
       const divs = await res.json();
       setDividendHistory(divs);
@@ -45,11 +44,11 @@ export function useDividends({ activeId, setData }) {
   const handleDeleteManualDividend = async (divId) => {
     if (!window.confirm("Are you sure you want to delete this manual dividend?")) return;
     try {
-      await fetch(`/api/dividends/manual/${divId}`, { method: 'DELETE', headers: authHeaders() });
-      const res = await fetch(`/api/portfolios/dividends/export/${activeId}`, { headers: authHeaders() });
+      await apiFetch(`/api/dividends/manual/${divId}`, { method: 'DELETE' });
+      const res = await apiFetch(`/api/portfolios/dividends/export/${activeId}`);
       setDividendHistory(await res.json());
       
-      const repRes = await fetch(`/api/report/${activeId}`);
+      const repRes = await apiFetch(`/api/report/${activeId}`);
       setData(await repRes.json());
     } catch (err) {
       console.error(err);

@@ -1,5 +1,6 @@
-import React from 'react';
-import { Plus, Trash2 } from 'lucide-react';
+import React, { useState } from 'react';
+import { Database } from 'lucide-react';
+import FundCatalogPickerModal from './FundCatalogPickerModal';
 
 /**
  * Modal for creating a new portfolio.
@@ -8,19 +9,48 @@ const CreatePortfolioModal = ({
   showModal, setShowModal,
   newPf, setNewPf, totalWeight,
   handleCreatePortfolio,
+  creatingPf = false,
+  createPfError = '',
+  setCreatePfError,
+  quantFunds = [],
 }) => {
+  const [pickerOpen, setPickerOpen] = useState(false);
   if (!showModal) return null;
+  const closeModal = () => {
+    if (creatingPf) return;
+    setCreatePfError?.('');
+    setShowModal(false);
+  };
   return (
+        <>
+        <FundCatalogPickerModal
+          open={pickerOpen}
+          funds={quantFunds}
+          existingIds={newPf.allocations.map((a) => a.isin).filter(Boolean)}
+          onClose={() => setPickerOpen(false)}
+          onConfirm={(ids) => {
+            const nonEmpty = newPf.allocations.filter((a) => a.isin && a.isin.trim());
+            const mergedIds = Array.from(new Set([...nonEmpty.map((a) => a.isin.trim()), ...ids]));
+            const eq = mergedIds.length > 0 ? Number((1 / mergedIds.length).toFixed(4)) : 0;
+            const next = mergedIds.map((id, idx) => ({
+              isin: id,
+              weight: idx === mergedIds.length - 1 ? Number((1 - eq * (mergedIds.length - 1)).toFixed(4)) : eq,
+              manual_price: '',
+            }));
+            setNewPf({ ...newPf, allocations: next });
+          }}
+        />
         <div className="modal-overlay">
           <div className="glass-card modal-content" onClick={e => e.stopPropagation()} style={{position: 'relative'}}>
             <button 
               type="button"
               aria-label="Close modal"
-              onClick={() => setShowModal(false)}
+              onClick={closeModal}
+              disabled={creatingPf}
               style={{
                 position: 'absolute', top: '15px', right: '15px', 
                 background: 'transparent', border: 'none', color: 'var(--text-muted)', 
-                fontSize: '1.25rem', cursor: 'pointer', transition: 'color 0.2s'
+                fontSize: '1.25rem', cursor: creatingPf ? 'not-allowed' : 'pointer', transition: 'color 0.2s'
               }}
             >✕</button>
             <h2 style={{marginTop: 0}}>New Portfolio Strategy</h2>
@@ -82,33 +112,113 @@ const CreatePortfolioModal = ({
                   <label>Initial Budget ({newPf.base_currency || 'USD'})</label>
                   <input type="number" value={newPf.budget} onChange={e => setNewPf({...newPf, budget: e.target.value})} />
                 </div>
+                <div className="form-group" style={{flex: 1.2}}>
+                  <label>Execution Wrapper <span style={{color:'#a855f7', fontSize:'0.75rem'}}>實盤執行載體</span></label>
+                  <select
+                    value={newPf.wrapper_type || 'AIA_TMP2'}
+                    onChange={e => setNewPf({...newPf, wrapper_type: e.target.value})}
+                  >
+                    <option value="AIA_TMP2">AIA 卓達智悅2 (ILP 投連險)</option>
+                    <option value="BROKER_ETF">券商海外 ETF 專戶</option>
+                    <option value="HYBRID">混合架構 (Hybrid)</option>
+                  </select>
+                </div>
+                <div className="form-group" style={{flex: 0.7}}>
+                  <label>漂移閾值 (%)</label>
+                  <input
+                    type="number"
+                    min="1"
+                    max="30"
+                    value={newPf.drift_tolerance_pct ?? 5}
+                    onChange={e => setNewPf({...newPf, drift_tolerance_pct: e.target.value})}
+                  />
+                </div>
+                <div className="form-group" style={{flex: 0.7}}>
+                  <label>回撤警戒 (%)</label>
+                  <input
+                    type="number"
+                    min="3"
+                    max="50"
+                    value={newPf.max_drawdown_pct ?? 15}
+                    onChange={e => setNewPf({...newPf, max_drawdown_pct: e.target.value})}
+                  />
+                </div>
               </div>
 
               <div className="form-group">
                 <label>Allocations (Total: {(totalWeight * 100).toFixed(0)}%)</label>
                 {newPf.allocations.map((a, i) => (
                   <div key={i} className="allocation-row">
-                    <input style={{flex: 2}} placeholder="ISIN" value={a.isin} onChange={e => {
-                      const next = [...newPf.allocations]; next[i].isin = e.target.value; setNewPf({...newPf, allocations: next});
+                    <input style={{flex: 1.6, minWidth: 0}} placeholder="ISIN / Code" value={a.isin} onChange={e => {
+                      const next = [...newPf.allocations]; next[i] = { ...next[i], isin: e.target.value }; setNewPf({...newPf, allocations: next});
                     }} />
-                    <input style={{flex: 1}} type="number" step="0.01" placeholder="Weight (e.g. 0.5)" value={a.weight} onChange={e => {
-                      const next = [...newPf.allocations]; next[i].weight = e.target.value; setNewPf({...newPf, allocations: next});
+                    <input style={{flex: 1, minWidth: 0}} type="number" step="0.01" placeholder="Weight" value={a.weight} onChange={e => {
+                      const next = [...newPf.allocations]; next[i] = { ...next[i], weight: e.target.value }; setNewPf({...newPf, allocations: next});
                     }} />
-                    <input style={{flex: 1.5}} type="number" placeholder="Manual Price (opt)" value={a.manual_price} onChange={e => {
-                      const next = [...newPf.allocations]; next[i].manual_price = e.target.value; setNewPf({...newPf, allocations: next});
+                    <input style={{flex: 1.4, minWidth: 0}} type="number" placeholder="Price (opt)" value={a.manual_price} onChange={e => {
+                      const next = [...newPf.allocations]; next[i] = { ...next[i], manual_price: e.target.value }; setNewPf({...newPf, allocations: next});
                     }} />
+                    {newPf.allocations.length > 1 && (
+                      <button
+                        type="button"
+                        aria-label="Remove asset"
+                        onClick={() => {
+                          const next = newPf.allocations.filter((_, idx) => idx !== i);
+                          setNewPf({ ...newPf, allocations: next });
+                        }}
+                        style={{
+                          background: 'transparent',
+                          border: 'none',
+                          color: 'var(--text-muted)',
+                          cursor: 'pointer',
+                          padding: '0 6px',
+                          fontSize: '1rem',
+                        }}
+                      >
+                        ✕
+                      </button>
+                    )}
                   </div>
                 ))}
-                <button type="button" className="add-asset-btn" onClick={() => setNewPf({...newPf, allocations: [...newPf.allocations, {isin:'', weight:0, manual_price:''}]})}>+ Add Asset</button>
+                <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                  <button type="button" className="add-asset-btn" onClick={() => setNewPf({...newPf, allocations: [...newPf.allocations, {isin:'', weight:0, manual_price:''}]})}>+ Add Asset</button>
+                  {quantFunds.length > 0 && (
+                    <button type="button" className="add-asset-btn" onClick={() => setPickerOpen(true)} style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+                      <Database size={13} /> 从 309 只基金库选基
+                    </button>
+                  )}
+                </div>
               </div>
 
+              {createPfError && (
+                <div style={{
+                  marginTop: '14px',
+                  padding: '10px 12px',
+                  borderRadius: '6px',
+                  background: 'var(--danger-bg, rgba(239, 68, 68, 0.1))',
+                  border: '1px solid var(--danger, #ef4444)',
+                  color: 'var(--danger, #ef4444)',
+                  fontSize: '0.84rem',
+                }}>
+                  {createPfError}
+                </div>
+              )}
+
               <div style={{marginTop: '24px', display: 'flex', gap: '12px'}}>
-                <button type="submit" className="create-btn" style={{flex: 1}} disabled={Math.abs(totalWeight-1.0)>0.001}>Deploy Strategy</button>
-                <button type="button" className="create-btn cancel" onClick={() => setShowModal(false)}>Cancel</button>
+                <button
+                  type="submit"
+                  className="create-btn"
+                  style={{flex: 1, opacity: creatingPf ? 0.7 : 1}}
+                  disabled={creatingPf || Math.abs(totalWeight - 1.0) > 0.001}
+                >
+                  {creatingPf ? 'Creating...' : 'Deploy Strategy'}
+                </button>
+                <button type="button" className="create-btn cancel" onClick={closeModal} disabled={creatingPf}>Cancel</button>
               </div>
             </form>
           </div>
         </div>
+        </>
 
   );
 };

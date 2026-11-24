@@ -3,7 +3,7 @@
  * 从 App.jsx 原样搬出，行为不变。
  */
 import { useState } from 'react';
-import { authHeaders } from '../utils/auth';
+import { apiFetch } from '../api/client';
 
 export function useComposition({ activeId, setData }) {
   // Portfolio Composition Management State
@@ -17,7 +17,7 @@ export function useComposition({ activeId, setData }) {
   const handleOpenCompModal = async () => {
     if (!activeId) return;
     try {
-      const res = await fetch(`/api/portfolios/transactions/${activeId}`, { headers: authHeaders() });
+      const res = await apiFetch(`/api/portfolios/transactions/${activeId}`);
       if (!res.ok) throw new Error('Failed to fetch transactions');
       const result = await res.json();
       setCompTxs(result.transactions || []);
@@ -49,16 +49,15 @@ export function useComposition({ activeId, setData }) {
       if (edits.price !== undefined) txUpdate.price = edits.price;
       if (edits.date !== undefined) txUpdate.date = edits.date;
       if (Object.keys(txUpdate).length > 0) {
-        await fetch(`/api/portfolios/transactions/${txId}`, {
+        await apiFetch(`/api/portfolios/transactions/${txId}`, {
           method: 'PUT',
-          headers: { 'Content-Type': 'application/json', ...authHeaders() },
-          body: JSON.stringify(txUpdate)
+          body: txUpdate
         });
       }
       // Target weight updating logic has been removed as it's now handled by RebalanceModal
       // Refresh
       handleOpenCompModal();
-      const repRes = await fetch(`/api/report/${activeId}`);
+      const repRes = await apiFetch(`/api/report/${activeId}`);
       setData(await repRes.json());
     } catch (err) {
       console.error(err);
@@ -69,9 +68,9 @@ export function useComposition({ activeId, setData }) {
   const handleCompDelete = async (txId) => {
     if (!window.confirm('Delete this transaction? This cannot be undone.')) return;
     try {
-      await fetch(`/api/portfolios/transactions/${txId}`, { method: 'DELETE', headers: authHeaders() });
+      await apiFetch(`/api/portfolios/transactions/${txId}`, { method: 'DELETE' });
       handleOpenCompModal();
-      const repRes = await fetch(`/api/report/${activeId}`);
+      const repRes = await apiFetch(`/api/report/${activeId}`);
       setData(await repRes.json());
     } catch {
       alert('Failed to delete transaction');
@@ -84,13 +83,12 @@ export function useComposition({ activeId, setData }) {
       return;
     }
     try {
-      await fetch(`/api/portfolios/transactions/${activeId}`, {
+      await apiFetch(`/api/portfolios/transactions/${activeId}`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...authHeaders() },
-        body: JSON.stringify(compNewAsset)
+        body: compNewAsset
       });
       handleOpenCompModal();
-      const repRes = await fetch(`/api/report/${activeId}`);
+      const repRes = await apiFetch(`/api/report/${activeId}`);
       setData(await repRes.json());
     } catch {
       alert('Failed to add asset');

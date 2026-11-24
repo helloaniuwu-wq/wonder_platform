@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { authHeaders } from '../utils/auth';
 
 const InsurancePlanPanel = ({
   enabled,
@@ -26,6 +27,7 @@ const InsurancePlanPanel = ({
     try {
       const res = await fetch('/api/lab/insurance/parse', {
         method: 'POST',
+        headers: authHeaders(),
         body: formData,
       });
       const result = await res.json();

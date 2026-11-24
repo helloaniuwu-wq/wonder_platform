@@ -1,0 +1,83 @@
+# Wonder Quant — 分类参照基准配置
+# 除组合基准外，均为单只市场 ETF/指数，落盘至 wq_benchmark_series（每基准仅占 D1 1 行）
+benchmarks:
+  SPY:
+    name: "标普500 ETF (S&P 500)"
+    source: yfinance
+    ticker: SPY
+    currency: USD
+    asset_class: 股票
+  VT:
+    name: "全球股票 ETF (FTSE Global All Cap)"
+    source: yfinance
+    ticker: VT
+    currency: USD
+    asset_class: 股票
+  AGG:
+    name: "美国综合投资级债券 ETF"
+    source: yfinance
+    ticker: AGG
+    currency: USD
+    asset_class: 固定收益
+  HYG:
+    name: "美国高收益公司债 ETF"
+    source: yfinance
+    ticker: HYG
+    currency: USD
+    asset_class: 固定收益
+  2800.HK:
+    name: "盈富基金 (恒生指数)"
+    source: yfinance
+    ticker: 2800.HK
+    currency: HKD
+    asset_class: 股票
+  sh510300:
+    name: "华泰柏瑞沪深300 ETF"
+    source: tencent_hfq
+    ticker: sh510300
+    currency: CNY
+    asset_class: 股票
+  1306.T:
+    name: "NEXT FUNDS TOPIX ETF"
+    source: yfinance
+    ticker: 1306.T
+    currency: JPY
+    asset_class: 股票
+  BIL:
+    name: "美国 1-3 月短期国债 ETF (无风险代理)"
+    source: yfinance
+    ticker: BIL
+    currency: USD
+    asset_class: 货币基金
+
+fx_pairs:
+  HKDUSD:
+    yahoo_ticker: "HKDUSD=X"
+    fallback_rate: 0.1285
+  CNYUSD:
+    yahoo_ticker: "CNYUSD=X"
+    fallback_rate: 0.1380
+  JPYUSD:
+    yahoo_ticker: "JPYUSD=X"
+    fallback_rate: 0.0065
+  EURUSD:
+    yahoo_ticker: "EURUSD=X"
+    fallback_rate: 1.0800
+  GBPUSD:
+    yahoo_ticker: "GBPUSD=X"
+    fallback_rate: 1.2700
+  AUDUSD:
+    yahoo_ticker: "AUDUSD=X"
+    fallback_rate: 0.6500
+  CADUSD:
+    yahoo_ticker: "CADUSD=X"
+    fallback_rate: 0.7200
+  CHFUSD:
+    yahoo_ticker: "CHFUSD=X"
+    fallback_rate: 1.1300
+  SGDUSD:
+    yahoo_ticker: "SGDUSD=X"
+    fallback_rate: 0.7400
+  MXNUSD:
+    yahoo_ticker: "MXNUSD=X"
+    fallback_rate: 0.0500

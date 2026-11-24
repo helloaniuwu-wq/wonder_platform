@@ -7,8 +7,13 @@ import {
 import {
   Activity, ArrowUpRight, Briefcase, Calendar, Camera, DollarSign, Edit3, MoreHorizontal, Settings, TrendingUp, Undo2
 } from 'lucide-react';
-import { COLORS, fmtMoney, fmtAxis, fmtCompact } from '../utils/currency';
+import { COLORS, fmtMoney, fmtAxis, fmtCompact, getCurrencySymbol } from '../utils/currency';
+import { buildPortfolioDriftRows } from '../utils/fundQuantUtils';
+import { findCatalogFund } from '../utils/portfolioXRay';
 import ILPSummaryCard from './ILPSummaryCard';
+import PortfolioXRayPanel from './PortfolioXRayPanel';
+import PortfolioMonitorTab from './PortfolioMonitorTab';
+import HoldingsReconcileModal from './modals/HoldingsReconcileModal';
 import { calcILPMonthlyFee, getEnrollmentBonusRate } from '../utils/ilpImpactUtils';
 
 /**
@@ -16,6 +21,7 @@ import { calcILPMonthlyFee, getEnrollmentBonusRate } from '../utils/ilpImpactUti
  */
 const PortfolioView = ({
   portfolios, activeId, data, historyData, loading,
+  quantFunds = [],
   activeSubTab, setActiveSubTab,
   divProjData, divLoading, taxRate, setTaxRate, dripMode, setDripMode,
   sectorData, top10Data, getDaysUntil,
@@ -26,6 +32,7 @@ const PortfolioView = ({
   canEdit,
   ilpEnabled, ilpConfig,
   onOpenIlpEnrollmentModal,
+  onPortfolioMutated,
 }) => {
   const { t } = useLang();
   const ccy = data?.base_currency || 'USD';
@@ -33,6 +40,7 @@ const PortfolioView = ({
   const [applyIlpToChart, setApplyIlpToChart] = useState(false);
   const [isLogScale, setIsLogScale] = useState(false);
   const [showMoreMenu, setShowMoreMenu] = useState(false);
+  const [ocrModalOpen, setOcrModalOpen] = useState(false);
 
   const ilpHistoryData = useMemo(() => {
     if (!applyIlpToChart || !ilpEnabled || !(ilpConfig?.totalPremium > 0) || historyData.length === 0) {
@@ -70,6 +78,16 @@ const PortfolioView = ({
     return { rawFinal: last?.raw_value, ilpFinal: last?.ilp_value, rawCagr, ilpCagr, drag, enrollmentBonus };
   }, [applyIlpToChart, ilpHistoryData, data]);
 
+  const activePfObj = portfolios.find(p => p.id === activeId);
+  const activePfName = activePfObj?.name;
+  const activeStrategy = activePfObj?.dividend_strategy;
+  const detailsList = data?.details;
+  const targetAllocs = activePfObj?.target_allocations;
+  const driftRows = useMemo(
+    () => buildPortfolioDriftRows(detailsList || [], targetAllocs || {}),
+    [detailsList, targetAllocs]
+  );
+
   if (loading) {
     return (
       <div style={{ textAlign: 'center', paddingTop: '100px', color: 'var(--text-secondary)' }}>
@@ -79,8 +97,11 @@ const PortfolioView = ({
   }
   if (!data || !data.details) return null;
 
-  const activePfName = portfolios.find(p => p.id === activeId)?.name;
-  const activeStrategy = portfolios.find(p => p.id === activeId)?.dividend_strategy;
+  const hasDividends =
+    Number(data.total_divs || 0) > 0 ||
+    data.details.some((a) => Number(a.dividends || 0) > 0);
+  const effectiveSubTab =
+    !hasDividends && activeSubTab === 'dividends' ? 'performance' : activeSubTab;
 
   return (
     <div className="portfolio-view-scope">
@@ -240,10 +261,10 @@ const PortfolioView = ({
             padding: '0 4px 12px',
             background: 'transparent',
             border: 'none',
-            borderBottom: activeSubTab === 'performance' ? '2px solid var(--accent-color)' : '2px solid transparent',
-            color: activeSubTab === 'performance' ? 'var(--accent-color)' : 'var(--text-secondary)',
+            borderBottom: effectiveSubTab === 'performance' ? '2px solid var(--accent-color)' : '2px solid transparent',
+            color: effectiveSubTab === 'performance' ? 'var(--accent-color)' : 'var(--text-secondary)',
             cursor: 'pointer',
-            fontWeight: activeSubTab === 'performance' ? 700 : 500,
+            fontWeight: effectiveSubTab === 'performance' ? 700 : 500,
             fontSize: '0.92rem',
             letterSpacing: '0.02em',
             transition: 'all 0.2s',
@@ -251,27 +272,47 @@ const PortfolioView = ({
         >
           {t('portfolio.tabPerformance')}
         </button>
+        {hasDividends && (
+          <button
+            type="button"
+            onClick={() => setActiveSubTab('dividends')}
+            style={{
+              padding: '0 4px 12px',
+              background: 'transparent',
+              border: 'none',
+              borderBottom: effectiveSubTab === 'dividends' ? '2px solid var(--accent-color)' : '2px solid transparent',
+              color: effectiveSubTab === 'dividends' ? 'var(--accent-color)' : 'var(--text-secondary)',
+              cursor: 'pointer',
+              fontWeight: effectiveSubTab === 'dividends' ? 700 : 500,
+              fontSize: '0.92rem',
+              letterSpacing: '0.02em',
+              transition: 'all 0.2s',
+            }}
+          >
+            {t('portfolio.tabIncome')}
+          </button>
+        )}
         <button
           type="button"
-          onClick={() => setActiveSubTab('dividends')}
+          onClick={() => setActiveSubTab('monitor')}
           style={{
             padding: '0 4px 12px',
             background: 'transparent',
             border: 'none',
-            borderBottom: activeSubTab === 'dividends' ? '2px solid var(--accent-color)' : '2px solid transparent',
-            color: activeSubTab === 'dividends' ? 'var(--accent-color)' : 'var(--text-secondary)',
+            borderBottom: effectiveSubTab === 'monitor' ? '2px solid var(--accent-color)' : '2px solid transparent',
+            color: effectiveSubTab === 'monitor' ? 'var(--accent-color)' : 'var(--text-secondary)',
             cursor: 'pointer',
-            fontWeight: activeSubTab === 'dividends' ? 700 : 500,
+            fontWeight: effectiveSubTab === 'monitor' ? 700 : 500,
             fontSize: '0.92rem',
             letterSpacing: '0.02em',
             transition: 'all 0.2s',
           }}
         >
-          {t('portfolio.tabIncome')}
+          持續追蹤與再評估
         </button>
       </div>
 
-      {activeSubTab === 'performance' ? (
+      {effectiveSubTab === 'performance' && (
         <>
           {/* ILP 状态卡（紧凑模式） */}
           {ilpEnabled && ilpConfig && ilpConfig.totalPremium > 0 && (
@@ -282,6 +323,37 @@ const PortfolioView = ({
               compact={true}
               onEditConfig={onOpenIlpEnrollmentModal}
             />
+          )}
+
+          {/* Target vs Actual Allocation Drift Monitor */}
+          {driftRows.length > 0 && (
+            <section className="glass-card" style={{ marginBottom: '20px', padding: '16px 20px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px', flexWrap: 'wrap', gap: '8px' }}>
+                <div style={{ fontSize: '0.84rem', fontWeight: 700 }}>
+                  目标权重 vs 实际持仓漂移监控
+                </div>
+                {driftRows.some((r) => r.needsRebalance) && canEdit && (
+                  <button type="button" onClick={handleRebalancePreview} className="action-btn-secondary" style={{ fontSize: '0.74rem', borderColor: 'var(--warning)', color: 'var(--warning)' }}>
+                    偏离 ≥5%，一键预览再平衡
+                  </button>
+                )}
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '10px' }}>
+                {driftRows.map((r) => (
+                  <div key={r.isin} style={{ background: 'var(--surface-subtle)', border: '1px solid var(--border-subtle)', borderRadius: '6px', padding: '8px 12px', fontSize: '0.78rem' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', fontFamily: 'var(--font-mono)', marginBottom: '4px' }}>
+                      <strong style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '150px' }} title={r.name}>{r.isin}</strong>
+                      <span style={{ color: r.needsRebalance ? 'var(--warning)' : 'var(--text-secondary)', fontWeight: 700 }}>
+                        {r.driftPct >= 0 ? '+' : ''}{r.driftPct}%
+                      </span>
+                    </div>
+                    <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
+                      目标 {r.targetPct}% → 实际 {r.actualPct}%
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </section>
           )}
 
           {/* Performance Over Time Chart */}
@@ -518,14 +590,16 @@ const PortfolioView = ({
               <div className="stat-value" style={{ color: 'var(--accent-secondary)' }}>{data.cumulative_roi}%</div>
               <div className="positive"><TrendingUp size={15} aria-hidden="true" /> Total ROI</div>
             </div>
-            <div className="glass-card" title={fmtMoney(data.total_divs || 0, 1, ccy)}>
-              <div className="stat-label">
-                Total Dividends
-                <span style={{ fontSize: '0.68rem', color: 'var(--info)', marginLeft: '6px', fontFamily: 'var(--font-mono)' }}>{ccy}</span>
+            {hasDividends && (
+              <div className="glass-card" title={fmtMoney(data.total_divs || 0, 1, ccy)}>
+                <div className="stat-label">
+                  Total Dividends
+                  <span style={{ fontSize: '0.68rem', color: 'var(--info)', marginLeft: '6px', fontFamily: 'var(--font-mono)' }}>{ccy}</span>
+                </div>
+                <div className="stat-value" style={{ color: 'var(--info)' }}>{fmtCompact(data.total_divs || 0, 1, ccy)}</div>
+                <div className="positive"><DollarSign size={15} aria-hidden="true" /> Passive Income</div>
               </div>
-              <div className="stat-value" style={{ color: 'var(--info)' }}>{fmtCompact(data.total_divs || 0, 1, ccy)}</div>
-              <div className="positive"><DollarSign size={15} aria-hidden="true" /> Passive Income</div>
-            </div>
+            )}
             <div className="glass-card">
               <div className="stat-label">Annualized Return</div>
               <div className="stat-value" style={{ color: 'var(--success)' }}>{data.annualized_return}%</div>
@@ -650,12 +724,17 @@ const PortfolioView = ({
                     <th>AVG COST</th>
                     <th>PRICE</th>
                     <th>VALUE</th>
-                    <th>DIVIDENDS</th>
+                    {hasDividends && <th>DIVIDENDS</th>}
                     <th>PNL</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {data.details.map((asset, i) => (
+                  {data.details.map((asset, i) => {
+                    const displayName =
+                      asset.name && asset.name !== asset.isin
+                        ? asset.name
+                        : findCatalogFund(quantFunds, asset.isin)?.name || asset.name || asset.isin;
+                    return (
                     <tr key={asset.isin}>
                       <td style={asset.isin.startsWith('CASH_') ? { background: 'var(--surface-subtle)' } : undefined}>
                         <div style={{ display: 'flex', flexDirection: 'column' }}>
@@ -663,7 +742,7 @@ const PortfolioView = ({
                             color: asset.isin.startsWith('CASH_') ? 'var(--accent-color)' : COLORS[i % COLORS.length],
                             fontWeight: 700,
                           }}>
-                            {asset.name}
+                            {displayName}
                           </span>
                           <span className="isin-badge">{asset.isin}</span>
                         </div>
@@ -672,27 +751,46 @@ const PortfolioView = ({
                         {(asset.market_value / data.total_nav * 100).toFixed(1)}%
                       </td>
                       <td style={{ fontFamily: 'var(--font-mono)' }}>
-                        {asset.isin.startsWith('CASH_') ? asset.shares.toLocaleString() : Math.floor(asset.shares)}
+                        {asset.isin.startsWith('CASH_')
+                          ? asset.shares.toLocaleString()
+                          : Number(asset.shares || 0).toLocaleString(undefined, { maximumFractionDigits: 4 })}
                       </td>
                       <td style={{ fontFamily: 'var(--font-mono)' }}>
                         {asset.total_cost ? fmtMoney(asset.total_cost / (asset.isin.startsWith('CASH_') ? 1 : asset.shares), 1, ccy) : '-'}
                       </td>
                       <td style={{ fontFamily: 'var(--font-mono)' }}>{fmtMoney(asset.price, 1, ccy)}</td>
                       <td style={{ fontFamily: 'var(--font-mono)', fontWeight: 600 }}>{fmtMoney(asset.market_value, 1, ccy)}</td>
-                      <td style={{ fontFamily: 'var(--font-mono)' }}>{fmtMoney(asset.dividends, 1, ccy)}</td>
+                      {hasDividends && <td style={{ fontFamily: 'var(--font-mono)' }}>{fmtMoney(asset.dividends, 1, ccy)}</td>}
                       <td>
                         <span className={asset.yield >= 0 ? 'positive' : 'negative'} style={{ fontFamily: 'var(--font-mono)' }}>
                           {asset.yield >= 0 ? '+' : ''}{asset.yield.toFixed(2)}%
                         </span>
                       </td>
                     </tr>
-                  ))}
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
           </section>
+
+          <PortfolioXRayPanel
+            holdings={data.details.map((a) => ({
+              isin: a.isin,
+              name: a.name,
+              weight: data.total_nav > 0 ? Math.max(0, a.market_value / data.total_nav) : 0,
+              sector: a.sector,
+              country: a.country,
+              market_value: a.market_value,
+            }))}
+            quantFunds={quantFunds}
+            totalNav={data.total_nav}
+            currencySymbol={getCurrencySymbol(ccy)}
+          />
         </>
-      ) : (
+      )}
+
+      {effectiveSubTab === 'dividends' && hasDividends && (
         <div className="dividend-analytics">
           {/* Toolbar */}
           <div style={{ display: 'flex', gap: '20px', marginBottom: '24px', alignItems: 'center', flexWrap: 'wrap' }}>
@@ -969,6 +1067,23 @@ const PortfolioView = ({
           )}
         </div>
       )}
+
+      {effectiveSubTab === 'monitor' && (
+        <PortfolioMonitorTab
+          portfolioId={activeId}
+          canEdit={canEdit}
+          onOpenOcrModal={() => setOcrModalOpen(true)}
+          onPortfolioMutated={onPortfolioMutated}
+        />
+      )}
+
+      <HoldingsReconcileModal
+        open={ocrModalOpen}
+        onClose={() => setOcrModalOpen(false)}
+        portfolioId={activeId}
+        portfolioName={activePfName}
+        onReconciled={onPortfolioMutated}
+      />
     </div>
   );
 };

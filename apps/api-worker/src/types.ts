@@ -17,6 +17,7 @@ export interface Env {
   DEEPSEEK_MODEL: string;
   RESEND_API_KEY?: string;
   ADMIN_EMAIL?: string;
+  ALERT_WEBHOOK_URL?: string;
   // 官网公开接口（routes/public.ts）所需
   ADVISOR_EMAIL?: string;
   TURNSTILE_SECRET?: string;
@@ -37,4 +38,5 @@ export interface UserRow {
 
 export type Variables = {
   user: UserRow;
+  requestId: string;
 };

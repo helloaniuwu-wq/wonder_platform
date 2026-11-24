@@ -2,19 +2,22 @@ import React from 'react';
 import { useLang } from '../i18n/langCore';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
-  LineChart, Line, Area, ComposedChart, ReferenceLine
+  LineChart, Line, Area, ComposedChart, ReferenceLine, ScatterChart, Scatter, ZAxis
 } from 'recharts';
 import {
-  AlertTriangle, HelpCircle, History, Info, Plus, Search, Target, Trash2, Zap, FileText, Bookmark
+  AlertTriangle, Database, HelpCircle, History, Info, Plus, Search, ShieldAlert, Target, Trash2, Zap, FileText, Bookmark, FilePlus, Save, FolderOpen, X, ArrowRight, Clock
 } from 'lucide-react';
 import InsurancePlanPanel from './InsurancePlanPanel';
 import ILPConfigPanel from './ILPConfigPanel';
 import ClassicPortfoliosModal from './modals/ClassicPortfoliosModal';
+import FundCatalogPickerModal from './modals/FundCatalogPickerModal';
+import PortfolioXRayPanel from './PortfolioXRayPanel';
 import { CLASSIC_PORTFOLIOS, toLabTemplate } from '../data/classicPortfolios';
 import ILPSummaryCard from './ILPSummaryCard';
 import ILPImpactPanel from './ILPImpactPanel';
 import NumberInputWithCommas from './NumberInput';
 import { CombinedCashFlowTooltip } from '../utils/chartHelpers';
+import { getCurrencySymbol } from '../utils/currency';
 
 /**
  * StrategyLabView — Nordic Gallery Minimal & Responsive Multi-Screen Edition.
@@ -22,7 +25,7 @@ import { CombinedCashFlowTooltip } from '../utils/chartHelpers';
  */
 // 单个组合的「配置卡片」：关键指标 + 权重明细 + 部署按钮。
 // 自定义模式展示 1 张（自定义配置），自动优化模式展示 3 张（最大夏普 / 最小波动 / 风险平价）。
-const AllocationCard = ({ portfolio, name, color, onDeploy }) => {
+const AllocationCard = ({ portfolio, name, color, onDeploy, assetStats }) => {
   const { t } = useLang();
   return (
             <div className="glass-card" style={{ borderTop: `3px solid ${color}`, marginBottom: 0 }}>
@@ -73,10 +76,14 @@ const AllocationCard = ({ portfolio, name, color, onDeploy }) => {
                 {Object.entries(portfolio.allocations || {}).sort((a,b) => b[1] - a[1]).map(([isin, w]) => {
                   const numW = parseFloat(w) || 0;
                   const pctW = numW > 1.001 ? numW : numW * 100;
+                  const labelName = assetStats?.[isin]?.name;
                   return (
-                    <div key={isin} style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.84rem', fontFamily: 'var(--font-mono)', padding: '4px 0', borderBottom: '1px dashed var(--border-subtle)' }}>
-                      <span style={{ color: 'var(--text-secondary)' }}>{isin}</span>
-                      <span style={{ fontWeight: 700, color: 'var(--text-primary)' }}>{pctW.toFixed(1)}%</span>
+                    <div key={isin} style={{ display: 'flex', justifyContent: 'space-between', gap: '8px', fontSize: '0.84rem', fontFamily: 'var(--font-mono)', padding: '4px 0', borderBottom: '1px dashed var(--border-subtle)' }}>
+                      <span style={{ color: 'var(--text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={labelName || isin}>
+                        <strong style={{ color: 'var(--text-primary)' }}>{isin}</strong>
+                        {labelName && labelName !== isin ? <span style={{ fontFamily: 'inherit', fontSize: '0.74rem', marginLeft: '6px' }}>{labelName}</span> : null}
+                      </span>
+                      <span style={{ fontWeight: 700, color: 'var(--text-primary)', flexShrink: 0 }}>{pctW.toFixed(1)}%</span>
                     </div>
                   );
                 })}
@@ -92,6 +99,9 @@ const StrategyLabView = ({
   labIsins = [], labInput, setLabInput,
   labData, labLoading, labError,
   labDaysBack, setLabDaysBack,
+  labBaseCurrency = 'USD', setLabBaseCurrency,
+  stressTestData,
+  quantFunds = [],
   labMaxWeight, setLabMaxWeight,
   labMode, setLabMode,
   labCustomWeights = {}, setLabCustomWeights,
@@ -105,8 +115,12 @@ const StrategyLabView = ({
   saveDialogOpen, setSaveDialogOpen,
   scenarioName, setScenarioName,
   scenarioSaving,
+  savedScenarios = [],
+  handleNewBlankStrategy,
+  handleLoadScenario,
+  handleDeleteScenario,
   setShowMcDoc,
-  handleAddLabIsin, handleRemoveLabIsin,
+  handleAddLabIsin, handleAddMultipleLabIsins, handleRemoveLabIsin,
   handleRunLabAnalysis, handleDeployLabStrategy,
   handleSaveScenario, applyLabTemplate,
   handleGenerateReport,
@@ -134,8 +148,10 @@ const StrategyLabView = ({
   };
   const { t, lang } = useLang();
   const [showClassicLibrary, setShowClassicLibrary] = React.useState(false);
+  const [showFundPicker, setShowFundPicker] = React.useState(false);
   const [showDivDoc, setShowDivDoc] = React.useState(false);
   const [showDdDoc, setShowDdDoc] = React.useState(false);
+  const [showSavedListModal, setShowSavedListModal] = React.useState(false);
 
   // 套用经典组合：转成实验室模板（美股版）并关闭弹窗；applyLabTemplate 会同时切到自定义权重模式
   // 结果区展示哪些组合：自定义模式 = 自定义配置一列；自动优化模式 = 优化器给出的三个组合
@@ -171,21 +187,60 @@ const StrategyLabView = ({
         onClose={() => setShowClassicLibrary(false)}
         onApply={handleApplyClassic}
       />
+      <FundCatalogPickerModal
+        open={showFundPicker}
+        funds={quantFunds}
+        existingIds={labIsins}
+        onClose={() => setShowFundPicker(false)}
+        onConfirm={(ids) => handleAddMultipleLabIsins && handleAddMultipleLabIsins(ids, false)}
+      />
       <div className="strategy-lab-scope" style={{ maxWidth: '1240px' }}>
         <header className="portfolio-hero-header">
           <div className="portfolio-hero-title-group">
             <h1 className="portfolio-hero-title" style={{ marginBottom: '8px' }}>{t('lab.title')}</h1>
             <p style={{ color: 'var(--text-secondary)', margin: 0, fontSize: '0.94rem' }}>{t('lab.subtitle')}</p>
           </div>
-          <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
+          <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
+            <button
+              type="button"
+              onClick={() => {
+                if (handleNewBlankStrategy) {
+                  if (labIsins.length > 0 && !window.confirm(lang === 'en' ? 'Start a new blank strategy? (Current unsaved assets will be cleared)' : '确认创建全新空白策略？（当前沙盒未保存的标的将被清空）')) return;
+                  handleNewBlankStrategy();
+                }
+              }}
+              className="action-btn-secondary"
+              style={{ fontSize: '0.8rem', padding: '6px 12px' }}
+              title="清空当前资产并开启全新策略设计"
+            >
+              <FilePlus size={14} /> {lang === 'en' ? 'New Blank Strategy' : '＋ 新建空白策略'}
+            </button>
+            <button
+              type="button"
+              onClick={() => setSaveDialogOpen(true)}
+              className="action-btn-secondary"
+              style={{ fontSize: '0.8rem', padding: '6px 12px' }}
+              title="保存当前策略标的、权重与模拟设置"
+            >
+              <Save size={14} /> {lang === 'en' ? 'Save Strategy' : '💾 保存当前方案'}
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowSavedListModal(true)}
+              className="action-btn-secondary"
+              style={{ fontSize: '0.8rem', padding: '6px 12px' }}
+              title="浏览并加载此前保存的策略方案"
+            >
+              <FolderOpen size={14} /> {lang === 'en' ? `Saved (${savedScenarios.length})` : `已存方案 (${savedScenarios.length})`}
+            </button>
             <div style={{
               fontFamily: 'var(--font-display)',
               fontWeight: 700,
-              fontSize: '1.35rem',
+              fontSize: '1.25rem',
               letterSpacing: '0.12em',
               color: 'var(--accent-color)',
               border: '1px solid var(--border-strong)',
-              padding: '4px 12px',
+              padding: '4px 10px',
               borderRadius: '4px',
               background: 'var(--surface-card)',
             }}>
@@ -368,12 +423,13 @@ const StrategyLabView = ({
               <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                 <span style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', fontWeight: 600 }}>{t('lab.cmaMode')}:</span>
                 <select
-                  value={labMcSettings.cma_mode || 'shrunk'}
+                  value={labMcSettings.cma_mode || 'forward_looking'}
                   onChange={e => setLabMcSettings({ ...labMcSettings, cma_mode: e.target.value })}
                   className="atelier-select"
                   style={{ width: 'auto', padding: '4px 10px', fontSize: '0.8rem' }}
                   title="预测收益率校准模型"
                 >
+                  <option value="forward_looking">{t('lab.cmaForwardLooking')}</option>
                   <option value="shrunk">{t('lab.cmaShrunk')}</option>
                   <option value="ltcma">{t('lab.cmaLtcma')}</option>
                   <option value="raw">{t('lab.cmaRaw')}</option>
@@ -393,6 +449,21 @@ const StrategyLabView = ({
                   <option value={5475}>{t('lab.years') === 'Years' ? '15 Years' : '15年'}</option>
                 </select>
               </div>
+              {setLabBaseCurrency && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  <span style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', fontWeight: 600 }}>{lang === 'en' ? 'Base Ccy' : '基准币种'}:</span>
+                  <select
+                    value={labBaseCurrency}
+                    onChange={e => setLabBaseCurrency(e.target.value)}
+                    className="atelier-select"
+                    style={{ width: 'auto', padding: '4px 10px', fontSize: '0.8rem' }}
+                  >
+                    <option value="USD">USD</option>
+                    <option value="HKD">HKD</option>
+                    <option value="CNY">CNY</option>
+                  </select>
+                </div>
+              )}
             </div>
             {labMode === 'auto' && (
               <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }} title={t('lab.autoHint')}>
@@ -440,6 +511,15 @@ const StrategyLabView = ({
               disabled={labLoading}
             >
               <Plus size={16} aria-hidden="true" /> {t('lab.addAsset')}
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowFundPicker(true)}
+              className="action-btn-secondary"
+              style={{ borderColor: 'var(--accent-color)', color: 'var(--accent-color)' }}
+              disabled={labLoading}
+            >
+              <Database size={15} aria-hidden="true" /> {lang === 'en' ? 'Pick from 309 Funds' : '从 309 只基金库选基'}
             </button>
             <button
               type="button"
@@ -493,35 +573,52 @@ const StrategyLabView = ({
           )}
         </div>
 
-        {/* ── Phase 2: Results Tabs ── */}
-        {labData && (
-          <div style={{
-            display: 'inline-flex',
-            gap: '4px',
-            marginBottom: '16px',
-            background: 'var(--surface-inset)',
-            border: '1px solid var(--border-subtle)',
-            padding: '4px',
-            borderRadius: 'var(--card-radius)',
-          }}>
-            <button
-              type="button"
-              onClick={() => setLabTab('optimization')}
-              className={`sidebar-mode-btn ${labTab === 'optimization' ? 'active' : ''}`}
-              style={{ padding: '7px 18px' }}
-            >
-              <Search size={14} aria-hidden="true" /> {t('lab.tabOptimization')}
-            </button>
-            <button
-              type="button"
-              onClick={() => setLabTab('backtest')}
-              className={`sidebar-mode-btn ${labTab === 'backtest' ? 'active' : ''}`}
-              style={{ padding: '7px 18px' }}
-            >
-              <History size={14} aria-hidden="true" /> {t('lab.tabBacktest')}
-            </button>
-          </div>
-        )}
+        {/* ── Phase 2: Results Tabs + One-Click Create Portfolio ── */}
+        {labData && (() => {
+          const primaryAlloc =
+            (labData.custom_portfolio || labData.max_sharpe || labData.min_volatility)?.allocations || null;
+          return (
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '12px', marginBottom: '16px' }}>
+              <div style={{
+                display: 'inline-flex',
+                gap: '4px',
+                background: 'var(--surface-inset)',
+                border: '1px solid var(--border-subtle)',
+                padding: '4px',
+                borderRadius: 'var(--card-radius)',
+              }}>
+                <button
+                  type="button"
+                  onClick={() => setLabTab('optimization')}
+                  className={`sidebar-mode-btn ${labTab === 'optimization' ? 'active' : ''}`}
+                  style={{ padding: '7px 18px' }}
+                >
+                  <Search size={14} aria-hidden="true" /> {t('lab.tabOptimization')}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setLabTab('backtest')}
+                  className={`sidebar-mode-btn ${labTab === 'backtest' ? 'active' : ''}`}
+                  style={{ padding: '7px 18px' }}
+                >
+                  <History size={14} aria-hidden="true" /> {t('lab.tabBacktest')}
+                </button>
+              </div>
+
+              {primaryAlloc && handleDeployLabStrategy && (
+                <button
+                  type="button"
+                  onClick={() => handleDeployLabStrategy(primaryAlloc)}
+                  className="create-btn"
+                  style={{ padding: '8px 16px', fontSize: '0.84rem' }}
+                >
+                  <Plus size={15} aria-hidden="true" />
+                  {lang === 'en' ? 'Create Portfolio' : '一键创建组合'}
+                </button>
+              )}
+            </div>
+          );
+        })()}
 
         {/* ── Portfolio Comparison Table ─────────────────────────────────── */}
         {labData && (
@@ -610,6 +707,88 @@ const StrategyLabView = ({
                 </tbody>
               </table>
             </div>
+
+            {/* Portfolio Quantitative Diagnostics Strip */}
+            {labData.portfolio_diagnostics && (
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '10px', marginTop: '14px' }}>
+                {[
+                  { k: lang === 'en' ? 'Historical Max DD' : '历史最大回撤', v: `${(labData.portfolio_diagnostics.max_drawdown * 100).toFixed(2)}%`, c: 'var(--danger)' },
+                  { k: 'Sortino', v: labData.portfolio_diagnostics.sortino_ratio?.toFixed(2), c: 'var(--text-primary)' },
+                  { k: 'Calmar', v: labData.portfolio_diagnostics.calmar_ratio?.toFixed(2), c: 'var(--text-primary)' },
+                  {
+                    k: lang === 'en' ? 'Weighted Fee (ER)' : '加权年费率 (ER)',
+                    v: labData.portfolio_diagnostics.weighted_fee_pct != null ? `${labData.portfolio_diagnostics.weighted_fee_pct.toFixed(2)}%` : '—',
+                    c: 'var(--info)',
+                  },
+                ].map((d) => (
+                  <div key={d.k} style={{ background: 'var(--surface-subtle)', border: '1px solid var(--border-subtle)', borderRadius: '6px', padding: '10px 12px', textAlign: 'center' }}>
+                    <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}>{d.k}</div>
+                    <div style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: '0.95rem', color: d.c, marginTop: '4px' }}>{d.v}</div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Efficient Frontier & Historical Stress-Test Replay */}
+            {((labData.efficient_frontier && labData.efficient_frontier.length >= 3) || (stressTestData?.scenarios && stressTestData.scenarios.some((s) => s.available))) && (
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '16px', marginTop: '16px' }}>
+                {labData.efficient_frontier && labData.efficient_frontier.length >= 3 && (
+                  <div style={{ background: 'var(--surface-subtle)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--card-radius)', padding: '14px' }}>
+                    <div style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '8px' }}>
+                      {lang === 'en' ? 'Efficient Frontier (Vol vs Return)' : '有效前沿（年化波动率 vs 预期收益）'}
+                    </div>
+                    <ResponsiveContainer width="100%" height={200}>
+                      <ScatterChart>
+                        <CartesianGrid strokeDasharray="3 3" stroke="var(--border-subtle)" />
+                        <XAxis type="number" dataKey="volPct" name="Vol" unit="%" tick={{ fontSize: 10 }} />
+                        <YAxis type="number" dataKey="retPct" name="Return" unit="%" tick={{ fontSize: 10 }} />
+                        <ZAxis range={[45, 45]} />
+                        <Tooltip formatter={(v, n) => [`${Number(v).toFixed(2)}%`, n]} />
+                        <Scatter
+                          name="Frontier"
+                          data={labData.efficient_frontier.map((p) => ({ volPct: Number((p.vol * 100).toFixed(2)), retPct: Number((p.ret * 100).toFixed(2)) }))}
+                          fill="var(--accent-color)"
+                          line={{ stroke: 'var(--accent-color)', strokeWidth: 2 }}
+                        />
+                        <Scatter
+                          name="Portfolios"
+                          data={resultPortfolios.map((p) => ({
+                            volPct: Number(((labData[p.key]?.volatility || 0) * 100).toFixed(2)),
+                            retPct: Number(((labData[p.key]?.expected_return || 0) * 100).toFixed(2)),
+                          }))}
+                          fill="var(--info)"
+                        />
+                      </ScatterChart>
+                    </ResponsiveContainer>
+                  </div>
+                )}
+
+                {stressTestData?.scenarios && stressTestData.scenarios.some((s) => s.available) && (
+                  <div style={{ background: 'var(--surface-subtle)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--card-radius)', padding: '14px' }}>
+                    <div style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '8px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                      <ShieldAlert size={14} style={{ color: 'var(--warning)' }} />
+                      {lang === 'en' ? 'Historical Stress-Test Replay' : '历史极端压力测试回放'}
+                    </div>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                      {stressTestData.scenarios.filter((s) => s.available).map((s) => (
+                        <div key={s.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 10px', borderRadius: '6px', background: 'var(--surface-card)', border: '1px solid var(--border-subtle)', fontSize: '0.78rem' }}>
+                          <div>
+                            <div style={{ fontWeight: 600 }}>{lang === 'en' ? s.label_en : s.label}</div>
+                            <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>{s.start} → {s.end} (覆盖 {s.coverage_weight}%)</div>
+                          </div>
+                          <div style={{ textAlign: 'right', fontFamily: 'var(--font-mono)' }}>
+                            <div style={{ fontWeight: 700, color: (s.total_return_pct || 0) >= 0 ? 'var(--success)' : 'var(--danger)' }}>
+                              {s.total_return_pct >= 0 ? '+' : ''}{s.total_return_pct}%
+                            </div>
+                            <div style={{ fontSize: '0.68rem', color: 'var(--danger)' }}>MaxDD {s.max_drawdown_pct}%</div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         )}
 
@@ -717,7 +896,7 @@ const StrategyLabView = ({
           <div className="lab-two-col">
             <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
               {resultPortfolios.map(p => (
-                <AllocationCard key={p.key} portfolio={labData[p.key]} name={p.name} color={p.color}
+                <AllocationCard key={p.key} portfolio={labData[p.key]} name={p.name} color={p.color} assetStats={labData?.asset_stats}
                   onDeploy={handleDeployLabStrategy} />
               ))}
             </div>
@@ -770,6 +949,24 @@ const StrategyLabView = ({
             </div>
           </div>
         )}
+
+        {/* ── 晨星组合透视（X-Ray） ── */}
+        {labData && (() => {
+          const activeAllocs =
+            (labData.custom_portfolio || labData.max_sharpe || labData.min_volatility)?.allocations || {};
+          const holdings = Object.entries(activeAllocs)
+            .filter(([, w]) => Number(w) > 0)
+            .map(([isin, weight]) => ({ isin, weight: Number(weight) }));
+          return (
+            <PortfolioXRayPanel
+              holdings={holdings}
+              quantFunds={quantFunds}
+              totalNav={Number(labMcSettings?.capital) || 0}
+              currencySymbol={getCurrencySymbol(labBaseCurrency)}
+              title={lang === 'en' ? 'Morningstar Portfolio X-Ray' : '晨星组合透视 · Morningstar X-Ray'}
+            />
+          );
+        })()}
 
         {/* ── Monte Carlo Projection Full-Width Module ── */}
         {labData && labData.monte_carlo && (
@@ -1256,28 +1453,54 @@ const StrategyLabView = ({
                 </label>
 
                 <div style={{ marginLeft: 'auto', display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap' }}>
-                  {labData?.monte_carlo?.success_rate !== undefined && labData.monte_carlo.success_rate !== null && (
-                    <div style={{
-                      textAlign: 'center',
-                      background: labData.monte_carlo.success_rate > 0.8 ? 'var(--success-bg)' : labData.monte_carlo.success_rate > 0.5 ? 'var(--warning-bg)' : 'var(--danger-bg)',
-                      padding: '6px 14px',
-                      borderRadius: 'var(--card-radius)',
-                      border: `1px solid ${labData.monte_carlo.success_rate > 0.8 ? 'var(--success)' : labData.monte_carlo.success_rate > 0.5 ? 'var(--warning)' : 'var(--danger)'}`,
-                      display: 'flex',
-                      flexDirection: 'column',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      minWidth: '120px',
-                    }}>
-                      <div style={{ fontSize: '0.6rem', fontWeight: 700, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-                        {labData.monte_carlo.success_rate > 0.8 ? 'High Success' : labData.monte_carlo.success_rate > 0.5 ? 'Moderate Risk' : 'Critical Barrier'}
+                  {labData?.monte_carlo?.success_rate !== undefined && labData.monte_carlo.success_rate !== null && (() => {
+                    const hasDraws =
+                      (parseFloat(labMcSettings.withdrawal) || 0) > 0 ||
+                      (parseFloat(labMcSettings.withdrawal_2) || 0) > 0;
+                    const solvency = labData.monte_carlo.solvency_rate;
+                    const useSolvencyPrimary = hasDraws && solvency !== undefined && solvency !== null;
+                    const primaryProb = useSolvencyPrimary ? solvency : labData.monte_carlo.success_rate;
+                    const statusColor =
+                      primaryProb >= 0.85
+                        ? 'var(--success)'
+                        : primaryProb >= 0.6
+                          ? 'var(--warning)'
+                          : 'var(--danger)';
+                    const statusBg =
+                      primaryProb >= 0.85
+                        ? 'var(--success-bg)'
+                        : primaryProb >= 0.6
+                          ? 'var(--warning-bg)'
+                          : 'var(--danger-bg)';
+                    return (
+                      <div style={{
+                        textAlign: 'center',
+                        background: statusBg,
+                        padding: '6px 14px',
+                        borderRadius: 'var(--card-radius)',
+                        border: `1px solid ${statusColor}`,
+                        display: 'flex',
+                        flexDirection: 'column',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        minWidth: '132px',
+                      }}>
+                        <div style={{ fontSize: '0.6rem', fontWeight: 700, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                          {useSolvencyPrimary
+                            ? (primaryProb >= 0.85 ? 'Cashflow Solvency' : 'Cashflow Watch')
+                            : (primaryProb > 0.8 ? 'High Success' : primaryProb > 0.5 ? 'Moderate Risk' : 'Critical Barrier')}
+                        </div>
+                        <div style={{ fontSize: '1.15rem', fontWeight: 700, fontFamily: 'var(--font-mono)', color: statusColor }}>
+                          {(primaryProb * 100).toFixed(1)}%
+                        </div>
+                        <div style={{ fontSize: '0.6rem', color: 'var(--text-muted)' }}>
+                          {useSolvencyPrimary
+                            ? `全程不断流 · 达标 ${(labData.monte_carlo.success_rate * 100).toFixed(0)}%`
+                            : 'Target Reach Prob'}
+                        </div>
                       </div>
-                      <div style={{ fontSize: '1.15rem', fontWeight: 700, fontFamily: 'var(--font-mono)', color: labData.monte_carlo.success_rate > 0.8 ? 'var(--success)' : labData.monte_carlo.success_rate > 0.5 ? 'var(--warning)' : 'var(--danger)' }}>
-                        {(labData.monte_carlo.success_rate * 100).toFixed(1)}%
-                      </div>
-                      <div style={{ fontSize: '0.6rem', color: 'var(--text-muted)' }}>Target Reach Prob</div>
-                    </div>
-                  )}
+                    );
+                  })()}
 
                   <button
                     type="button"
@@ -1630,6 +1853,87 @@ const StrategyLabView = ({
                 {scenarioSaving ? '保存中...' : '确认保存'}
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {showSavedListModal && (
+        <div className="modal-overlay" onClick={() => setShowSavedListModal(false)}>
+          <div className="glass-card modal-content" style={{ maxWidth: '640px', maxHeight: '85vh', overflowY: 'auto' }} onClick={e => e.stopPropagation()}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid var(--border-subtle)', paddingBottom: '10px', marginBottom: '14px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <FolderOpen size={18} style={{ color: 'var(--accent-color)' }} />
+                <h3 style={{ margin: 0, fontSize: '1.25rem' }}>{lang === 'en' ? 'Saved Strategy Scenarios' : '已保存的策略方案'}</h3>
+              </div>
+              <button type="button" onClick={() => setShowSavedListModal(false)} className="action-icon" style={{ background: 'transparent', border: 'none' }}>
+                <X size={18} />
+              </button>
+            </div>
+
+            {savedScenarios.length === 0 ? (
+              <div style={{ textAlign: 'center', padding: '40px 20px', color: 'var(--text-muted)' }}>
+                {lang === 'en' ? 'No saved scenarios yet. Click "Save Strategy" to create one.' : '暂无已存策略方案。配置好标的与权重后，点击上方「💾 保存当前方案」即可留存。'}
+              </div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                {savedScenarios.map((sc) => (
+                  <div
+                    key={sc.id}
+                    onClick={() => {
+                      if (handleLoadScenario) handleLoadScenario(sc.id);
+                      setShowSavedListModal(false);
+                    }}
+                    style={{
+                      padding: '12px 14px',
+                      borderRadius: '6px',
+                      background: 'var(--surface-subtle)',
+                      border: '1px solid var(--border-subtle)',
+                      cursor: 'pointer',
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'center',
+                      gap: '12px',
+                    }}
+                    onMouseEnter={(e) => (e.currentTarget.style.borderColor = 'var(--accent-color)')}
+                    onMouseLeave={(e) => (e.currentTarget.style.borderColor = 'var(--border-subtle)')}
+                  >
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
+                      <div style={{ fontWeight: 700, fontSize: '0.96rem' }}>{sc.name}</div>
+                      <div style={{ fontSize: '0.74rem', color: 'var(--text-secondary)' }}>
+                        {Array.isArray(sc.assets) ? sc.assets.join(' · ') : ''}
+                      </div>
+                      <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                        <Clock size={12} /> {sc.created_at ? new Date(sc.created_at).toLocaleString() : ''}
+                      </div>
+                    </div>
+
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <button
+                        type="button"
+                        className="action-btn-secondary"
+                        style={{ fontSize: '0.76rem', padding: '4px 10px', color: 'var(--accent-color)', borderColor: 'var(--accent-color)' }}
+                      >
+                        加载 <ArrowRight size={12} />
+                      </button>
+                      {handleDeleteScenario && (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleDeleteScenario(sc.id);
+                          }}
+                          className="action-icon"
+                          style={{ background: 'transparent', border: 'none', color: 'var(--text-muted)' }}
+                          title="删除"
+                        >
+                          <Trash2 size={15} />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         </div>
       )}

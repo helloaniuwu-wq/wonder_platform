@@ -1,3 +1,9 @@
+import {
+  getQuantFundSeries,
+  getQuantFxSeries,
+  resolveQuantFund,
+} from "../quantStore";
+
 export interface MarketData {
   symbol: string;
   price: number;
@@ -39,6 +45,42 @@ const memoryMarketCache = new Map<string, { data: MarketData; expiresAt: number 
 const memoryFxCache = new Map<string, { rate: number; expiresAt: number }>();
 const memoryHistoryCache = new Map<string, { series: Record<string, number>; expiresAt: number }>();
 const memoryDividendCache = new Map<string, { divs: Record<string, number>; expiresAt: number }>();
+const memoryIsinSymbolCache = new Map<string, { symbol: string | null; expiresAt: number }>();
+
+const ISIN_PATTERN = /^[A-Z]{2}[A-Z0-9]{9}[0-9]$/i;
+
+async function resolveYahooSymbolByIsin(isin: string): Promise<string | null> {
+  const key = String(isin || "").trim().toUpperCase();
+  if (!ISIN_PATTERN.test(key)) return null;
+
+  const cached = memoryIsinSymbolCache.get(key);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.symbol;
+  }
+
+  let resolved: string | null = null;
+  try {
+    const url = `https://query1.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(
+      key
+    )}&quotesCount=3&newsCount=0`;
+    const res = await fetch(url, {
+      headers: { "User-Agent": USER_AGENT, Accept: "application/json" },
+      signal: AbortSignal.timeout(2000),
+    });
+    if (res.ok) {
+      const json: any = await res.json();
+      const firstSym = json?.quotes?.[0]?.symbol;
+      if (typeof firstSym === "string" && firstSym.trim().length > 0) {
+        resolved = firstSym.trim();
+      }
+    }
+  } catch {
+    // ignore
+  }
+
+  memoryIsinSymbolCache.set(key, { symbol: resolved, expiresAt: Date.now() + 24 * 3600 * 1000 });
+  return resolved;
+}
 
 const USER_AGENT =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
@@ -64,6 +106,37 @@ export function guessCurrencyFromIsin(isin: string): string {
   if (upper.endsWith(".AX")) return "AUD";
   if (upper.endsWith(".SZ") || upper.endsWith(".SS")) return "CNY";
   return "USD";
+}
+
+/**
+ * Resolve asset currency using Wonder Quant catalog metadata & D1 prices table
+ * before falling back to ISIN/ticker suffix heuristics.
+ */
+export async function resolveAssetCurrency(db: D1Database, isin: string): Promise<string> {
+  const upper = String(isin || "").trim().toUpperCase();
+  if (upper.startsWith("CASH_")) {
+    return upper.slice(5) || "USD";
+  }
+
+  try {
+    if (db && typeof db.prepare === "function") {
+      const qFund = await resolveQuantFund(db, isin);
+      if (qFund && qFund.currency) {
+        return qFund.currency.toUpperCase();
+      }
+      const pRow = await db
+        .prepare("SELECT currency FROM prices WHERE isin = ? AND currency IS NOT NULL ORDER BY date DESC LIMIT 1")
+        .bind(isin)
+        .first<{ currency: string | null }>();
+      if (pRow && pRow.currency) {
+        return String(pRow.currency).trim().toUpperCase();
+      }
+    }
+  } catch {
+    // ignore and fallback
+  }
+
+  return guessCurrencyFromIsin(isin);
 }
 
 export function normalizeForYahoo(isin: string): string {
@@ -166,6 +239,25 @@ export async function getAssetMetadata(
     // ignore
   }
 
+  if (name === isin || sector === "Unknown Sector") {
+    try {
+      const upper = isin.toUpperCase();
+      const wqRow = await db
+        .prepare(
+          "SELECT name, asset_class FROM wq_funds WHERE UPPER(code) = ? OR UPPER(aia_code) = ? OR UPPER(isin) = ? OR UPPER(slug) = ? LIMIT 1"
+        )
+        .bind(upper, upper, upper, upper)
+        .first<{ name: string | null; asset_class: string | null }>();
+
+      if (wqRow) {
+        if (name === isin && wqRow.name) name = wqRow.name;
+        if (sector === "Unknown Sector" && wqRow.asset_class) sector = wqRow.asset_class;
+      }
+    } catch {
+      // ignore
+    }
+  }
+
   return { name, sector, country, ticker };
 }
 
@@ -228,6 +320,19 @@ export async function getFxRate(
   const mem = memoryFxCache.get(ticker);
   if (mem && mem.expiresAt > Date.now()) {
     return mem.rate;
+  }
+
+  // 0. Check Wonder Quant packed FX table (1 D1 row read, 30m isolate cache)
+  try {
+    const qFrom = f === "USD" ? 1.0 : (await getQuantFxSeries(db, `${f}USD`))?.latest_rate;
+    const qTo = t === "USD" ? 1.0 : (await getQuantFxSeries(db, `${t}USD`))?.latest_rate;
+    if (qFrom && qFrom > 0 && qTo && qTo > 0) {
+      const rate = qFrom / qTo;
+      memoryFxCache.set(ticker, { rate, expiresAt: Date.now() + 15 * 60 * 1000 });
+      return rate;
+    }
+  } catch {
+    // ignore
   }
 
   // 1. Check D1 price_cache within 6 hours
@@ -310,6 +415,7 @@ async function fetchYahooChart(
   name: string | null;
   currency: string | null;
   prices: Record<string, number>;
+  adjPrices?: Record<string, number>;
   dividends: Record<string, number>;
 } | null> {
   try {
@@ -329,14 +435,18 @@ async function fetchYahooChart(
     const meta = result.meta || {};
     const timestamps: number[] = result.timestamp || [];
     const closes: (number | null)[] = result.indicators?.quote?.[0]?.close || [];
+    const adjCloses: (number | null)[] = result.indicators?.adjclose?.[0]?.adjclose || closes;
     const prices: Record<string, number> = {};
+    const adjPrices: Record<string, number> = {};
     let lastClose: number | null = null;
 
     for (let i = 0; i < timestamps.length; i++) {
       const c = closes[i];
+      const a = adjCloses[i];
       if (typeof c === "number" && c > 0 && isFinite(c)) {
         const dStr = new Date(timestamps[i] * 1000).toISOString().slice(0, 10);
         prices[dStr] = c;
+        adjPrices[dStr] = typeof a === "number" && a > 0 && isFinite(a) ? a : c;
         lastClose = c;
       }
     }
@@ -365,6 +475,7 @@ async function fetchYahooChart(
       name,
       currency,
       prices,
+      adjPrices,
       dividends,
     };
   } catch {
@@ -417,6 +528,29 @@ export async function getMarketData(db: D1Database, isin: string): Promise<Marke
   const cached = memoryMarketCache.get(isin);
   if (cached && cached.expiresAt > Date.now()) {
     return cached.data;
+  }
+
+  // 0. Check Wonder Quant D1 catalog first (0 external HTTP calls, supports AIA codes & CN ETFs)
+  try {
+    const qFund = await resolveQuantFund(db, isin);
+    if (qFund && qFund.latest_nav && qFund.latest_nav > 0) {
+      const fxToUsd = await getFxRate(db, qFund.currency, "USD");
+      const result: MarketData = {
+        symbol: isin,
+        price: qFund.latest_nav,
+        currency: qFund.currency,
+        base_price: qFund.latest_nav * fxToUsd,
+        fx_rate: fxToUsd,
+        name: qFund.name,
+        sector: qFund.asset_class,
+        country: qFund.ilas_platform || "Global",
+        market_time: qFund.valuation_date || nowDateTimeStr(),
+      };
+      memoryMarketCache.set(isin, { data: result, expiresAt: Date.now() + 5 * 60 * 1000 });
+      return result;
+    }
+  } catch {
+    // ignore and fallback
   }
 
   const meta = await getAssetMetadata(db, isin);
@@ -553,9 +687,10 @@ export async function getMarketData(db: D1Database, isin: string): Promise<Marke
 export async function getHistoricalSeries(
   db: D1Database,
   isin: string,
-  daysBack: number = 365
+  daysBack: number = 365,
+  useTotalReturn: boolean = true
 ): Promise<Record<string, number>> {
-  const cacheKey = `${isin}:${daysBack}`;
+  const cacheKey = `${isin}:${daysBack}:${useTotalReturn ? "tr" : "px"}`;
   const mem = memoryHistoryCache.get(cacheKey);
   if (mem && mem.expiresAt > Date.now()) {
     return mem.series;
@@ -568,17 +703,45 @@ export async function getHistoricalSeries(
 
   const results: Record<string, number> = {};
 
+  // 0. Check Wonder Quant packed single-row series first (1 D1 row read, 0 external HTTP calls!)
+  let quantYahooTicker: string | null = null;
+  try {
+    const qFund = await resolveQuantFund(db, isin);
+    if (qFund) {
+      if (qFund.yahoo_ticker) {
+        quantYahooTicker = qFund.yahoo_ticker;
+      }
+      const qSeries = await getQuantFundSeries(db, qFund.slug);
+      if (qSeries && qSeries.dates.length > 0) {
+        const vals = useTotalReturn ? qSeries.adj_nav : qSeries.nav;
+        for (let i = 0; i < qSeries.dates.length; i++) {
+          const d = qSeries.dates[i];
+          const v = vals[i];
+          if (d > "1990-01-01" && d >= startStr && d <= endStr && typeof v === "number" && v > 0) {
+            results[d] = v;
+          }
+        }
+        if (Object.keys(results).length >= 5) {
+          memoryHistoryCache.set(cacheKey, { series: results, expiresAt: Date.now() + 30 * 60 * 1000 });
+          return results;
+        }
+      }
+    }
+  } catch {
+    // ignore and fallback
+  }
+
   // 1. Load from D1 `prices` and `price_cache` first (vital for European UCITS / custom ISINs)
   try {
     const dbPrices = await db
       .prepare(
-        "SELECT substr(date, 1, 10) as d, price FROM prices WHERE isin = ? AND date >= ? AND price > 0 ORDER BY date ASC"
+        "SELECT substr(date, 1, 10) as d, price FROM prices WHERE isin = ? AND date >= ? AND substr(date, 1, 10) > '1990-01-01' AND price > 0 ORDER BY date ASC"
       )
       .bind(isin, startStr)
       .all<{ d: string; price: number }>();
 
     for (const r of dbPrices.results || []) {
-      if (r.d && r.price > 0) {
+      if (r.d && r.d > "1990-01-01" && r.price > 0) {
         results[r.d] = Number(r.price);
       }
     }
@@ -586,12 +749,12 @@ export async function getHistoricalSeries(
     // 仅从 price_cache 查最新 1 条行情补齐当天快照（单次查 1 行，严控 D1 读额度）
     const latestCache = await db
       .prepare(
-        "SELECT substr(date, 1, 10) as d, price FROM price_cache WHERE isin = ? AND date >= ? AND price > 0 ORDER BY date DESC LIMIT 1"
+        "SELECT substr(date, 1, 10) as d, price FROM price_cache WHERE isin = ? AND date >= ? AND substr(date, 1, 10) > '1990-01-01' AND price > 0 ORDER BY date DESC LIMIT 1"
       )
       .bind(isin, startStr)
       .first<{ d: string; price: number }>();
 
-    if (latestCache && latestCache.d && latestCache.price > 0) {
+    if (latestCache && latestCache.d && latestCache.d > "1990-01-01" && latestCache.price > 0) {
       results[latestCache.d] = Number(latestCache.price);
     }
   } catch {
@@ -603,7 +766,13 @@ export async function getHistoricalSeries(
   const minRequiredPoints = Math.min(Math.max(20, Math.floor(daysBack * 0.35)), 200);
   if (Object.keys(results).length < minRequiredPoints && !isin.startsWith("CASH_")) {
     const meta = await getAssetMetadata(db, isin);
-    const yahooTicker = normalizeForYahoo(meta.ticker || isin);
+    let rawYahooSymbol: string | null = meta.ticker || null;
+    if (!rawYahooSymbol && ISIN_PATTERN.test(isin)) {
+      rawYahooSymbol = (await resolveYahooSymbolByIsin(isin)) || quantYahooTicker || isin;
+    } else if (!rawYahooSymbol) {
+      rawYahooSymbol = quantYahooTicker || isin;
+    }
+    const yahooTicker = normalizeForYahoo(rawYahooSymbol);
     const rangeStr =
       daysBack <= 30
         ? "1mo"
@@ -621,9 +790,45 @@ export async function getHistoricalSeries(
 
     const yfData = await fetchYahooChart(yahooTicker, rangeStr, true);
     if (yfData) {
-      for (const [d, p] of Object.entries(yfData.prices)) {
-        if (d >= startStr && d <= endStr && p > 0) {
-          results[d] = p;
+      const srcSeries = useTotalReturn && yfData.adjPrices ? yfData.adjPrices : yfData.prices;
+
+      // Scale-Guard: if D1 `prices` already has rows for this ISIN (e.g. A6 distributing share class),
+      // verify overlapping quote scale so an unaligned accumulation/proxy ticker never creates artificial jumps.
+      let scale = 1.0;
+      const d1Dates = Object.keys(results).sort();
+      if (d1Dates.length > 0) {
+        const srcDates = Object.keys(srcSeries).filter((d) => srcSeries[d] > 0).sort();
+        let d1Anchor: number | null = null;
+        let yfAnchor: number | null = null;
+        for (let i = d1Dates.length - 1; i >= 0; i--) {
+          const d = d1Dates[i];
+          if (srcSeries[d] && srcSeries[d] > 0) {
+            d1Anchor = results[d];
+            yfAnchor = srcSeries[d];
+            break;
+          }
+        }
+        if ((d1Anchor === null || yfAnchor === null) && srcDates.length > 0) {
+          const d1RefStr = d1Dates[0];
+          const d1RefMs = Date.parse(d1RefStr);
+          let bestDiff = Infinity;
+          for (const sd of srcDates) {
+            const diff = Math.abs(Date.parse(sd) - d1RefMs);
+            if (diff <= 14 * 86400 * 1000 && diff < bestDiff) {
+              bestDiff = diff;
+              d1Anchor = results[d1RefStr];
+              yfAnchor = srcSeries[sd];
+            }
+          }
+        }
+        if (d1Anchor && yfAnchor && yfAnchor > 0 && Math.abs(yfAnchor / d1Anchor - 1) > 0.25) {
+          scale = d1Anchor / yfAnchor;
+        }
+      }
+
+      for (const [d, p] of Object.entries(srcSeries)) {
+        if (d > "1990-01-01" && d >= startStr && d <= endStr && p > 0 && results[d] === undefined) {
+          results[d] = Math.round(p * scale * 1000000) / 1000000;
         }
       }
 
@@ -772,6 +977,16 @@ export async function getDividendMetrics(
   isin: string
 ): Promise<DividendMetrics> {
   try {
+    // 0. Check Wonder Quant pre-computed TTM dividend yield first
+    const qFund = await resolveQuantFund(db, isin);
+    if (qFund && qFund.latest_nav && qFund.latest_nav > 0 && qFund.div_yield_ttm != null) {
+      return {
+        trailing_sum: qFund.div_yield_ttm * qFund.latest_nav,
+        next_date: null,
+        next_amount: null,
+      };
+    }
+
     const oneYearAgo = new Date(Date.now() - 365 * 86400 * 1000).toISOString().slice(0, 10);
     const divHistory = await getDividendHistory(db, isin, oneYearAgo);
     const todayStr = nowIsoDate();

@@ -1,4 +1,10 @@
 import { getDividendMetrics, getHistoricalSeries, getMarketData } from "./dataProvider";
+import {
+  buildBenchmarkProxySeries,
+  convertSeriesCurrency,
+  resolveQuantFund,
+} from "../quantStore";
+import { getLatestMacroSnapshot } from "../macroStore";
 
 export interface OptimizationResult {
   allocations: Record<string, number>;
@@ -28,7 +34,8 @@ export interface MonteCarloSettings {
   insurance_plan?: any[];
   insurance_alpha_low?: number;
   insurance_alpha_high?: number;
-  cma_mode?: "shrunk" | "ltcma" | "raw";
+  cma_mode?: "forward_looking" | "shrunk" | "ltcma" | "raw";
+  seed?: number;
 }
 
 export interface StrategyLabAnalysisResult {
@@ -48,12 +55,42 @@ export interface StrategyLabAnalysisResult {
       asset_class?: string;
       raw_return?: number;
       raw_volatility?: number;
+      slug?: string;
+      code?: string;
+      aia_code?: string | null;
+      currency?: string;
+      fee_pct?: number | null;
+      data_tier?: string;
+      ilas_platform?: string | null;
+      is_proxy?: boolean;
+      proxy_benchmark?: string | null;
     }
   >;
   valid_assets: string[];
   data_points: number;
   data_warnings: string[];
-  cma_mode?: "shrunk" | "ltcma" | "raw";
+  cma_mode?: "forward_looking" | "shrunk" | "ltcma" | "raw";
+  base_currency?: string;
+  macro_snapshot?: {
+    as_of_date: string;
+    us10y_yield: number | null;
+    us3m_yield: number | null;
+    spy_pe_pctile: number | null;
+    spy_erp: number | null;
+    gold_price: number | null;
+    wti_oil_price: number | null;
+    copper_gold_ratio: number | null;
+    regime_flags: string[];
+    source: string;
+  };
+  efficient_frontier?: Array<{ vol: number; ret: number; sharpe: number }>;
+  portfolio_diagnostics?: {
+    max_drawdown: number;
+    sortino_ratio: number;
+    calmar_ratio: number;
+    weighted_fee_pct: number | null;
+    base_currency: string;
+  };
   risk_contributions?: Record<string, number>;
   mc_target_label?: string;
   monte_carlo: {
@@ -80,6 +117,7 @@ export interface StrategyLabAnalysisResult {
       combined_real_p50?: number;
     }>;
     success_rate: number | null;
+    solvency_rate?: number | null;
     drawdown: { p10: number; p50: number; p90: number };
     combined_drawdown?: { p10: number; p50: number; p90: number } | null;
     irr: { p10: number; p50: number; p90: number };
@@ -195,41 +233,67 @@ export const CMA_PRIORS: Record<string, AssetClassPrior> = {
   },
 };
 
-export function classifyAsset(isin: string, name?: string): AssetClassPrior {
-  const upper = String(isin || "").toUpperCase().trim();
-  const nameUpper = String(name || "").toUpperCase().trim();
+export function createPrng(seed: number = 42) {
+  let s = (seed >>> 0) || 42;
+  return function next(): number {
+    s = (s + 0x6d2b79f5) >>> 0;
+    let t = Math.imul(s ^ (s >>> 15), 1 | s);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
 
-  if (upper.startsWith("CASH_") || ["BIL", "SGOV", "SHV", "ICSH", "GBIL"].includes(upper)) {
+export function classifyAsset(isin: string, name?: string, meta?: any): AssetClassPrior {
+  const upper = String(isin || "").toUpperCase().trim();
+  const rawName = String(meta?.name || name || "");
+  const nameUpper = rawName.toUpperCase().trim();
+  const metaClass = String(meta?.asset_class || "").toLowerCase().trim();
+
+  // 1. 结构化类别优先（quantMetaMap / 基金库已标注类型）
+  if (metaClass === "cash" || upper.startsWith("CASH_") || ["BIL", "SGOV", "SHV", "ICSH", "GBIL"].includes(upper)) {
     return CMA_PRIORS.CASH_EQUIVALENTS;
   }
-  if (["GLD", "IAU", "SGOL", "BAR", "GLDM"].includes(upper) || nameUpper.includes("GOLD")) {
-    return CMA_PRIORS.GOLD_COMMODITIES;
+  if (metaClass === "reit" || ["VNQ", "SCHH", "IYR", "XLRE", "REM"].includes(upper) || nameUpper.includes("REIT") || rawName.includes("房地产")) {
+    return CMA_PRIORS.REITS_REAL_ESTATE;
   }
-  if (["DBC", "GSG", "PDBC", "USO", "BNO", "COMT"].includes(upper) || nameUpper.includes("COMMODIT")) {
+  if (metaClass === "commodity" || ["GLD", "IAU", "SGOL", "BAR", "GLDM"].includes(upper) || nameUpper.includes("GOLD") || rawName.includes("黄金") || rawName.includes("商品")) {
     return CMA_PRIORS.GOLD_COMMODITIES;
   }
   if (
     ["JEPI", "JEPQ", "DIVO", "XYLD", "QYLD", "RYLD", "GPIQ", "GPIX", "SVOL", "SPYI", "QQQI"].includes(upper) ||
     nameUpper.includes("PREMIUM INCOME") ||
     nameUpper.includes("COVERED CALL") ||
-    nameUpper.includes("ENHANCED DIVIDEND")
+    rawName.includes("备兑") ||
+    rawName.includes("收益及增长")
   ) {
     return CMA_PRIORS.COVERED_CALL_INCOME;
   }
-  if (["VNQ", "SCHH", "IYR", "XLRE", "REM"].includes(upper) || nameUpper.includes("REIT") || nameUpper.includes("REAL ESTATE")) {
-    return CMA_PRIORS.REITS_REAL_ESTATE;
-  }
-  if (["HYG", "JNK", "USHY", "BKLN", "FALN", "ANGL"].includes(upper) || nameUpper.includes("HIGH YIELD") || nameUpper.includes("JUNK")) {
-    return CMA_PRIORS.HIGH_YIELD_CREDIT;
-  }
-  if (
-    ["BND", "AGG", "TLT", "IEF", "BNDX", "VGIT", "VTEB", "LQD", "GOVT", "SHY"].includes(upper) ||
+
+  // 2. 债券 / 固收资产（区分高收益信用 vs 投资级综合债）
+  const isBondType =
+    metaClass.includes("bond") ||
+    metaClass.includes("fixed_income") ||
     nameUpper.includes("BOND") ||
     nameUpper.includes("TREASURY") ||
-    nameUpper.includes("FIXED INCOME")
-  ) {
+    nameUpper.includes("FIXED INCOME") ||
+    rawName.includes("债券") ||
+    rawName.includes("国债") ||
+    rawName.includes("信用债") ||
+    rawName.includes("固收");
+
+  const isHighYield =
+    ["HYG", "JNK", "USHY", "BKLN", "FALN", "ANGL"].includes(upper) ||
+    nameUpper.includes("HIGH YIELD") ||
+    nameUpper.includes("JUNK") ||
+    rawName.includes("高收益") ||
+    rawName.includes("高息");
+
+  if (isHighYield) return CMA_PRIORS.HIGH_YIELD_CREDIT;
+  if (isBondType || ["BND", "AGG", "TLT", "IEF", "BNDX", "VGIT", "VTEB", "LQD", "GOVT", "SHY"].includes(upper)) {
     return CMA_PRIORS.BROAD_BONDS;
   }
+
+  // 3. 中国与香港市场资产（A股 / 港股 / 中概）
   if (
     upper.endsWith(".SZ") ||
     upper.endsWith(".SS") ||
@@ -238,28 +302,46 @@ export function classifyAsset(isin: string, name?: string): AssetClassPrior {
     nameUpper.includes("CHINA") ||
     nameUpper.includes("HANG SENG") ||
     nameUpper.includes("CSI") ||
-    nameUpper.includes("HK STOCK CONNECT")
+    nameUpper.includes("HK STOCK CONNECT") ||
+    rawName.includes("中国") ||
+    rawName.includes("恒生") ||
+    rawName.includes("中证") ||
+    rawName.includes("沪深") ||
+    rawName.includes("A股") ||
+    rawName.includes("港股")
   ) {
     return CMA_PRIORS.CHINA_EQUITY;
   }
+
+  // 4. 科技与成长股票
   if (
     ["QQQ", "VUG", "XLK", "IYW", "SMH", "SOXX", "ARKK", "QTEC", "FDN", "IGV", "IWF"].includes(upper) ||
     nameUpper.includes("TECH") ||
     nameUpper.includes("NASDAQ") ||
     nameUpper.includes("GROWTH") ||
-    nameUpper.includes("SEMICONDUCTOR")
+    nameUpper.includes("SEMICONDUCTOR") ||
+    rawName.includes("科技") ||
+    rawName.includes("纳斯达克") ||
+    rawName.includes("半导体")
   ) {
     return CMA_PRIORS.US_TECH_GROWTH;
   }
+
+  // 5. 红利高股息与价值
   if (
     ["SCHD", "VYM", "VIG", "DGRO", "NOBL", "DVY", "HDV", "COWZ", "SDY", "IWD"].includes(upper) ||
     nameUpper.includes("DIVIDEND") ||
     nameUpper.includes("VALUE") ||
-    nameUpper.includes("EQUITY INCOME")
+    nameUpper.includes("EQUITY INCOME") ||
+    rawName.includes("红利") ||
+    rawName.includes("高股息") ||
+    rawName.includes("价值")
   ) {
     return CMA_PRIORS.US_DIVIDEND_VALUE;
   }
-  if (["VWO", "EEM", "IEMG"].includes(upper) || nameUpper.includes("EMERGING")) {
+
+  // 6. 新兴市场与成熟市场
+  if (["VWO", "EEM", "IEMG"].includes(upper) || nameUpper.includes("EMERGING") || rawName.includes("新兴市场")) {
     return CMA_PRIORS.EMERGING_MARKETS_EQUITY;
   }
   if (
@@ -269,18 +351,23 @@ export function classifyAsset(isin: string, name?: string): AssetClassPrior {
     upper.endsWith(".DE") ||
     upper.endsWith(".T") ||
     nameUpper.includes("EAFE") ||
-    nameUpper.includes("DEVELOPED")
+    nameUpper.includes("DEVELOPED") ||
+    rawName.includes("发达市场")
   ) {
     return CMA_PRIORS.GLOBAL_DEVELOPED_EQUITY;
   }
+
+  // 7. 美股宽基
   if (
     ["SPY", "VOO", "IVV", "VTI", "ITOT", "DIA", "IWM", "RSP", "SCHX"].includes(upper) ||
     nameUpper.includes("S&P 500") ||
     nameUpper.includes("TOTAL STOCK") ||
-    nameUpper.includes("RUSSELL")
+    nameUpper.includes("RUSSELL") ||
+    rawName.includes("标普500")
   ) {
     return CMA_PRIORS.US_BROAD_EQUITY;
   }
+
   return CMA_PRIORS.GLOBAL_EQUITY_GENERAL;
 }
 
@@ -322,10 +409,22 @@ export class StrategyLab {
     maxWeight: number = 0.35,
     customWeights?: Record<string, number>,
     mcSettings?: MonteCarloSettings,
-    riskFreeRate: number = 0.04,
-    cmaMode: "shrunk" | "ltcma" | "raw" = "shrunk"
+    riskFreeRate?: number,
+    cmaMode: "forward_looking" | "shrunk" | "ltcma" | "raw" = "forward_looking",
+    baseCurrency: string = "USD"
   ): Promise<StrategyLabAnalysisResult> {
     const warnings: string[] = [];
+    const targetCcy = String(baseCurrency || "USD").toUpperCase();
+    const macroSnap = await getLatestMacroSnapshot(this.db);
+    const liveRfRate =
+      riskFreeRate != null && Number.isFinite(riskFreeRate) && riskFreeRate > 0
+        ? riskFreeRate
+        : (macroSnap.us3m_yield ?? 4.25) / 100;
+    // 动态美股估值拖拽：结合实盘 PE 分位与 ERP 水平调整前瞻预期收益
+    const spyPctile = macroSnap.spy_pe_pctile ?? 75;
+    const usValuationAdj =
+      spyPctile >= 85 ? -0.015 : spyPctile >= 75 ? -0.01 : spyPctile >= 60 ? -0.005 : spyPctile <= 30 ? 0.005 : 0.0;
+    const macroCashFloor = Math.max(0.015, Math.min(0.06, (macroSnap.us3m_yield ?? 4.0) / 100));
     // 去重 + 去空：前端允许重复添加同一 ISIN，重复会让权重字典塌缩成负权重
     isins = Array.from(
       new Set((isins || []).map((s) => String(s || "").trim()).filter((s) => s.length > 0))
@@ -334,25 +433,48 @@ export class StrategyLab {
       throw new Error("请选择至少一项资产进行分析");
     }
 
-    // 1. 获取各资产的历史日线数据
+    // 1. 获取各资产的总回报历史日线数据（优先 D1 压缩时序，并统一换算至目标基准币种）
     const rawSeriesMap: Record<string, Record<string, number>> = {};
-    const validIsins: string[] = [];
+    const quantMetaMap: Record<string, any> = {};
+    const proxyMetaMap: Record<string, { proxyLabel: string; feeDragPct: number }> = {};
 
     await Promise.all(
       isins.map(async (isin) => {
         try {
-          const series = await getHistoricalSeries(this.db, isin, daysBack);
+          const qFund = await resolveQuantFund(this.db, isin);
+          if (qFund) quantMetaMap[isin] = qFund;
+          let series = await getHistoricalSeries(this.db, isin, daysBack, true);
           if (series && Object.keys(series).length >= 20) {
+            const srcCcy = qFund?.currency || "USD";
+            if (srcCcy !== targetCcy && targetCcy !== "NATIVE") {
+              series = await convertSeriesCurrency(this.db, series, srcCcy, targetCcy);
+            }
             rawSeriesMap[isin] = series;
-            validIsins.push(isin);
           } else {
-            warnings.push(`资产 ${isin} 历史数据不足（少于 20 个交易日），已从组合中剔除。`);
+            // 对标基准指数代理补齐（避免将 Tier U / 离岸基金从组合中剔除导致权重失真）
+            const proxy = await buildBenchmarkProxySeries(
+              this.db,
+              qFund || { code: isin, name: isin },
+              daysBack,
+              targetCcy
+            );
+            if (proxy && Object.keys(proxy.series).length >= 20) {
+              rawSeriesMap[isin] = proxy.series;
+              proxyMetaMap[isin] = { proxyLabel: proxy.proxyLabel, feeDragPct: proxy.feeDragPct };
+              warnings.push(
+                `资产 ${qFund ? `${qFund.code} (${qFund.name})` : isin} 暂无直连日线数据，已自动采用对标基准 [${proxy.proxyLabel}]${proxy.feeDragPct > 0 ? `（含 ${proxy.feeDragPct}% 年费率校准）` : ""}代理补齐历史序列，保留其组合权重。`
+              );
+            } else {
+              warnings.push(`资产 ${qFund ? `${qFund.code} (${qFund.name})` : isin} 历史数据不足（少于 20 个交易日），已从组合中剔除。`);
+            }
           }
         } catch (e: any) {
           warnings.push(`获取资产 ${isin} 历史数据失败: ${e.message}`);
         }
       })
     );
+
+    const validIsins = isins.filter((id) => Boolean(rawSeriesMap[id]));
 
     if (validIsins.length === 0) {
       throw new Error("未能获取到任何所选资产的有效历史数据");
@@ -406,7 +528,8 @@ export class StrategyLab {
     const tradingDays = Math.max(1, numDays - 1);
 
     // 3. 计算单资产均值、波动率与协方差矩阵（结合大类资产长期基准进行收缩校准）
-    const effectiveCmaMode = mcSettings?.cma_mode || cmaMode || "shrunk";
+    // 默认采用 forward_looking 模式：前瞻宏观利率与估值时钟校准
+    const effectiveCmaMode = mcSettings?.cma_mode || cmaMode || "forward_looking";
     const meanReturns: Record<string, number> = {};
     const vols: Record<string, number> = {};
     const assetStats: Record<string, any> = {};
@@ -418,6 +541,8 @@ export class StrategyLab {
       const varianceDaily =
         r.reduce((acc, v) => acc + Math.pow(v - meanDaily, 2), 0) / Math.max(1, tradingDays - 1);
       const sampleAnnualVol = Math.sqrt(varianceDaily * 252);
+
+      const qMeta = quantMetaMap[isin];
 
       // 尝试获取资产名称与真实股息率
       let assetName = isin;
@@ -433,13 +558,47 @@ export class StrategyLab {
         // ignore
       }
 
-      // 获取资产大类基准先验 (CMA Prior)
-      const prior = classifyAsset(isin, assetName);
+      // 若 Yahoo 未返回或为 0，优先回退到量化库实际维护的 div_yield_ttm
+      if (divYield === 0 && qMeta && typeof qMeta.div_yield_ttm === "number" && qMeta.div_yield_ttm > 0) {
+        divYield = Math.max(0, Math.min(0.2, qMeta.div_yield_ttm));
+      }
+
+      // 获取资产大类基准先验 (CMA Prior，结合 qMeta 识别中国资产与债券)
+      const prior = classifyAsset(isin, assetName, qMeta);
 
       let finalAnnualReturn = sampleAnnualReturn;
       let finalAnnualVol = sampleAnnualVol;
 
-      if (effectiveCmaMode === "ltcma") {
+      if (effectiveCmaMode === "forward_looking") {
+        // 🌟 宏观与利率前瞻校准模式（动态读取 wq_macro_snapshot）
+        if (
+          prior.class_key === "CASH_EQUIVALENTS" ||
+          prior.class_key === "BROAD_BONDS" ||
+          prior.class_key === "HIGH_YIELD_CREDIT"
+        ) {
+          // 固收与现金资产：以最新无风险现金利率与当前派息率为锚
+          const yieldAnchor = divYield > 0.02 ? divYield : Math.max(prior.expected_total_return, macroCashFloor);
+          finalAnnualReturn = Math.max(prior.expected_total_return, Math.min(0.085, yieldAnchor));
+          finalAnnualVol = Math.max(0.015, Math.min(sampleAnnualVol, prior.expected_volatility));
+        } else if (
+          prior.class_key === "US_TECH_GROWTH" ||
+          prior.class_key === "US_BROAD_EQUITY"
+        ) {
+          // 权益估值感知：按当前标普500 5年PE分位动态施加均值回归拖累或折价补偿
+          const baseline = 0.5 * sampleAnnualReturn + 0.5 * prior.expected_total_return;
+          finalAnnualReturn = baseline + usValuationAdj;
+          finalAnnualVol = 0.5 * sampleAnnualVol + 0.5 * prior.expected_volatility;
+        } else {
+          // 红利低波、中港资产与其它：若恒指处于深折价区 (HK_DEEP_VALUE) 且为中港/红利类资产，给予微幅均值回归溢价
+          const hkLift =
+            (prior.class_key === "CHINA_HK_VALUE_EQUITY" || prior.class_key === "US_DIVIDEND_VALUE") &&
+            macroSnap.regime_flags.includes("HK_DEEP_VALUE")
+              ? 0.005
+              : 0;
+          finalAnnualReturn = 0.5 * sampleAnnualReturn + 0.5 * prior.expected_total_return + hkLift;
+          finalAnnualVol = 0.5 * sampleAnnualVol + 0.5 * prior.expected_volatility;
+        }
+      } else if (effectiveCmaMode === "ltcma") {
         // 保守模式：100% 采用大类资产百年跨周期统计假设
         finalAnnualReturn = prior.expected_total_return;
         finalAnnualVol = prior.expected_volatility;
@@ -464,10 +623,23 @@ export class StrategyLab {
         expected_return: Math.round(finalAnnualReturn * 10000) / 10000,
         volatility: Math.round(finalAnnualVol * 10000) / 10000,
         dividend_yield: Math.round(divYield * 10000) / 10000,
-        name: assetName,
-        asset_class: prior.class_name,
+        name: qMeta?.name || assetName,
+        asset_class: qMeta?.asset_class || prior.class_name,
         raw_return: Math.round(sampleAnnualReturn * 10000) / 10000,
         raw_volatility: Math.round(sampleAnnualVol * 10000) / 10000,
+        ...(qMeta
+          ? {
+              slug: qMeta.slug,
+              code: qMeta.code,
+              aia_code: qMeta.aia_code,
+              currency: qMeta.currency,
+              fee_pct: qMeta.fee_pct,
+              data_tier: qMeta.data_tier,
+              ilas_platform: qMeta.ilas_platform,
+            }
+          : {}),
+        is_proxy: Boolean(proxyMetaMap[isin]),
+        proxy_benchmark: proxyMetaMap[isin]?.proxyLabel || null,
       };
     }
 
@@ -518,7 +690,7 @@ export class StrategyLab {
         }
       }
       const pVol = Math.sqrt(Math.max(1e-6, pVar));
-      const sharpe = (pRet - riskFreeRate) / pVol;
+      const sharpe = (pRet - liveRfRate) / pVol;
 
       // 历史回测曲线（基准 10,000）
       const backtest: Array<{ date: string; value: number }> = [];
@@ -614,6 +786,9 @@ export class StrategyLab {
     // 上限若不可行（n × cap < 1），退化为等权
     const feasibleCap = maxBound * validIsins.length >= 1 - 1e-9 ? maxBound : 1.0;
 
+    // 同步采样有效前沿候选点（按波动率分桶取每桶最高收益点，零额外计算开销）
+    const frontierCandidates: Array<{ vol: number; ret: number; sharpe: number }> = [];
+
     for (let t = 0; t < trials; t++) {
       // Dirichlet(1,...,1) 随机分配
       const raw = validIsins.map(() => -Math.log(Math.random() + 1e-12));
@@ -633,7 +808,11 @@ export class StrategyLab {
         }
       }
       const pVol = Math.sqrt(Math.max(1e-6, pVar));
-      const sharpe = (pRet - riskFreeRate) / pVol;
+      const sharpe = (pRet - liveRfRate) / pVol;
+
+      if (t % 2 === 0) {
+        frontierCandidates.push({ vol: pVol, ret: pRet, sharpe });
+      }
 
       if (sharpe > bestSharpeVal) {
         bestSharpeVal = sharpe;
@@ -642,6 +821,37 @@ export class StrategyLab {
       if (pVol < minVolVal) {
         minVolVal = pVol;
         minVolAlloc = { ...candidate };
+      }
+    }
+
+    // 提炼 20 点严格单调递增的有效前沿包络线
+    const efficientFrontier: Array<{ vol: number; ret: number; sharpe: number }> = [];
+    if (frontierCandidates.length > 0) {
+      let minV = Infinity;
+      let maxV = -Infinity;
+      for (const pt of frontierCandidates) {
+        if (pt.vol < minV) minV = pt.vol;
+        if (pt.vol > maxV) maxV = pt.vol;
+      }
+      const buckets = 20;
+      const step = Math.max(1e-5, (maxV - minV) / buckets);
+      const bestPerBucket: Array<{ vol: number; ret: number; sharpe: number } | null> = new Array(buckets).fill(null);
+      for (const pt of frontierCandidates) {
+        const idx = Math.min(buckets - 1, Math.floor((pt.vol - minV) / step));
+        if (!bestPerBucket[idx] || pt.ret > bestPerBucket[idx]!.ret) {
+          bestPerBucket[idx] = pt;
+        }
+      }
+      let runningBestRet = -Infinity;
+      for (const pt of bestPerBucket) {
+        if (pt && pt.ret >= runningBestRet) {
+          runningBestRet = pt.ret;
+          efficientFrontier.push({
+            vol: Math.round(pt.vol * 10000) / 10000,
+            ret: Math.round(pt.ret * 10000) / 10000,
+            sharpe: Math.round(pt.sharpe * 100) / 100,
+          });
+        }
       }
     }
 
@@ -791,6 +1001,10 @@ export class StrategyLab {
     const divOffsetPaths: number[][] = [];
     const maxDrawdowns: number[] = [];
 
+    // 可复现伪随机数发生器（避免每次无改动渲染时图表剧烈抖动）
+    const seed = typeof mcSettings?.seed === "number" ? mcSettings.seed : 42;
+    const rng = createPrng(seed);
+
     const targetDrawOfYear = (y: number): number => {
       const inflFactor = mcWithdrawalInflation ? Math.pow(1 + mcInflation, y - 1) : 1.0;
       let draw = 0;
@@ -826,9 +1040,9 @@ export class StrategyLab {
         let pStart = prev + cont - (actualDraw - offsetFromDiv) + (divIncome - offsetFromDiv);
         pStart = Math.max(0, pStart);
 
-        // Box-Muller 随机正态几何布朗运动 (GBM)
-        const u1 = Math.random();
-        const u2 = Math.random();
+        // Box-Muller 确定性正态几何布朗运动 (GBM)
+        const u1 = rng();
+        const u2 = rng();
         const z = Math.sqrt(-2.0 * Math.log(u1 + 1e-12)) * Math.cos(2.0 * Math.PI * u2);
 
         const r = Math.exp(simPriceDrift - 0.5 * simVol * simVol + simVol * z) - 1;
@@ -938,6 +1152,10 @@ export class StrategyLab {
       successRate = Math.round((solvent / numSims) * 1000) / 1000;
     }
 
+    // 资金不断流概率（全程所有年份资产净值均保持 > 0 的模拟路径比例）
+    const solventPaths = paths.filter((p) => p.every((val, idx) => idx === 0 || val > 0)).length;
+    const solvencyRate = Math.round((solventPaths / numSims) * 1000) / 1000;
+
     // 回撤统计
     maxDrawdowns.sort((a, b) => a - b);
     const drawdown = {
@@ -970,16 +1188,22 @@ export class StrategyLab {
       };
     }
 
-    // IRR 计算（现金流需含第二段提领）
-    const baseCfs = [-mcCapital];
-    for (let y = 1; y <= mcYears; y++) {
-      const cont = y >= mcContributionStart && y <= mcContributionYears ? mcContribution : 0;
-      baseCfs.push(targetDrawOfYear(y) - cont);
-    }
+    // IRR 真实内部收益率计算（采用各分位数路径的实际提领 actual_draw，彻底修复路径枯竭后凭空虚增收益的漏洞）
+    const buildCfs = (actualDraws: number[], endCapital: number) => {
+      const cfs = [-mcCapital];
+      for (let y = 1; y <= mcYears; y++) {
+        const cont = y >= mcContributionStart && y <= mcContributionYears ? mcContribution : 0;
+        const draw = actualDraws[y] ?? 0;
+        cfs.push(draw - cont);
+      }
+      cfs[cfs.length - 1] += endCapital;
+      return cfs;
+    };
+
     const irr = {
-      p10: Math.round(calculateIrr([...baseCfs.slice(0, -1), baseCfs[baseCfs.length - 1] + chart[mcYears].p10], mcYears) * 1000) / 1000,
-      p50: Math.round(calculateIrr([...baseCfs.slice(0, -1), baseCfs[baseCfs.length - 1] + chart[mcYears].p50], mcYears) * 1000) / 1000,
-      p90: Math.round(calculateIrr([...baseCfs.slice(0, -1), baseCfs[baseCfs.length - 1] + chart[mcYears].p90], mcYears) * 1000) / 1000,
+      p10: Math.round(calculateIrr(buildCfs(chart.map((c) => c.actual_draw_p10 || 0), chart[mcYears].p10), mcYears) * 1000) / 1000,
+      p50: Math.round(calculateIrr(buildCfs(chart.map((c) => c.actual_draw_p50 || 0), chart[mcYears].p50), mcYears) * 1000) / 1000,
+      p90: Math.round(calculateIrr(buildCfs(chart.map((c) => c.actual_draw_p90 || 0), chart[mcYears].p90), mcYears) * 1000) / 1000,
     };
 
     // 保险方案统计
@@ -1023,6 +1247,53 @@ export class StrategyLab {
       // ignore
     }
 
+    // 组合级量化诊断（最大回撤、Sortino、Calmar、加权年费率）
+    let portMaxDd = 0;
+    let portSortino = 0;
+    let portCalmar = 0;
+    let weightedFeePct: number | null = null;
+    try {
+      let peak = 0;
+      const dailyRets: number[] = [];
+      for (let i = 0; i < targetPortfolio.backtest.length; i++) {
+        const v = targetPortfolio.backtest[i].value;
+        if (v > peak) peak = v;
+        if (peak > 0) {
+          const dd = (v - peak) / peak;
+          if (dd < portMaxDd) portMaxDd = dd;
+        }
+        if (i > 0 && targetPortfolio.backtest[i - 1].value > 0) {
+          dailyRets.push(v / targetPortfolio.backtest[i - 1].value - 1);
+        }
+      }
+      if (dailyRets.length > 20) {
+        const rfD = liveRfRate / 252;
+        const downSq = dailyRets.reduce((acc, r) => acc + Math.pow(Math.min(0, r - rfD), 2), 0) / dailyRets.length;
+        const downVol = Math.sqrt(downSq * 252);
+        if (downVol > 1e-6) {
+          portSortino = (targetPortfolio.expected_return - liveRfRate) / downVol;
+        }
+      }
+      if (Math.abs(portMaxDd) > 1e-6) {
+        portCalmar = targetPortfolio.expected_return / Math.abs(portMaxDd);
+      }
+      let feeWeightCovered = 0;
+      let feeSum = 0;
+      for (const isin of validIsins) {
+        const fp = assetStats[isin]?.fee_pct;
+        if (typeof fp === "number" && fp >= 0) {
+          const w = targetPortfolio.allocations[isin] || 0;
+          feeSum += w * fp;
+          feeWeightCovered += w;
+        }
+      }
+      if (feeWeightCovered > 0.25) {
+        weightedFeePct = Math.round((feeSum / feeWeightCovered) * 100) / 100;
+      }
+    } catch {
+      // ignore
+    }
+
     return {
       max_sharpe: maxSharpe,
       min_volatility: minVol,
@@ -1035,11 +1306,33 @@ export class StrategyLab {
       data_points: tradingDays,
       data_warnings: warnings,
       cma_mode: effectiveCmaMode,
+      base_currency: targetCcy,
+      macro_snapshot: {
+        as_of_date: macroSnap.as_of_date,
+        us10y_yield: macroSnap.us10y_yield,
+        us3m_yield: macroSnap.us3m_yield,
+        spy_pe_pctile: macroSnap.spy_pe_pctile,
+        spy_erp: macroSnap.spy_erp,
+        gold_price: macroSnap.gold_price,
+        wti_oil_price: macroSnap.wti_oil_price,
+        copper_gold_ratio: macroSnap.copper_gold_ratio,
+        regime_flags: macroSnap.regime_flags,
+        source: macroSnap.source,
+      },
+      efficient_frontier: efficientFrontier,
+      portfolio_diagnostics: {
+        max_drawdown: Math.round(portMaxDd * 10000) / 10000,
+        sortino_ratio: Math.round(portSortino * 100) / 100,
+        calmar_ratio: Math.round(portCalmar * 100) / 100,
+        weighted_fee_pct: weightedFeePct,
+        base_currency: targetCcy,
+      },
       risk_contributions: riskContributions,
       mc_target_label: mcTargetLabel,
       monte_carlo: {
         chart,
         success_rate: successRate,
+        solvency_rate: solvencyRate,
         drawdown,
         combined_drawdown: combinedDrawdown,
         irr,

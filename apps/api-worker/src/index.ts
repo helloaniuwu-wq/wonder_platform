@@ -11,12 +11,26 @@ import { expensesRouter } from "./routes/expenses";
 import { fipRouter } from "./routes/fip";
 import { financialsRouter } from "./routes/financials";
 import { getDashboardStats, invoicesRouter } from "./routes/invoices";
+import { monitorRouter } from "./routes/monitor";
 import { publicRouter } from "./routes/public";
+import { quantRouter } from "./routes/quant";
+import { getMarketData } from "./services/fip/dataProvider";
 import { PortfolioEngine } from "./services/fip/portfolioEngine";
+import { runDailyPortfolioMonitor } from "./services/fip/portfolioMonitor";
+import { sendQuantAlert } from "./services/alerting";
+import { runQuantWatchdog } from "./services/quantWatchdog";
 import { Env, Variables } from "./types";
 import { HttpError } from "./utils/auth";
 
 const app = new Hono<{ Bindings: Env; Variables: Variables }>();
+
+// ── Request ID Middleware ──────────────────────────────────────────────────
+app.use("*", async (c, next) => {
+  const reqId = c.req.header("X-Request-Id") || crypto.randomUUID().slice(0, 8);
+  c.set("requestId", reqId);
+  await next();
+  c.header("X-Request-Id", reqId);
+});
 
 // ── Internal Trailing Slash Rewrite (Transparent, No 301 Redirect) ───────────
 app.use("*", async (c, next) => {
@@ -30,21 +44,43 @@ app.use("*", async (c, next) => {
 });
 
 // ── Global CORS Middleware ─────────────────────────────────────────────────
+export function isAllowedOrigin(origin: string, envOrigins?: string): boolean {
+  let hostname: string;
+  try {
+    hostname = new URL(origin).hostname.toLowerCase();
+  } catch {
+    return false;
+  }
+
+  if (
+    hostname === "localhost" ||
+    hostname === "127.0.0.1" ||
+    hostname === "wonderwisdom.online" ||
+    hostname.endsWith(".wonderwisdom.online") ||
+    hostname.endsWith(".pages.dev")
+  ) {
+    return true;
+  }
+
+  if (envOrigins) {
+    const allowed = envOrigins
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (allowed.includes(origin)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 app.use(
   "*",
   cors({
-    origin: (origin) => {
-      // 允许所有来自 wonderwisdom.online、Cloudflare Pages (*.pages.dev) 以及本地开发的请求
-      if (!origin) return "*";
-      if (
-        origin.endsWith(".pages.dev") ||
-        origin.endsWith("wonderwisdom.online") ||
-        origin.includes("localhost") ||
-        origin.includes("127.0.0.1")
-      ) {
-        return origin;
-      }
-      return origin;
+    origin: (origin, c) => {
+      if (!origin) return null;
+      return isAllowedOrigin(origin, c.env?.CORS_ORIGINS) ? origin : null;
     },
     allowHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
     allowMethods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
@@ -55,11 +91,12 @@ app.use(
 
 // ── Global Error Handling ──────────────────────────────────────────────────
 app.onError((err, c) => {
-  console.error("Worker Error:", err);
+  const reqId = c.get("requestId") || "-";
+  console.error(`Worker Error [${reqId}]:`, err);
   if (err instanceof HttpError) {
-    return c.json({ detail: err.detail }, err.status as any);
+    return c.json({ detail: err.detail, request_id: reqId }, err.status as any);
   }
-  return c.json({ detail: err.message || "Internal Server Error" }, 500);
+  return c.json({ detail: err.message || "Internal Server Error", request_id: reqId }, 500);
 });
 
 // ── Health Check ───────────────────────────────────────────────────────────
@@ -124,7 +161,9 @@ api.route("/companies/:company_id/commissions", commissionsRouter);
 api.route("/companies/:company_id/financials", financialsRouter);
 api.route("/companies/:company_id/compliance", complianceRouter);
 api.route("/expenses", expensesRouter);
+api.route("/quant", quantRouter);
 api.route("/", fipRouter);
+api.route("/", monitorRouter);
 // 官网公开接口：/api/geo、/api/insurance-inquiry、/api/xhs-generate、
 // /api/articles/:slug（客户通讯全文，鉴权后返回）
 api.route("/", publicRouter);
@@ -159,6 +198,24 @@ async function refreshPortfolioStats(env: Env, limit = 6) {
   let ok = 0;
   let failed = 0;
 
+  // 先按标的去重预热行情缓存，避免多个组合持有同一标的新增重复外部请求
+  if (rows.length > 0) {
+    try {
+      const placeholders = rows.map(() => "?").join(",");
+      const { results: isinRows } = await env.DB.prepare(
+        `SELECT DISTINCT isin FROM transactions WHERE portfolio_id IN (${placeholders}) AND isin NOT LIKE 'CASH_%'`
+      )
+        .bind(...rows.map((r) => r.id))
+        .all<{ isin: string }>();
+      const uniqueIsins = (isinRows || []).map((r) => r.isin).filter(Boolean);
+      for (let i = 0; i < uniqueIsins.length; i += 4) {
+        await Promise.allSettled(uniqueIsins.slice(i, i + 4).map((isin) => getMarketData(env.DB, isin)));
+      }
+    } catch (e) {
+      console.warn("[cron] unique ISIN pre-warm failed:", e);
+    }
+  }
+
   for (let i = 0; i < rows.length; i += 2) {
     const batch = rows.slice(i, i + 2);
     const settled = await Promise.allSettled(
@@ -191,6 +248,27 @@ export default {
   fetch: app.fetch,
   async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext) {
     console.log("Daily Cron Triggered:", event.cron);
-    ctx.waitUntil(refreshPortfolioStats(env));
+    ctx.waitUntil(
+      Promise.allSettled([
+        refreshPortfolioStats(env).then((res) => {
+          if (res.failed > 0) {
+            return sendQuantAlert(
+              env,
+              "FIS 組合定時刷新部分失敗",
+              [`ok=${res.ok}, failed=${res.failed}, total=${res.total}`],
+              "WARN"
+            );
+          }
+        }),
+        runQuantWatchdog(env).then((rep) => {
+          if (!rep.healthy) {
+            console.warn("[quant-watchdog] findings:", JSON.stringify(rep));
+          }
+        }),
+        runDailyPortfolioMonitor(env).then((mon) => {
+          console.log(`[cron] portfolio monitor checked=${mon.checked} alerts=${mon.alerts}`);
+        }),
+      ])
+    );
   },
 };

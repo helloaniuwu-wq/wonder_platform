@@ -98,30 +98,30 @@ const RebalanceModal = ({
   // ─────────────────────────────────────────────────────────────────
   const renderDateStep = () => (
     <div style={{ padding: '12px 0' }}>
-      <p style={{ color: 'rgba(255,255,255,0.55)', fontSize: '0.88rem', marginBottom: 28, lineHeight: 1.6 }}>
-        选择基准日期，系统将按照该日的市场价格计算每个资产的<strong style={{ color: '#a5b4fc' }}>当前实际占比</strong>，
+      <p style={{ color: 'var(--text-secondary)', fontSize: '0.88rem', marginBottom: 24, lineHeight: 1.6 }}>
+        选择基准日期，系统将按照该日的市场价格计算每个资产的<strong style={{ color: 'var(--accent-secondary)' }}>当前实际占比</strong>，
         然后您可以在此基础上设定新的目标权重并一键再平衡。
       </p>
 
       <div style={{
-        display: 'flex', alignItems: 'center', gap: 16,
-        background: 'rgba(99,102,241,0.08)', border: '1px solid rgba(99,102,241,0.25)',
-        borderRadius: 12, padding: '20px 24px', marginBottom: 32
+        display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap',
+        background: 'var(--surface-subtle)', border: '1px solid var(--border-subtle)',
+        borderRadius: 12, padding: '20px 24px', marginBottom: 28
       }}>
-        <Calendar size={20} style={{ color: '#818cf8', flexShrink: 0 }} />
+        <Calendar size={20} style={{ color: 'var(--accent-secondary)', flexShrink: 0 }} />
         <div>
-          <div style={{ color: 'rgba(255,255,255,0.5)', fontSize: '0.78rem', marginBottom: 6 }}>计算基准日期</div>
+          <div style={{ color: 'var(--text-secondary)', fontSize: '0.78rem', marginBottom: 6, fontWeight: 600 }}>计算基准日期</div>
           <input
             type="date"
             value={rebalanceDate}
             onChange={e => setRebalanceDate(e.target.value)}
             style={{
-              background: 'rgba(255,255,255,0.07)', border: '1px solid rgba(99,102,241,0.5)',
-              borderRadius: 8, color: '#fff', padding: '8px 14px', fontSize: '1rem', cursor: 'pointer'
+              background: 'var(--surface-inset, var(--bg-primary))', border: '1px solid var(--border-strong, var(--border-subtle))',
+              borderRadius: 8, color: 'var(--text-primary)', padding: '8px 14px', fontSize: '1rem', cursor: 'pointer'
             }}
           />
         </div>
-        <div style={{ marginLeft: 8, fontSize: '0.8rem', color: 'rgba(255,255,255,0.35)' }}>
+        <div style={{ marginLeft: 8, fontSize: '0.82rem', color: 'var(--text-secondary)' }}>
           {rebalanceDate === new Date().toISOString().split('T')[0]
             ? '📡 实时价格（今天）'
             : '📅 历史价格（该日收盘价）'}
@@ -147,9 +147,9 @@ const RebalanceModal = ({
   //  SUB-STEP: loading
   // ─────────────────────────────────────────────────────────────────
   const renderLoading = () => (
-    <div style={{ textAlign: 'center', padding: '60px 0', color: 'rgba(255,255,255,0.5)' }}>
-      <RefreshCw size={32} style={{ animation: 'spin 1s linear infinite', marginBottom: 16, color: '#818cf8' }} />
-      <div>正在按 <strong style={{ color: '#a5b4fc' }}>{rebalanceDate}</strong> 的价格计算持仓权重…</div>
+    <div style={{ textAlign: 'center', padding: '60px 0', color: 'var(--text-secondary)' }}>
+      <RefreshCw size={32} style={{ animation: 'spin 1s linear infinite', marginBottom: 16, color: 'var(--accent-secondary)' }} />
+      <div>正在按 <strong style={{ color: 'var(--accent-secondary)' }}>{rebalanceDate}</strong> 的价格计算持仓权重…</div>
     </div>
   );
 
@@ -161,15 +161,15 @@ const RebalanceModal = ({
       {/* Date badge */}
       <div style={{
         display: 'inline-flex', alignItems: 'center', gap: 8,
-        background: 'rgba(99,102,241,0.12)', border: '1px solid rgba(99,102,241,0.25)',
+        background: 'var(--surface-subtle)', border: '1px solid var(--border-subtle)',
         borderRadius: 20, padding: '4px 14px', marginBottom: 16, fontSize: '0.8rem'
       }}>
-        <Calendar size={12} style={{ color: '#818cf8' }} />
-        <span style={{ color: 'rgba(255,255,255,0.5)' }}>基准日期：</span>
-        <strong style={{ color: '#a5b4fc' }}>{rebalanceDate}</strong>
+        <Calendar size={12} style={{ color: 'var(--accent-secondary)' }} />
+        <span style={{ color: 'var(--text-secondary)' }}>基准日期：</span>
+        <strong style={{ color: 'var(--accent-secondary)' }}>{rebalanceDate}</strong>
         <button
           onClick={() => { setSubStep('date'); setLiveWeights([]); }}
-          style={{ background: 'none', border: 'none', color: '#818cf8', cursor: 'pointer', fontSize: '0.78rem', paddingLeft: 4 }}
+          style={{ background: 'none', border: 'none', color: 'var(--accent-color)', cursor: 'pointer', fontSize: '0.78rem', paddingLeft: 4, fontWeight: 600 }}
         >
           重新选择 ›
         </button>
@@ -192,11 +192,11 @@ const RebalanceModal = ({
               return (
                 <tr key={isin}>
                   <td>
-                    <div style={{ fontWeight: 600, fontSize: '0.88rem' }}>{name !== isin ? name : isin}</div>
-                    <div style={{ fontSize: '0.73rem', color: 'rgba(255,255,255,0.35)', marginTop: 2 }}>{isin}</div>
+                    <div style={{ fontWeight: 600, fontSize: '0.88rem', color: 'var(--text-primary)' }}>{name !== isin ? name : isin}</div>
+                    <div style={{ fontSize: '0.73rem', color: 'var(--text-muted)', marginTop: 2 }}>{isin}</div>
                   </td>
                   <td style={{ textAlign: 'right' }}>
-                    <span style={{ fontWeight: 600, color: '#94a3b8' }}>{weight_pct}%</span>
+                    <span style={{ fontWeight: 600, color: 'var(--text-secondary)' }}>{weight_pct}%</span>
                   </td>
                   <td style={{ textAlign: 'center' }}>
                     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4 }}>
@@ -210,14 +210,14 @@ const RebalanceModal = ({
                         onChange={e => handleWeightChange(isin, e.target.value)}
                         style={{
                           width: 78,
-                          background: hasTarget ? 'rgba(99,102,241,0.15)' : 'rgba(255,255,255,0.06)',
-                          border: `1px solid ${hasTarget ? 'rgba(99,102,241,0.6)' : 'rgba(255,255,255,0.14)'}`,
-                          borderRadius: 6, color: hasTarget ? '#a5b4fc' : 'rgba(255,255,255,0.38)',
+                          background: hasTarget ? 'rgba(var(--accent-secondary-rgb, 99, 102, 241), 0.12)' : 'var(--surface-inset, var(--surface-subtle))',
+                          border: `1px solid ${hasTarget ? 'var(--accent-secondary)' : 'var(--border-subtle)'}`,
+                          borderRadius: 6, color: hasTarget ? 'var(--accent-secondary)' : 'var(--text-primary)',
                           padding: '6px 8px', fontSize: '0.93rem', fontWeight: hasTarget ? 700 : 400,
                           textAlign: 'right',
                         }}
                       />
-                      <span style={{ color: 'rgba(255,255,255,0.28)', fontSize: '0.85rem' }}>%</span>
+                      <span style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>%</span>
                       {hasTarget && Math.abs(parseFloat(targetVal) - weight_pct) > 0.1 && (
                         <span style={{ 
                           fontSize: '0.75rem', 
@@ -225,7 +225,7 @@ const RebalanceModal = ({
                           marginLeft: 6,
                           width: '42px',
                           textAlign: 'left',
-                          color: parseFloat(targetVal) > weight_pct ? '#10b981' : '#f43f5e' 
+                          color: parseFloat(targetVal) > weight_pct ? 'var(--success, #10b981)' : 'var(--danger, #f43f5e)' 
                         }}>
                           {parseFloat(targetVal) > weight_pct ? 'BUY' : 'SELL'}
                         </span>
@@ -243,20 +243,20 @@ const RebalanceModal = ({
       <div style={{
         display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16,
         padding: '9px 16px', borderRadius: 8, fontSize: '0.84rem',
-        background: weightOver  ? 'rgba(244,63,94,0.1)' : weightUnder ? 'rgba(251,191,36,0.07)' : weightOk ? 'rgba(16,185,129,0.08)' : 'rgba(255,255,255,0.04)',
-        border: `1px solid ${weightOver ? 'rgba(244,63,94,0.35)' : weightUnder ? 'rgba(251,191,36,0.28)' : weightOk ? 'rgba(16,185,129,0.28)' : 'rgba(255,255,255,0.09)'}`,
+        background: weightOver ? 'rgba(244,63,94,0.1)' : weightUnder ? 'rgba(245,158,11,0.1)' : weightOk ? 'rgba(16,185,129,0.1)' : 'var(--surface-subtle)',
+        border: `1px solid ${weightOver ? 'rgba(244,63,94,0.35)' : weightUnder ? 'rgba(245,158,11,0.35)' : weightOk ? 'rgba(16,185,129,0.35)' : 'var(--border-subtle)'}`,
       }}>
-        <span style={{ color: 'rgba(255,255,255,0.5)' }}>目标合计</span>
+        <span style={{ color: 'var(--text-secondary)' }}>目标合计</span>
         <span style={{
           fontWeight: 700, fontSize: '1.1rem',
-          color: weightOver ? '#f43f5e' : weightUnder ? '#fbbf24' : weightOk ? '#10b981' : 'rgba(255,255,255,0.35)'
+          color: weightOver ? 'var(--danger, #f43f5e)' : weightUnder ? 'var(--warning, #d97706)' : weightOk ? 'var(--success, #10b981)' : 'var(--text-muted)'
         }}>
           {r2(totalTargetPct)}%
         </span>
-        <span style={{ color: 'rgba(255,255,255,0.2)', fontSize: '0.78rem' }}>/ 100%</span>
-        {weightOver  && <span style={{ color: '#f43f5e' }}>超过 100%，请减少 {r2(totalTargetPct - 100)}%</span>}
-        {weightUnder && <span style={{ color: '#fbbf24' }}>还差 <strong>{r2(100 - totalTargetPct)}%</strong>，权重之和必须等于 100%</span>}
-        {weightOk    && <span style={{ color: '#10b981' }}>✓ 已满 100%，可以计算</span>}
+        <span style={{ color: 'var(--text-muted)', fontSize: '0.78rem' }}>/ 100%</span>
+        {weightOver  && <span style={{ color: 'var(--danger, #f43f5e)' }}>超过 100%，请减少 {r2(totalTargetPct - 100)}%</span>}
+        {weightUnder && <span style={{ color: 'var(--warning, #d97706)' }}>还差 <strong>{r2(100 - totalTargetPct)}%</strong>，权重之和必须等于 100%</span>}
+        {weightOk    && <span style={{ color: 'var(--success, #10b981)' }}>✓ 已满 100%，可以计算</span>}
       </div>
 
       {/* Buttons */}
@@ -284,7 +284,7 @@ const RebalanceModal = ({
   );
 
   // ─────────────────────────────────────────────────────────────────
-  //  STEP 2: trade preview (unchanged)
+  //  STEP 2: trade preview
   // ─────────────────────────────────────────────────────────────────
   const renderStep2 = () => {
     const rbCcy = rebalancePreview.base_currency || 'USD';
@@ -294,25 +294,25 @@ const RebalanceModal = ({
       <div>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10, marginBottom: 16 }}>
           {[
-            { label: `Total NAV (${rbCcy})`,  value: fmt(rebalancePreview.total_nav_base),   color: '#10b981', bg: 'rgba(16,185,129,0.1)',  bdr: 'rgba(16,185,129,0.3)' },
-            { label: `Cash Pool (${rbCcy})`,  value: fmt(rebalancePreview.total_cash_base),  color: '#fbbf24', bg: 'rgba(251,191,36,0.1)',  bdr: 'rgba(251,191,36,0.3)' },
-            { label: 'Cash % of NAV',          value: `${rebalancePreview.cash_pct?.toFixed(1)}%`, color: '#a855f7', bg: 'rgba(168,85,247,0.1)', bdr: 'rgba(168,85,247,0.3)' },
+            { label: `Total NAV (${rbCcy})`,  value: fmt(rebalancePreview.total_nav_base),   color: 'var(--success, #10b981)', bg: 'rgba(16,185,129,0.08)',  bdr: 'rgba(16,185,129,0.28)' },
+            { label: `Cash Pool (${rbCcy})`,  value: fmt(rebalancePreview.total_cash_base),  color: 'var(--warning, #d97706)', bg: 'rgba(245,158,11,0.08)',  bdr: 'rgba(245,158,11,0.28)' },
+            { label: 'Cash % of NAV',          value: `${rebalancePreview.cash_pct?.toFixed(1)}%`, color: 'var(--accent-secondary)', bg: 'rgba(168,85,247,0.08)', bdr: 'rgba(168,85,247,0.28)' },
           ].map(c => (
             <div key={c.label} style={{ background: c.bg, border: `1px solid ${c.bdr}`, borderRadius: 8, padding: '10px 14px', textAlign: 'center' }}>
-              <div style={{ color: 'rgba(255,255,255,0.45)', fontSize: '0.74rem', marginBottom: 4 }}>{c.label}</div>
+              <div style={{ color: 'var(--text-secondary)', fontSize: '0.74rem', marginBottom: 4 }}>{c.label}</div>
               <div style={{ color: c.color, fontWeight: 700, fontSize: '1.05rem' }}>{c.value}</div>
             </div>
           ))}
         </div>
 
         {rebalancePreview.total_cash_base > 0 && (
-          <div style={{ background: 'rgba(251,191,36,0.07)', border: '1px solid rgba(251,191,36,0.2)', borderRadius: 8, padding: '9px 14px', marginBottom: 14, fontSize: '0.81rem', color: 'rgba(255,255,255,0.6)' }}>
-            💡 <strong style={{ color: '#fbbf24' }}>Dividend Cash:</strong> 闲置现金（含分红）已计入 NAV，BUY 指令将把现金部署回目标资产。
+          <div style={{ background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.25)', borderRadius: 8, padding: '9px 14px', marginBottom: 14, fontSize: '0.81rem', color: 'var(--text-secondary)' }}>
+            💡 <strong style={{ color: 'var(--warning, #d97706)' }}>Dividend Cash:</strong> 闲置现金（含分红）已计入 NAV，BUY 指令将把现金部署回目标资产。
           </div>
         )}
 
-        <p style={{ color: 'rgba(255,255,255,0.4)', marginBottom: 14, fontSize: '0.82rem' }}>
-          以 <strong style={{ color: '#a5b4fc' }}>{rebalancePreview.as_of_date || rebalanceDate}</strong> 价格计算所需交易：
+        <p style={{ color: 'var(--text-secondary)', marginBottom: 14, fontSize: '0.82rem' }}>
+          以 <strong style={{ color: 'var(--accent-secondary)' }}>{rebalancePreview.as_of_date || rebalanceDate}</strong> 价格计算所需交易：
         </p>
 
         <div className="table-container" style={{ maxHeight: '320px', overflowY: 'auto', marginBottom: 20 }}>
@@ -326,39 +326,41 @@ const RebalanceModal = ({
               {(rebalancePreview?.trades || []).map((t, i) => {
                 const cash = t.is_cash;
                 const sym  = getCurrencySymbol(t.currency || 'USD');
-                const ac   = cash ? (t.action === 'DEPLOY' ? '#fbbf24' : '#94a3b8') : (t.action === 'BUY' ? '#10b981' : '#f43f5e');
+                const ac   = cash ? (t.action === 'DEPLOY' ? 'var(--warning, #d97706)' : 'var(--text-secondary)') : (t.action === 'BUY' ? 'var(--success, #10b981)' : 'var(--danger, #f43f5e)');
                 return (
-                  <tr key={i} style={cash ? { background: 'rgba(251,191,36,0.05)', borderTop: '1px solid rgba(251,191,36,0.18)' } : {}}>
+                  <tr key={i} style={cash ? { background: 'rgba(245,158,11,0.05)', borderTop: '1px solid rgba(245,158,11,0.2)' } : {}}>
                     <td>
-                      <div style={{ fontWeight: 600, color: cash ? '#fbbf24' : undefined }}>{t.name || t.isin}</div>
-                      <div className="isin-badge" style={cash ? { background: 'rgba(251,191,36,0.14)', color: '#fcd34d' } : {}}>{t.isin}</div>
+                      <div style={{ fontWeight: 600, color: cash ? 'var(--warning, #d97706)' : 'var(--text-primary)' }}>{t.name || t.isin}</div>
+                      <div className="isin-badge" style={cash ? { background: 'rgba(245,158,11,0.14)', color: 'var(--warning, #d97706)' } : {}}>{t.isin}</div>
                     </td>
-                    <td><span style={{ color: ac, fontWeight: 700, background: `${ac}18`, padding: '3px 8px', borderRadius: 5, fontSize: '0.81rem' }}>{t.action}</span></td>
-                    <td style={{ color: cash ? 'rgba(255,255,255,0.28)' : undefined }}>{cash ? '—' : t.shares}</td>
-                    <td style={{ color: cash ? 'rgba(255,255,255,0.28)' : undefined }}>
+                    <td><span style={{ color: ac, fontWeight: 700, background: 'var(--surface-subtle)', border: '1px solid var(--border-subtle)', padding: '3px 8px', borderRadius: 5, fontSize: '0.81rem' }}>{t.action}</span></td>
+                    <td style={{ color: cash ? 'var(--text-muted)' : 'var(--text-primary)', fontFamily: 'var(--font-mono)' }}>
+                      {cash ? '—' : Number(t.shares || 0).toLocaleString(undefined, { maximumFractionDigits: 4 })}
+                    </td>
+                    <td style={{ color: cash ? 'var(--text-muted)' : 'var(--text-primary)' }}>
                       {cash ? '—' : `${sym}${t.price?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
                     </td>
                     <td>
                       {cash ? (
-                        <><span style={{ color: '#fbbf24', fontWeight: 600 }}>{sym}{t.amount?.toLocaleString(undefined, { maximumFractionDigits: 0 })}</span>
-                        <div style={{ fontSize: '0.71rem', color: 'rgba(255,255,255,0.28)' }}>pool balance</div></>
+                        <><span style={{ color: 'var(--warning, #d97706)', fontWeight: 600 }}>{sym}{t.amount?.toLocaleString(undefined, { maximumFractionDigits: 0 })}</span>
+                        <div style={{ fontSize: '0.71rem', color: 'var(--text-muted)' }}>pool balance</div></>
                       ) : (
                         <>{sym}{t.amount?.toLocaleString()}
-                        {t.currency !== 'USD' && t.amount_usd && <div style={{ fontSize: '0.71rem', color: 'rgba(255,255,255,0.28)' }}>≈ ${t.amount_usd?.toLocaleString()}</div>}</>
+                        {t.currency !== 'USD' && t.amount_usd && <div style={{ fontSize: '0.71rem', color: 'var(--text-muted)' }}>≈ ${t.amount_usd?.toLocaleString()}</div>}</>
                       )}
                     </td>
                     <td>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                        <span style={{ color: cash ? '#fbbf24' : 'rgba(255,255,255,0.4)', fontSize: '0.88rem' }}>{t.current_weight}%</span>
-                        <span style={{ color: 'rgba(255,255,255,0.22)' }}>→</span>
-                        <span style={{ fontWeight: 700, color: cash ? (t.target_weight < t.current_weight ? '#10b981' : '#94a3b8') : undefined }}>{t.target_weight}%</span>
+                        <span style={{ color: cash ? 'var(--warning, #d97706)' : 'var(--text-secondary)', fontSize: '0.88rem' }}>{t.current_weight}%</span>
+                        <span style={{ color: 'var(--text-muted)' }}>→</span>
+                        <span style={{ fontWeight: 700, color: cash ? (t.target_weight < t.current_weight ? 'var(--success, #10b981)' : 'var(--text-secondary)') : 'var(--text-primary)' }}>{t.target_weight}%</span>
                       </div>
                     </td>
                   </tr>
                 );
               })}
               {!rebalancePreview?.trades?.length && (
-                <tr><td colSpan="6" style={{ textAlign: 'center', padding: 40, color: 'rgba(255,255,255,0.32)' }}>✅ 组合已完全平衡，无需交易</td></tr>
+                <tr><td colSpan="6" style={{ textAlign: 'center', padding: 40, color: 'var(--text-muted)' }}>✅ 组合已完全平衡，无需交易</td></tr>
               )}
             </tbody>
           </table>
@@ -367,7 +369,7 @@ const RebalanceModal = ({
         <div style={{ display: 'flex', gap: 12 }}>
           <button
             onClick={() => { setRebalancePreview(null); setSubStep('edit'); }}
-            style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.14)', borderRadius: 8, color: 'rgba(255,255,255,0.5)', padding: '10px 16px', cursor: 'pointer', fontSize: '0.84rem', display: 'flex', alignItems: 'center', gap: 6 }}
+            style={{ background: 'var(--surface-subtle)', border: '1px solid var(--border-subtle)', borderRadius: 8, color: 'var(--text-secondary)', padding: '10px 16px', cursor: 'pointer', fontSize: '0.84rem', display: 'flex', alignItems: 'center', gap: 6 }}
           >
             ← 返回修改目标
           </button>
@@ -400,11 +402,12 @@ const RebalanceModal = ({
           <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 5, fontSize: '0.77rem' }}>
             {breadcrumbs.map((b, i) => (
               <React.Fragment key={b.key}>
-                {i > 0 && <ChevronRight size={10} style={{ color: 'rgba(255,255,255,0.2)' }} />}
+                {i > 0 && <ChevronRight size={10} style={{ color: 'var(--text-muted)' }} />}
                 <span style={{
                   padding: '3px 10px', borderRadius: 20, fontWeight: 600,
-                  background: activeBC === b.key ? 'rgba(99,102,241,0.3)' : 'rgba(255,255,255,0.06)',
-                  color: activeBC === b.key ? '#a5b4fc' : 'rgba(255,255,255,0.28)',
+                  background: activeBC === b.key ? 'rgba(var(--accent-color-rgb, 16, 185, 129), 0.14)' : 'var(--surface-subtle)',
+                  color: activeBC === b.key ? 'var(--accent-color)' : 'var(--text-muted)',
+                  border: `1px solid ${activeBC === b.key ? 'var(--accent-color)' : 'var(--border-subtle)'}`,
                 }}>{b.label}</span>
               </React.Fragment>
             ))}

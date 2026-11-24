@@ -2,7 +2,7 @@
  * 策略实验室：标的与权重、蒙特卡洛参数、储蓄险/ILP、方案保存与加载、报告生成。
  * 从 App.jsx 原样搬出，行为不变。
  */
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { authHeaders } from '../utils/auth';
 
 export function useStrategyLab({ activeTab, currentUser }) {
@@ -13,6 +13,8 @@ export function useStrategyLab({ activeTab, currentUser }) {
   const [labLoading, setLabLoading] = useState(false);
   const [labError, setLabError] = useState(null);
   const [labDaysBack, setLabDaysBack] = useState(1825);
+  const [labBaseCurrency, setLabBaseCurrency] = useState('USD');
+  const [stressTestData, setStressTestData] = useState(null);
   // 仅「自动优化」模式使用：单一资产权重上限（自定义模式恒按 1.0 提交，行为与之前一致）
   const [labMaxWeight, setLabMaxWeight] = useState(0.35);
   const [labMode, setLabMode] = useState('custom'); // 'auto' or 'custom'
@@ -37,7 +39,7 @@ export function useStrategyLab({ activeTab, currentUser }) {
     target: 2000000,
     stress: false,
     inflation: 2.5,
-    cma_mode: 'shrunk'
+    cma_mode: 'forward_looking'
   });
   const [labTab, setLabTab] = useState('optimization'); // optimization, backtest
   const [showLabDebug, setShowLabDebug] = useState(false);
@@ -127,20 +129,29 @@ export function useStrategyLab({ activeTab, currentUser }) {
 
   // ── Strategy Lab Handlers ────────────────────────────────────────────────
 
-  // 点击「预览报告」→ 先弹客户信息弹窗
+  // 点击「预览报告」→ 若已有顾问页带来的完整客户画像，直接开启建议书；否则先弹补充窗
   const handleGenerateReport = () => {
     if (!labData?.monte_carlo) {
       alert('请先执行蒙特卡洛测算，再生成报告。');
       return;
     }
-    setClientInfoModalOpen(true);
+    if (
+      clientInfo &&
+      (clientInfo.name || clientInfo.extra_notes || clientInfo.risk_label_zh || clientInfo.basket_title)
+    ) {
+      setReportModalOpen(true);
+    } else {
+      setClientInfoModalOpen(true);
+    }
   };
 
-  // 用户填写信息后确认 → 保存并打开报告
+  // 用户填写信息后确认 → 合并保存；若当前未打开报告则打开建议书
   const handleClientInfoConfirm = (info) => {
-    setClientInfo(info);
+    setClientInfo((prev) => ({ ...(prev || {}), ...info }));
     setClientInfoModalOpen(false);
-    setReportModalOpen(true);
+    if (!briefReportOpen) {
+      setReportModalOpen(true);
+    }
   };
 
   // 用户点击跳过 → 清空客户信息，直接打开报告
@@ -150,8 +161,8 @@ export function useStrategyLab({ activeTab, currentUser }) {
     setReportModalOpen(true);
   };
 
-  // 后端 Word 文档生成（独立触发，与网页报告分开）
-  const handleGenerateWordReport = async () => {
+  // 后端 Word 文档生成（支持把网页已生成的 AI/人工编辑文案直接写入 .docx）
+  const handleGenerateWordReport = async (customNarrative = null) => {
     if (!labData?.monte_carlo) {
       alert('请先执行蒙特卡洛测算，再生成报告。');
       return;
@@ -160,10 +171,13 @@ export function useStrategyLab({ activeTab, currentUser }) {
     try {
       const res = await fetch('/api/lab/generate-report', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
         body: JSON.stringify({
           lab_result: labData,
           client_info: clientInfo || {},
+          stress_test: stressTestData || null,
+          base_currency: labBaseCurrency || labData.base_currency || 'USD',
+          ai_narrative: customNarrative && typeof customNarrative === 'object' ? customNarrative : null,
           mc_settings: {
             capital:            Number(labMcSettings.capital),
             years:              Number(labMcSettings.years),
@@ -173,6 +187,7 @@ export function useStrategyLab({ activeTab, currentUser }) {
             withdrawal_2:       Number(labMcSettings.withdrawal_2 || 0),
             withdrawal_start_2: Number(labMcSettings.withdrawal_start_2 || 1),
             withdrawal_end_2:   Number(labMcSettings.withdrawal_end_2 || 100),
+            withdrawal_inflation: Boolean(labMcSettings.withdrawal_inflation),
             contribution:       Number(labMcSettings.contribution),
             contribution_start: Number(labMcSettings.contribution_start),
             contribution_years: Number(labMcSettings.contribution_years),
@@ -191,7 +206,7 @@ export function useStrategyLab({ activeTab, currentUser }) {
       const a    = document.createElement('a');
       a.href     = url;
       const clientSuffix = clientInfo?.name ? `_${clientInfo.name}` : '';
-      a.download = `wealth_report${clientSuffix}_${new Date().toISOString().slice(0, 10)}.docx`;
+      a.download = `WONDER_Wealth_IPS${clientSuffix}_${new Date().toISOString().slice(0, 10)}.docx`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
@@ -213,25 +228,36 @@ export function useStrategyLab({ activeTab, currentUser }) {
     setLabInput('');
   };
 
+  const handleAddMultipleLabIsins = (ids = [], replace = false) => {
+    const cleaned = ids.map((x) => String(x || '').trim().toUpperCase()).filter(Boolean);
+    if (cleaned.length === 0) return;
+    setLabIsins((prev) => {
+      const next = replace ? Array.from(new Set(cleaned)) : Array.from(new Set([...prev, ...cleaned]));
+      return next;
+    });
+  };
+
   const handleRemoveLabIsin = (isin) => {
     setLabIsins(labIsins.filter(i => i !== isin));
   };
 
   // ─── Scenarios: Save / Load / Delete ───────────────────────────────────────
-  const fetchSavedScenarios = () =>
-    fetch('/api/lab/scenarios')
+  const fetchSavedScenarios = useCallback(() => {
+    if (!currentUser) return Promise.resolve();
+    return fetch('/api/lab/scenarios', { headers: authHeaders() })
       .then(async (res) => {
         if (!res.ok) { console.warn('fetchSavedScenarios: backend not ready (status', res.status, ')'); return; }
         const data = await res.json();
         setSavedScenarios(Array.isArray(data) ? data : []);
       })
       .catch((e) => console.error('fetchSavedScenarios:', e));
+  }, [currentUser]);
 
   useEffect(() => {
-    if (activeTab === 'lab') {
+    if (activeTab === 'lab' && currentUser) {
       fetchSavedScenarios();
     }
-  }, [activeTab]);
+  }, [activeTab, currentUser, fetchSavedScenarios]);
 
   const handleSaveScenario = async () => {
     if (!labData || !scenarioName.trim()) return;
@@ -258,7 +284,7 @@ export function useStrategyLab({ activeTab, currentUser }) {
       };
       const res = await fetch('/api/lab/scenarios/save', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
         body: JSON.stringify({
           name: scenarioName.trim(),
           assets: labIsins,
@@ -291,7 +317,7 @@ export function useStrategyLab({ activeTab, currentUser }) {
 
   const handleLoadScenario = async (id) => {
     try {
-      const res = await fetch(`/api/lab/scenarios/${id}`);
+      const res = await fetch(`/api/lab/scenarios/${id}`, { headers: authHeaders() });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
 
@@ -316,7 +342,7 @@ export function useStrategyLab({ activeTab, currentUser }) {
         target: 2000000,
         stress: false,
         inflation: 2.5,
-        cma_mode: 'shrunk',
+        cma_mode: 'forward_looking',
         ...cleanMcSettings,
       };
 
@@ -398,7 +424,7 @@ export function useStrategyLab({ activeTab, currentUser }) {
 
   const handleDeleteScenario = async (id) => {
     if (!window.confirm('确认删除此方案？此操作不可撤销。')) return;
-    await fetch(`/api/lab/scenarios/${id}`, { method: 'DELETE' });
+    await fetch(`/api/lab/scenarios/${id}`, { method: 'DELETE', headers: authHeaders() });
     fetchSavedScenarios();
   };
 
@@ -406,7 +432,7 @@ export function useStrategyLab({ activeTab, currentUser }) {
     try {
       const res = await fetch(`/api/lab/scenarios/${id}`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
         body: JSON.stringify({ name: newName })
       });
       if (!res.ok) throw new Error("Rename failed");
@@ -414,6 +440,14 @@ export function useStrategyLab({ activeTab, currentUser }) {
     } catch (e) {
       alert('重命名失败: ' + e.message);
     }
+  };
+
+  const handleNewBlankStrategy = () => {
+    setLabIsins([]);
+    setLabCustomWeights({});
+    setLabData(null);
+    setLabError(null);
+    setLabMode('custom');
   };
   // ───────────────────────────────────────────────────────────────────────────
 
@@ -463,6 +497,7 @@ export function useStrategyLab({ activeTab, currentUser }) {
         // 之前这里也除了一次，等于按 0.025% 折现，真实购买力曲线失真。
         mc_inflation: Number(labMcSettings.inflation),
         cma_mode: labMcSettings.cma_mode || 'shrunk',
+        base_currency: labBaseCurrency || 'USD',
         _ts: Date.now() // Bust cache
       };
       
@@ -483,12 +518,25 @@ export function useStrategyLab({ activeTab, currentUser }) {
       
       const res = await fetch('/api/lab/analyze', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
         body: JSON.stringify(payload)
       });
       const result = await res.json();
       if (!res.ok) throw new Error(result.detail || "Failed to analyze");
       setLabData(result);
+
+      // Fire historical stress-test replay asynchronously on target allocations
+      const targetPf = result[result.mc_target_label] || result.custom_portfolio || result.max_sharpe;
+      if (targetPf?.allocations) {
+        fetch('/api/quant/stress-test', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...authHeaders() },
+          body: JSON.stringify({ allocations: targetPf.allocations, currency: labBaseCurrency || 'USD' }),
+        })
+          .then((r) => (r.ok ? r.json() : null))
+          .then((st) => setStressTestData(st))
+          .catch(() => setStressTestData(null));
+      }
     } catch (err) {
       setLabError(err.message);
     } finally {
@@ -524,6 +572,9 @@ export function useStrategyLab({ activeTab, currentUser }) {
     setLabError,
     labDaysBack,
     setLabDaysBack,
+    labBaseCurrency,
+    setLabBaseCurrency,
+    stressTestData,
     labMaxWeight,
     setLabMaxWeight,
     labMode,
@@ -581,9 +632,11 @@ export function useStrategyLab({ activeTab, currentUser }) {
     handleClientInfoSkip,
     handleGenerateWordReport,
     handleAddLabIsin,
+    handleAddMultipleLabIsins,
     handleRemoveLabIsin,
     fetchSavedScenarios,
     handleSaveScenario,
+    handleNewBlankStrategy,
     handleLoadScenario,
     handleDeleteScenario,
     handleRenameScenario,

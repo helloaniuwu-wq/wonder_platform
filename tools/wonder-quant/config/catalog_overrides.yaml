@@ -1,0 +1,345 @@
+# Wonder Quant — 309 只基金产品库独立映射与清洗覆盖表（严格不改 Vault 原档案，遵循 R3）
+# 说明：
+# 1. non_trackable_slugs: Excel 历史导入残留的章节标题/表头行，不纳入量化抓取与前端展示
+# 2. slug_overrides: 修正代码清洗、交易所后缀、孪生分派/累积关系及币种
+
+non_trackable_slugs:
+  BD_Ticker: "Excel header row artifact (Ticker / Name)"
+  BD_Specialized Bond ETFs: "Excel section header artifact"
+  BD_主动管理的债券基金: "Excel section header artifact"
+
+slug_overrides:
+  # ── AIA 卓达智悦2 特殊代码清洗与核对纠偏（见 sources/核对报告_TMP2官方列表_20260901.md）──
+  D18_F:
+    code: D18
+    aia_code: D18
+    is_distributing: false
+  Z01_F:
+    yahoo_ticker: 0P00017XP8  # HK0000288743
+    code: Z01
+    aia_code: Z01
+    twin_code: V02
+    is_distributing: true
+  Z17_F:
+    code: Z17
+    aia_code: Z17
+    yahoo_ticker: 0P00014FO3
+    twin_code: I17
+    is_distributing: true
+  F:
+    yahoo_ticker: 0P00000RMP  # IE0004445015
+    code: R03
+    aia_code: R03
+    isin: IE0004445015
+    is_distributing: false
+  Z29_F:
+    code: Z29
+    aia_code: Z29
+    twin_code: CG9
+    is_distributing: true
+  Z07_F:
+    is_distributing: true
+  Z08_F:
+    yahoo_ticker: 0P00016QJW  # LU1282649901
+    is_distributing: true
+  Z12_F:
+    is_distributing: true
+  Z36_F:
+    yahoo_ticker: 0P00000SBX  # LU1882441907
+    is_distributing: true
+  Z22_F:
+    code: Z22
+    aia_code: Z22
+    currency: CNY
+    is_distributing: true
+  R53_F:
+    yahoo_ticker: 0P00069EK1  # LU2637788717
+    code: R53
+    aia_code: R53
+    currency: USD
+    is_distributing: false
+
+  # ── 欧洲 UCITS / 伦敦 / 法兰克福 / 巴黎 / 墨西哥对冲 ETF 交易所后缀 ──
+  BD_CBU7:
+    yahoo_ticker: CBU7.L
+    currency: USD
+  BD_CSH2:
+    yahoo_ticker: CSH2.L
+    currency: GBP
+  BD_IB01:
+    yahoo_ticker: IB01.L
+    currency: USD
+  BD_IWDA:
+    yahoo_ticker: IWDA.L
+    currency: USD
+    asset_class: 股票
+    benchmark_code: VT
+  BD_IWVG:
+    yahoo_ticker: IWVG.L
+    currency: USD
+    asset_class: 股票
+    benchmark_code: VT
+  BD_IWVL:
+    yahoo_ticker: IWVL.L
+    currency: USD
+    asset_class: 股票
+    benchmark_code: VT
+  BD_JREG:
+    yahoo_ticker: JREG.L
+    currency: USD
+    asset_class: 股票
+    benchmark_code: VT
+  BD_MXWO:
+    yahoo_ticker: MXWO.L
+    currency: USD
+    asset_class: 股票
+    benchmark_code: VT
+  BD_VHYA:
+    yahoo_ticker: VHYA.L
+    currency: USD
+    asset_class: 股票
+    benchmark_code: VT
+  BD_VHYD:
+    yahoo_ticker: VHYD.L
+    currency: USD
+    asset_class: 股票
+    benchmark_code: VT
+  BD_PRIP:
+    yahoo_ticker: PRIP.DE
+    currency: EUR
+  BD_PURC:
+    yahoo_ticker: PURC.DE
+    currency: EUR
+  BD_UHYC:
+    yahoo_ticker: UHYC.DE
+    currency: EUR
+    benchmark_code: HYG
+  BD_USHY:
+    yahoo_ticker: USHY
+    currency: USD
+    benchmark_code: HYG
+  BD_UYLX:
+    yahoo_ticker: UYLX.L
+    currency: USD
+  BD_YIEL:
+    yahoo_ticker: YIEL.PA
+    currency: EUR
+    benchmark_code: HYG
+  BD_I37MXN:
+    yahoo_ticker: I37MXN.MX
+    currency: MXN
+  BD_ID27:
+    yahoo_ticker: ID27.MX
+    currency: MXN
+  BD_IDTXX:
+    yahoo_ticker: IDTXX.MX
+    currency: MXN
+  BD_IMMXX:
+    yahoo_ticker: IMMXX.MX
+    currency: MXN
+  BD_VMSTx:
+    yahoo_ticker: VMSTX.MX
+    currency: MXN
+
+  # ── 港交所美元柜台货币市场 ETF ──
+  MM_9096:
+    code: 9096.HK
+    yahoo_ticker: 9096.HK
+    currency: USD
+    benchmark_code: BIL
+
+  # ── 内地场外公募基金（走东财/AkShare 复权净值，不走腾讯场内 ETF）──
+  CN_016701:
+    code: "016701"
+    cn_code: "016701"
+    primary_source: eastmoney_open
+    currency: CNY
+    benchmark_code: SPY
+  CN_100032:
+    code: "100032"
+    cn_code: "100032"
+    primary_source: eastmoney_open
+    currency: CNY
+    benchmark_code: sh510300
+
+  # ── 美股上市日本 ETF（区别于东京 .T 上市 ETF）──
+  JP_DFJ:
+    yahoo_ticker: DFJ
+    currency: USD
+    benchmark_code: 1306.T
+  JP_SCJ:
+    yahoo_ticker: SCJ
+    currency: USD
+    benchmark_code: 1306.T
+
+  # ── 欧洲 UCITS / 港版基金 ISIN → Yahoo/Morningstar 代码自动映射（已实测验证）──
+  A05_F:
+    yahoo_ticker: 0P00002C0G.HK  # HK0000133063 (242d)
+  A17_F:
+    yahoo_ticker: 0P00000YGF  # IE0032431581 (225d)
+  A19_F:
+    yahoo_ticker: 0P00001EVI  # IE0033528492 (233d)
+  A26_F:
+    yahoo_ticker: 0P00006F0O  # IE00B12V2V27 (234d)
+  A29_F:
+    yahoo_ticker: 0P00001EVH  # IE00B0JY6M65 (229d)
+  A30_F:
+    yahoo_ticker: 0P000027CH  # IE00B0VPN609 (224d)
+  A32_F:
+    yahoo_ticker: 0P000174GD  # IE00BYXW3230 (240d)
+  CG1_F:
+    yahoo_ticker: 0P00016RPQ  # LU1295551573 (244d)
+  D08_F:
+    yahoo_ticker: 0P00000B0U.F  # LU0078277505 (249d)
+  F02_F:
+    yahoo_ticker: 0P00001BIN  # HK0000055647 (237d)
+  F03_F:
+    yahoo_ticker: 0P00000ZJQ  # HK0000055712 (229d)
+  F05_F:
+    yahoo_ticker: 0P00001DU6  # HK0000055761 (233d)
+  F06_F:
+    yahoo_ticker: 0P00000YAP  # HK0000055746 (237d)
+  F07_F:
+    yahoo_ticker: 0P00000LV1  # LU0129465034 (230d)
+  F07_JPMJapan:
+    yahoo_ticker: 0P00000LV1  # LU0129465034 (230d)
+  F09_F:
+    yahoo_ticker: 0P00001BGR  # MU0129U00005 (225d)
+  F10_F:
+    yahoo_ticker: 0P00008UOH  # HK0000038148 (237d)
+  F14_F:
+    yahoo_ticker: 0P000019CU  # LU0210527791 (243d)
+  F15_F:
+    yahoo_ticker: 0P0000KOQK  # HK0000053956 (238d)
+  G03_F:
+    yahoo_ticker: LU0039217434-USD.LU  # LU0039217434 (243d)
+  HEQ_F:
+    yahoo_ticker: 0P00002C3A.HK  # HK0000073368 (242d)
+  I04_F:
+    yahoo_ticker: LU0075056555-USD.LU  # LU0075056555 (249d)
+  I07_F:
+    yahoo_ticker: LU0055631609-USD.LU  # LU0055631609 (248d)
+  I10_F:
+    yahoo_ticker: LU0072463663-USD.LU  # LU0072463663 (249d)
+  J03_F:
+    yahoo_ticker: 0P000013DK.HK  # LU0149537283 (244d)
+  J07_F:
+    yahoo_ticker: 0P00000EYU  # LU0133705839 (247d)
+  J08_F:
+    yahoo_ticker: 0P0000CUX4  # LU0270816068 (233d)
+  J14_F:
+    yahoo_ticker: 0P00007Y5K  # LU0269905484 (244d)
+  J15_F:
+    yahoo_ticker: 0P00000F2Z  # LU0133713346 (243d)
+  J16_F:
+    yahoo_ticker: 0P00001CEM  # LU0225285054 (248d)
+  J20_F:
+    yahoo_ticker: 0P0001S21Q  # LU2723852468 (247d)
+  L51_F:
+    yahoo_ticker: 0P0000GAMP  # IE00B2Q1FD82 (243d)
+  M06_F:
+    yahoo_ticker: IPGW.F  # LU0261950983 (252d)
+  N01_F:
+    yahoo_ticker: 0P00000SHW  # LU0149084633 (245d)
+  NB1_F:
+    yahoo_ticker: W4Y1.MU  # IE00B986J944 (253d)
+  P05_F:
+    yahoo_ticker: AZHI.F  # LU0348744763 (252d)
+  P08_F:
+    yahoo_ticker: 0P00019OTG  # LU1543697327 (239d)
+  P29_F:
+    yahoo_ticker: 0P0001KZ38.HK  # LU2236271966 (232d)
+  PC4_F:
+    yahoo_ticker: 0P0000VP5F  # IE0032590923 (241d)
+  Q01_F:
+    yahoo_ticker: 0P00008EPN  # IE0032834883 (238d)
+  Q02_F:
+    yahoo_ticker: 0P00001BJL  # IE0008370151 (242d)
+  Q03_F:
+    yahoo_ticker: 0P00000CAG  # IE0008368742 (234d)
+  R03_F:
+    yahoo_ticker: 0P00000RMP  # IE0004445015 (249d)
+  R51_F:
+    yahoo_ticker: 0P0001THN7  # LU2637788477 (241d)
+  R52_F:
+    yahoo_ticker: 0P0001V131  # LU2637788121 (241d)
+  T09_F:
+    yahoo_ticker: 0P0000YSXS  # LU0823414478 (242d)
+  U06_F:
+    yahoo_ticker: 0P00011GFO  # LU0994471687 (240d)
+  V02_F:
+    yahoo_ticker: 0P00017XPM  # HK0000288735 (239d)
+  V04_F:
+    yahoo_ticker: 0P0000M4KS  # HK0000264884 (239d)
+  V07_F:
+    yahoo_ticker: 0P00016UFV  # HK0000269149 (239d)
+  W06_F:
+    yahoo_ticker: 0P00000SBX  # LU1882441907 (244d)
+  W07_F:
+    yahoo_ticker: 0P0001DIJE  # LU1883839398 (243d)
+  X08_F:
+    yahoo_ticker: 0P0000S9JV  # IE00B3YV8M70 (241d)
+  X15_F:
+    yahoo_ticker: 0P0001EQDE  # IE00BFM0MP15 (240d)
+  Y02_F:
+    yahoo_ticker: 0P000135SK  # LU1057755800 (226d)
+  Y04_F:
+    yahoo_ticker: 0P0001LQKA  # LU2298064838 (242d)
+  Y22_F:
+    yahoo_ticker: 0P0001OMJD.HK  # LU2444192327 (229d)
+  Z03_F:
+    yahoo_ticker: 0P0000WAWO  # LU0784639295 (244d)
+  Z04_F:
+    yahoo_ticker: 0P00018JFH  # HK0000302353 (238d)
+  Z05_F:
+    yahoo_ticker: 0P00015GQT  # IE00B986J720 (246d)
+  Z06_F:
+    yahoo_ticker: 0P000188JF  # IE00BDCRKT87 (240d)
+  Z11_F:
+    yahoo_ticker: 0P0001CHSY  # LU1735825017 (226d)
+  Z13_F:
+    yahoo_ticker: 0P0000YWWN  # LU0937948932 (250d)
+  Z15_F:
+    yahoo_ticker: 0P0001EQDF  # IE00BFM0MQ22 (240d)
+  Z16_F:
+    yahoo_ticker: 0P0001BFGJ  # HK0000349578 (239d)
+  Z20_F:
+    yahoo_ticker: 0P0001STGK  # LU2802595194 (248d)
+  Z23_F:
+    yahoo_ticker: 0P00012I3A.HK  # LU1010890298 (244d)
+  Z24_F:
+    yahoo_ticker: 0P00018JFG.HK  # HK0000302346 (243d)
+  Z25_F:
+    yahoo_ticker: 0P0001LWJE.HK  # IE00BJN4SB86 (232d)
+  Z26_F:
+    yahoo_ticker: 0P0001BIN6.HK  # HK0000349875 (244d)
+  Z27_F:
+    yahoo_ticker: 0P0000Z079.HK  # LU0820562469 (229d)
+  Z28_F:
+    yahoo_ticker: 0P0001NSRH.HK  # LU2404266764 (240d)
+  Z30_F:
+    yahoo_ticker: 0P0001T8P9.HK  # LU2843782702 (244d)
+  Z31_F:
+    yahoo_ticker: 0P0001N9WQ  # IE0009MIBWU7 (249d)
+  Z32_F:
+    yahoo_ticker: 0P0001J3VA.HK  # LU2090071189 (237d)
+  Z33_F:
+    yahoo_ticker: 0P0001QM29  # IE0005OL40V9 (249d)
+  Z37_F:
+    yahoo_ticker: 0P000156P1.HK  # LU1149717743 (242d)
+  Z39_F:
+    yahoo_ticker: 0P0001R1CT.HK  # LU2621531008 (234d)
+  Z51_F:
+    yahoo_ticker: 0P0001THN6  # LU2637788550 (241d)
+  Z52_F:
+    yahoo_ticker: 0P0001V132  # LU2637788394 (241d)
+  Z66_F:
+    yahoo_ticker: 0P0001QUQ7.HK  # LU2585852838 (239d)
+  Z77_F:
+    yahoo_ticker: 0P0001RABL  # LU2585852911 (244d)
+  ZL1_F:
+    yahoo_ticker: 0P0000XU82  # IE00B4XJJ152 (243d)
+  ZP4_F:
+    yahoo_ticker: 0P0001K2ME  # IE00BJLTX873 (241d)
+  ZU6_F:
+    yahoo_ticker: 0P0000YZCY  # LU0937166394 (241d)

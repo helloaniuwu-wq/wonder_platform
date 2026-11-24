@@ -24,6 +24,7 @@ export interface VisionResult {
 export interface VisionOptions {
   maxTokens?: number;
   filename?: string;
+  mode?: "receipt" | "holdings";
 }
 
 /**
@@ -62,11 +63,12 @@ function firstJsonObject(text: string): Record<string, any> | null {
   return null;
 }
 
-// 只对这些「金额类」字段做数值化；含 id/code/number/name/date 的键一律跳过，
+// 只对这些「金额/份额类」字段做数值化；含 id/code/number/name/date 的键一律跳过，
 // 避免把纳税人识别号、发票号码、日期等字符串误转成数字。
-const NUMERIC_KEY = /(amount|total|rate|confidence|price|fee|commission|bonus|premium|subtotal|balance)/i;
+const NUMERIC_KEY =
+  /(amount|total|rate|confidence|price|fee|commission|bonus|premium|subtotal|balance|shares|units|quantity|market_value|value|cost|nav|weight|pct)/i;
 // 用锚定的 id 形态，不能用裸 "id"：confidence 里也含 "id" 子串，会被误排除。
-const NON_NUMERIC_KEY = /(^id$|_id\b|^_|code|number|no_|name|date|type|currency|desc)/i;
+const NON_NUMERIC_KEY = /(^id$|_id\b|^_|code|number|no_|name|date|type|currency|desc|symbol|isin)/i;
 
 function toNumber(value: unknown): number | null {
   if (typeof value === "number") return Number.isFinite(value) ? value : null;
@@ -80,23 +82,38 @@ function toNumber(value: unknown): number | null {
 }
 
 /**
- * 模型常把金额写成 "$1,463.0" / "1,463.00" / "10%" 这类字符串。
- * 不清洗的话 Number("$1,463.0") = NaN，落库会变成 0 或 NULL。
+ * 递归清洗视觉模型返回的对象及嵌套数组（兼容消费凭证与持仓明细表）。
  */
 function normalizeVisionData(data: Record<string, any>): Record<string, any> {
-  const out: Record<string, any> = { ...data };
-  for (const [key, value] of Object.entries(out)) {
-    if (value == null) continue;
-    if (NUMERIC_KEY.test(key) && !NON_NUMERIC_KEY.test(key) &&
-        (typeof value === "number" || typeof value === "string")) {
+  const out: Record<string, any> = {};
+  for (const [key, value] of Object.entries(data)) {
+    if (value == null) {
+      out[key] = value;
+      continue;
+    }
+    if (Array.isArray(value)) {
+      out[key] = value.map((item) =>
+        item && typeof item === "object" && !Array.isArray(item)
+          ? normalizeVisionData(item as Record<string, any>)
+          : item
+      );
+    } else if (typeof value === "object") {
+      out[key] = normalizeVisionData(value as Record<string, any>);
+    } else if (
+      NUMERIC_KEY.test(key) &&
+      !NON_NUMERIC_KEY.test(key) &&
+      (typeof value === "number" || typeof value === "string")
+    ) {
       let n = toNumber(value);
       // 有些模型把 confidence 返回成 0.95，库里统一按 0-100 存
       if (key === "confidence" && n !== null && n > 0 && n <= 1) n = n * 100;
       out[key] = n;
     } else if (key === "currency" && typeof value === "string") {
       out[key] = value.trim().toUpperCase();
-    } else if (key === "receipt_date" && typeof value === "string") {
+    } else if ((key === "receipt_date" || key === "as_of_date") && typeof value === "string") {
       out[key] = /^\d{4}-\d{2}-\d{2}$/.test(value.trim()) ? value.trim() : null;
+    } else {
+      out[key] = value;
     }
   }
   return out;
@@ -180,9 +197,13 @@ export async function callVisionApi(
       }
 
       const data = normalizeVisionData(parsed);
-      // 有 total_amount 字段的场景（支出凭证）必须拿到有效正数，否则视为该模型失败。
-      if ("total_amount" in data &&
-          (typeof data.total_amount !== "number" || !Number.isFinite(data.total_amount) || data.total_amount <= 0)) {
+      // 有 total_amount 字段的场景（支出凭证）必须拿到有效正数，否则视为该模型失败；
+      // 持仓截图识别模式 (mode === "holdings") 无需校验 total_amount。
+      if (
+        options.mode !== "holdings" &&
+        "total_amount" in data &&
+        (typeof data.total_amount !== "number" || !Number.isFinite(data.total_amount) || data.total_amount <= 0)
+      ) {
         failures.push(`${model}: total_amount 無效 (${String(parsed.total_amount)})`);
         continue;
       }

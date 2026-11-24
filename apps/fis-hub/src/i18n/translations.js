@@ -49,7 +49,9 @@ const translations = {
     // ── Sidebar ──
     sidebar: {
       portfolios: '组合',
+      funds: '基金库',
       lab: '实验室',
+      advisory: '智能配置',
       myClients: '我的客户',
       advisorClients: '顾问客户管理',
       userMgmt: '👥 用户管理',
@@ -213,7 +215,8 @@ const translations = {
       template: '模板',
       backtestPeriod: '回测周期',
       cmaMode: '收益校准模型',
-      cmaShrunk: '大类资产中枢收缩 (推荐)',
+      cmaForwardLooking: '宏观利率与估值时钟前瞻 (推荐)',
+      cmaShrunk: '大类资产中枢收缩',
       cmaLtcma: '保守长期资本假设 (LTCMA)',
       cmaRaw: '纯历史样本 (激进/未校准)',
       totalWeight: '总计',
@@ -430,7 +433,9 @@ const translations = {
     // ── Sidebar ──
     sidebar: {
       portfolios: 'Portfolios',
+      funds: 'Funds',
       lab: 'Lab',
+      advisory: 'Advisory',
       myClients: 'My Clients',
       advisorClients: 'Client Management',
       userMgmt: '👥 User Management',
@@ -585,7 +590,8 @@ const translations = {
       template: 'Template',
       backtestPeriod: 'Backtest Period',
       cmaMode: 'Return Calibration',
-      cmaShrunk: 'Bayesian Shrinkage (Recommended)',
+      cmaForwardLooking: 'Forward-Looking Yield & Regime (Recommended)',
+      cmaShrunk: 'Bayesian Shrinkage',
       cmaLtcma: 'Conservative Prior (LTCMA)',
       cmaRaw: 'Raw Historical Sample (Aggressive)',
       totalWeight: 'Total',
