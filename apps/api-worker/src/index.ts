@@ -82,7 +82,7 @@ app.use(
       if (!origin) return null;
       return isAllowedOrigin(origin, c.env?.CORS_ORIGINS) ? origin : null;
     },
-    allowHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
+    allowHeaders: ["Content-Type", "Authorization", "X-Requested-With", "Accept", "Cache-Control"],
     allowMethods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     credentials: true,
     maxAge: 86400,

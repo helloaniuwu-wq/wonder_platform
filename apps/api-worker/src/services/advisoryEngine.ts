@@ -18,6 +18,7 @@ export type PrimaryGoal =
 
 export type ProductScope =
   | "all"
+  | "non_ilas"
   | "aia_tmp2"
   | "global_etf"
   | "cn_hk_dividend"
@@ -147,6 +148,7 @@ export interface TacticalCandidateFund {
 
 export interface CustomFundBasket {
   key: "core" | "alternative";
+  universe_mode: "ilas" | "non_ilas";
   title_zh: string;
   title_en: string;
   subtitle_zh: string;
@@ -270,6 +272,7 @@ export function normalizeProfile(raw: Partial<ClientAdvisoryProfile>): ClientAdv
   ];
   const validScopes: ProductScope[] = [
     "all",
+    "non_ilas",
     "aia_tmp2",
     "global_etf",
     "cn_hk_dividend",
@@ -684,12 +687,14 @@ export async function matchExistingPortfolios(
       let eqWeight = 0;
       let bondWeight = 0;
       let ilasCount = 0;
+      let nonIlasCount = 0;
       for (const [k, v] of allocEntries) {
         const w = rawSum > 1.001 ? Number(v) / rawSum : Number(v) / (rawSum || 1);
         normAlloc[k] = Math.round(w * 1000) / 10; // store %
         const meta = catalogLookup.get(k.toUpperCase());
         if (meta) {
-          if ((meta.ilas_platform || "").startsWith("AIA")) ilasCount++;
+          if (isIlasFund(meta)) ilasCount++;
+          else nonIlasCount++;
           const ac = meta.asset_class || "";
           if (ac.includes("固") || ac.includes("债") || ac.includes("货币")) bondWeight += w * 100;
           else eqWeight += w * 100;
@@ -743,13 +748,20 @@ export async function matchExistingPortfolios(
         score += 6;
       }
 
-      // Product scope alignment
-      if (profile.product_scope === "aia_tmp2") {
-        if (ilasCount > 0 || nameLower.includes("aia") || nameLower.includes("income")) {
-          score += 6;
-        } else {
-          score -= 8;
-          watchouts.push("持仓含非 AIA 平台标的");
+      // Strict pure ILAS vs Non-ILAS alignment
+      const wantIlas = resolveBasketUniverseMode(profile) === "ilas";
+      if (wantIlas) {
+        if (ilasCount > 0 && nonIlasCount === 0) {
+          score += 10;
+          fitReasons.push("纯血投连险（AIA）平台标的，架构完全匹配");
+        } else if (nonIlasCount > 0 || ilasCount === 0) {
+          score -= 18;
+          watchouts.push("含平台外非投连险标的（与纯投连险架构隔离）");
+        }
+      } else {
+        if (ilasCount > 0) {
+          score -= 18;
+          watchouts.push("含投连险平台标的（与纯非投连险架构隔离）");
         }
       }
 
@@ -799,9 +811,68 @@ export function classifyFundSleeve(row: QuantFundCatalogRow): "equity" | "bond" 
   return "equity";
 }
 
+export function isIlasFund(row: { ilas_platform?: string | null; aia_code?: string | null }): boolean {
+  const plat = (row.ilas_platform || "").trim();
+  if (!plat) return Boolean(row.aia_code && row.aia_code.trim());
+  if (plat.startsWith("非投连险")) return false;
+  return (
+    plat.startsWith("AIA") ||
+    plat.includes("投连险") ||
+    plat.toUpperCase().includes("ILAS") ||
+    plat.toUpperCase().includes("ILP")
+  );
+}
+
+export function resolveBasketUniverseMode(
+  profile: Partial<ClientAdvisoryProfile>,
+  currentHoldings?: Array<{
+    ilas_platform?: string | null;
+    aia_code?: string | null;
+    slug?: string;
+    lab_id?: string;
+    code?: string;
+  }>,
+  catalogRows?: QuantFundCatalogRow[]
+): "ilas" | "non_ilas" {
+  if (Array.isArray(currentHoldings) && currentHoldings.length > 0) {
+    const catalogByKey = new Map<string, QuantFundCatalogRow>();
+    for (const r of catalogRows || []) {
+      [r.slug, r.code, r.aia_code]
+        .filter(Boolean)
+        .forEach((k) => catalogByKey.set(String(k).toUpperCase().trim(), r));
+    }
+    let resolvedCount = 0;
+    let anyIlas = false;
+    for (const h of currentHoldings) {
+      const matched = [h.slug, h.lab_id, h.code]
+        .filter(Boolean)
+        .map((k) => catalogByKey.get(String(k).toUpperCase().trim()))
+        .find(Boolean);
+      if (matched) {
+        resolvedCount++;
+        if (isIlasFund(matched)) anyIlas = true;
+      } else if (h.ilas_platform != null || h.aia_code != null) {
+        resolvedCount++;
+        if (isIlasFund(h)) anyIlas = true;
+      }
+    }
+    if (resolvedCount > 0) {
+      return anyIlas ? "ilas" : "non_ilas";
+    }
+  }
+
+  const scope = profile.product_scope || "all";
+  if (scope === "aia_tmp2") return "ilas";
+  if (scope === "global_etf" || scope === "cn_hk_dividend" || scope === "non_ilas") {
+    return "non_ilas";
+  }
+  return profile.ilp_planned ? "ilas" : "non_ilas";
+}
+
 function matchesProductScope(row: QuantFundCatalogRow, scope: ProductScope): boolean {
   const plat = row.ilas_platform || "";
-  if (scope === "aia_tmp2") return plat.startsWith("AIA");
+  if (scope === "aia_tmp2") return isIlasFund(row);
+  if (scope === "non_ilas") return !isIlasFund(row);
   if (scope === "global_etf") {
     return [
       "非投连险-美股分红型ETF",
@@ -1396,7 +1467,8 @@ function buildSingleBasket(
             scoreFundCandidate(a, envelope, mode, profile.currency)
         );
 
-  const isIlas = profile.product_scope === "aia_tmp2" || Boolean(profile.ilp_planned);
+  const universeMode = resolveBasketUniverseMode(profile);
+  const isIlas = universeMode === "ilas";
   const minWeightPct = isIlas ? 10 : 5;
   const maxSatelliteTotalPct =
     envelope.risk_level === "conservative" || mode === "defensive" ? 15 : 30;
@@ -1566,6 +1638,7 @@ function buildSingleBasket(
   const publicHoldings: CustomBasketHolding[] = normHoldings.map(({ max_dd_3y: _ignored, ...rest }) => rest);
   return {
     key,
+    universe_mode: universeMode,
     title_zh: titleZh,
     title_en: titleEn,
     subtitle_zh: subtitleZh,
@@ -1580,14 +1653,19 @@ export function buildCustomFundBaskets(
   profile: ClientAdvisoryProfile,
   envelope: TargetEnvelope
 ): { baskets: CustomFundBasket[]; scopedCount: number; backedCount: number } {
-  const recommendedOnly = catalogRows.filter((r) => !r.tags.includes("非推荐选择"));
+  // 硬约束：投连险平台基金与平台外基金严格隔离，同一组合内绝不混配
+  const universeMode = resolveBasketUniverseMode(profile);
+  const wantIlas = universeMode === "ilas";
+  const universeRows = catalogRows.filter((r) => isIlasFund(r) === wantIlas);
+
+  const recommendedOnly = universeRows.filter((r) => !r.tags.includes("非推荐选择"));
   const scope = profile.product_scope || "all";
   let scoped = recommendedOnly.filter((r) => matchesProductScope(r, scope));
   if (scoped.length < 3) {
-    scoped = catalogRows.filter((r) => matchesProductScope(r, scope));
+    scoped = universeRows.filter((r) => matchesProductScope(r, scope));
   }
   if (scoped.length < 3) {
-    scoped = recommendedOnly.length > 0 ? recommendedOnly : catalogRows;
+    scoped = recommendedOnly.length > 0 ? recommendedOnly : universeRows;
   }
 
   const backedCount = scoped.filter((r) => r.data_tier === "A" || r.data_tier === "B").length;
@@ -1634,23 +1712,33 @@ export function buildCustomFundBaskets(
 }
 
 /**
- * 为 AI 首席投顾构建同平台 Top 14 候补基金白名单池（每个细分同质赛道保留最优 1 只，优先覆盖当前篮子尚未涵盖的互补品种如黄金/港股红利/短债/长债）。
+ * 为 AI 首席投顾构建同平台 Top 14 候补基金白名单池（严格限定与原组合同属纯投连险或纯非投连险，每个细分同质赛道保留最优 1 只，优先覆盖当前篮子尚未涵盖的互补品种）。
  */
 export function buildTacticalCandidatePool(
   catalogRows: QuantFundCatalogRow[],
   rawProfile: Partial<ClientAdvisoryProfile>,
-  currentHoldings: Array<{ slug?: string; lab_id?: string; code?: string }>,
+  currentHoldings: Array<{
+    slug?: string;
+    lab_id?: string;
+    code?: string;
+    ilas_platform?: string | null;
+    aia_code?: string | null;
+  }>,
   limit = 14
 ): TacticalCandidateFund[] {
   const profile = normalizeProfile(rawProfile);
   const scope = profile.product_scope || "all";
-  const recommendedOnly = catalogRows.filter((r) => !r.tags.includes("非推荐选择"));
+  const universeMode = resolveBasketUniverseMode(profile, currentHoldings, catalogRows);
+  const wantIlas = universeMode === "ilas";
+  const universeRows = catalogRows.filter((r) => isIlasFund(r) === wantIlas);
+
+  const recommendedOnly = universeRows.filter((r) => !r.tags.includes("非推荐选择"));
   let scoped = recommendedOnly.filter((r) => matchesProductScope(r, scope));
   if (scoped.length < 4) {
-    scoped = catalogRows.filter((r) => matchesProductScope(r, scope));
+    scoped = universeRows.filter((r) => matchesProductScope(r, scope));
   }
   if (scoped.length < 4) {
-    scoped = recommendedOnly.length > 0 ? recommendedOnly : catalogRows;
+    scoped = recommendedOnly.length > 0 ? recommendedOnly : universeRows;
   }
 
   const currentIds = new Set<string>();

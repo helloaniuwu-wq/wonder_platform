@@ -16,6 +16,7 @@ import {
   getHorizonEquityHardCap,
   getRiskEnvelope,
   inferFundRole,
+  isIlasFund,
   matchClassicTemplates,
   normalizeProfile,
 } from "./advisoryEngine";
@@ -803,7 +804,7 @@ describe("Client IPS Report Generator & Narrative Co-Author", () => {
 });
 
 describe("callLlmChat deep-analysis model routing", () => {
-  it("routes deepseek-pro (and legacy auto/reasoner) to DeepSeek V4 Pro with thinking enabled and >=6144 max_tokens", async () => {
+  it("routes deepseek-pro to fast deepseek-v4-pro (>=8192) and deepseek-pro-thinking to enabled reasoning (>=16384)", async () => {
     const calls: Array<{ url: string; body: any }> = [];
     const spy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
       const url = typeof input === "string" ? input : (input as Request).url;
@@ -840,16 +841,22 @@ describe("callLlmChat deep-analysis model routing", () => {
       expect(calls).toHaveLength(1);
       expect(calls[0].url).toBe("https://api.deepseek.com/chat/completions");
       expect(calls[0].body.model).toBe("deepseek-v4-pro");
-      expect(calls[0].body.thinking).toEqual({ type: "enabled" });
-      expect(calls[0].body.reasoning_effort).toBe("low");
-      expect(calls[0].body.max_tokens).toBeGreaterThanOrEqual(16384);
+      expect(calls[0].body.thinking).toEqual({ type: "disabled" });
+      expect(calls[0].body.reasoning_effort).toBeUndefined();
+      expect(calls[0].body.max_tokens).toBeGreaterThanOrEqual(8192);
       expect(res.provider).toBe("deepseek");
       expect(res.modelUsed).toBe("deepseek-v4-pro");
-      expect(res.reasoning).toContain("SPY ERP");
 
-      // Legacy "auto" should also map to deepseek-pro
+      // Legacy "auto" should also map to fast deepseek-pro
       const resLegacy = await callLlmChat(env, "分析组合", { modelPreference: "auto" });
       expect(resLegacy.modelUsed).toBe("deepseek-v4-pro");
+
+      // Explicit thinking mode should enable reasoning_effort=low and >=16384 max_tokens
+      const resThink = await callLlmChat(env, "分析组合", { modelPreference: "deepseek-pro-thinking" });
+      expect(calls[2].body.thinking).toEqual({ type: "enabled" });
+      expect(calls[2].body.reasoning_effort).toBe("low");
+      expect(calls[2].body.max_tokens).toBeGreaterThanOrEqual(16384);
+      expect(resThink.reasoning).toContain("SPY ERP");
     } finally {
       spy.mockRestore();
     }
@@ -888,7 +895,7 @@ describe("callLlmChat deep-analysis model routing", () => {
         DEEPSEEK_MODEL: "deepseek-v4-pro",
       };
       const res = await callLlmChat(env, "分析组合", {
-        modelPreference: "deepseek-pro",
+        modelPreference: "deepseek-pro-thinking",
         useUpstreamStream: true,
         onProgress: (info) => progressEvents.push(info),
       });
@@ -1260,5 +1267,113 @@ describe("Core-Satellite, Homogeneous Deduplication, Hard Caps & AI Fund Swappin
     const macroText = formatMacroPromptBlock(DEFAULT_MACRO_SNAPSHOT);
     expect(macroText).not.toContain("短久期美元固收具备确定性票息保护");
     expect(macroText).not.toContain("高债务与地缘周期中黄金作为尾部避险");
+  });
+
+  it("strictly isolates pure ILAS and pure Non-ILAS funds across baskets, candidate pool, and AI tactical adjustments", () => {
+    const mixedCatalog = [
+      mkFund({ slug: "AIA_EQ1", code: "CG9", aia_code: "CG9", name: "AIA Global Equity", asset_class: "股票", ilas_platform: "AIA 卓达智悦2", role: "核心", fee_pct: 1.5 }),
+      mkFund({ slug: "AIA_BD1", code: "B01", aia_code: "B01", name: "AIA Short Bond", asset_class: "固定收益", ilas_platform: "AIA 卓达智悦2", role: "核心", fee_pct: 0.7, benchmark_code: "BIL", is_distributing: true }),
+      mkFund({ slug: "AIA_BD2", code: "M11", aia_code: "M11", name: "AIA Global Bond", asset_class: "固定收益", ilas_platform: "AIA 卓达智悦2", role: "核心", fee_pct: 0.9, benchmark_code: "AGG", is_distributing: true }),
+      mkFund({ slug: "AIA_GLD", code: "G01", aia_code: "G01", name: "AIA World Gold", asset_class: "多元资产", ilas_platform: "AIA 卓达智悦2", role: "卫星", fee_pct: 1.7, benchmark_code: "GLD" }),
+      mkFund({ slug: "AIA_HK", code: "A17", aia_code: "A17", name: "AIA Greater China", asset_class: "股票", ilas_platform: "AIA 卓达智悦2", role: "卫星", fee_pct: 1.8, benchmark_code: "2800.HK", is_distributing: true }),
+      mkFund({ slug: "EXT_VOO", code: "VOO", name: "Vanguard S&P 500 ETF", asset_class: "股票", ilas_platform: "非投连险-国际股票", role: "核心", fee_pct: 0.03 }),
+      mkFund({ slug: "EXT_AGG", code: "AGG", name: "iShares Core US Agg", asset_class: "固定收益", ilas_platform: "非投连险-债券基金比较", role: "核心", fee_pct: 0.03, benchmark_code: "AGG", is_distributing: true }),
+      mkFund({ slug: "EXT_BIL", code: "BIL", name: "SPDR 1-3M T-Bill", asset_class: "固定收益", ilas_platform: "非投连险-货币基金", role: "核心", fee_pct: 0.14, benchmark_code: "BIL", is_distributing: true }),
+      mkFund({ slug: "EXT_GLD", code: "GLD", name: "SPDR Gold Trust", asset_class: "多元资产", ilas_platform: "非投连险-国际股票", role: "卫星", fee_pct: 0.4, benchmark_code: "GLD" }),
+      mkFund({ slug: "EXT_HK", code: "2800.HK", name: "Tracker Fund HK", asset_class: "股票", ilas_platform: "非投连险-港股通ETF", role: "卫星", fee_pct: 0.09, benchmark_code: "2800.HK", is_distributing: true }),
+    ];
+
+    // 1) product_scope="all", ilp_planned=false -> 100% pure Non-ILAS
+    const offProf = normalizeProfile({ product_scope: "all", ilp_planned: false, risk_level: "balanced", horizon_years: 10 });
+    const offRes = buildCustomFundBaskets(mixedCatalog as any, offProf, getRiskEnvelope(offProf));
+    expect(offRes.baskets.length).toBeGreaterThanOrEqual(1);
+    for (const b of offRes.baskets) {
+      expect(b.universe_mode).toBe("non_ilas");
+      expect(b.holdings.every((h) => !isIlasFund(h))).toBe(true);
+    }
+
+    // 2) product_scope="all", ilp_planned=true & product_scope="aia_tmp2" -> 100% pure ILAS
+    const ilpAllProf = normalizeProfile({ product_scope: "all", ilp_planned: true, risk_level: "balanced", horizon_years: 10 });
+    const ilpAllRes = buildCustomFundBaskets(mixedCatalog as any, ilpAllProf, getRiskEnvelope(ilpAllProf));
+    for (const b of ilpAllRes.baskets) {
+      expect(b.universe_mode).toBe("ilas");
+      expect(b.holdings.every((h) => isIlasFund(h))).toBe(true);
+    }
+
+    const aiaProf = normalizeProfile({ product_scope: "aia_tmp2", ilp_planned: true, risk_level: "balanced", horizon_years: 10 });
+    const aiaRes = buildCustomFundBaskets(mixedCatalog as any, aiaProf, getRiskEnvelope(aiaProf));
+    for (const b of aiaRes.baskets) {
+      expect(b.universe_mode).toBe("ilas");
+      expect(b.holdings.every((h) => isIlasFund(h))).toBe(true);
+    }
+
+    // 3) bonds_income stays strictly isolated by ilp_planned
+    const bondsOff = normalizeProfile({ product_scope: "bonds_income", ilp_planned: false, risk_level: "conservative", horizon_years: 5 });
+    const bondsOffRes = buildCustomFundBaskets(mixedCatalog as any, bondsOff, getRiskEnvelope(bondsOff));
+    for (const b of bondsOffRes.baskets) {
+      expect(b.universe_mode).toBe("non_ilas");
+      expect(b.holdings.every((h) => !isIlasFund(h))).toBe(true);
+    }
+
+    const bondsOn = normalizeProfile({ product_scope: "bonds_income", ilp_planned: true, risk_level: "conservative", horizon_years: 5 });
+    const bondsOnRes = buildCustomFundBaskets(mixedCatalog as any, bondsOn, getRiskEnvelope(bondsOn));
+    for (const b of bondsOnRes.baskets) {
+      expect(b.universe_mode).toBe("ilas");
+      expect(b.holdings.every((h) => isIlasFund(h))).toBe(true);
+    }
+
+    // 4) Candidate whitelist stays strictly inside same universe
+    const ilasCands = buildTacticalCandidatePool(mixedCatalog as any, aiaProf, aiaRes.baskets[0].holdings, 14);
+    expect(ilasCands.length).toBeGreaterThan(0);
+    expect(ilasCands.every((c) => isIlasFund(c))).toBe(true);
+
+    const offCands = buildTacticalCandidatePool(mixedCatalog as any, offProf, offRes.baskets[0].holdings, 14);
+    expect(offCands.length).toBeGreaterThan(0);
+    expect(offCands.every((c) => !isIlasFund(c))).toBe(true);
+
+    // 5) extractAndNormalizeTacticalJson rejects cross-platform candidate even if injected
+    const poisonedCandPool = [
+      ...ilasCands,
+      {
+        slug: "EXT_GLD",
+        lab_id: "GLD",
+        code: "GLD",
+        name: "SPDR Gold Trust (Cross-platform should be blocked)",
+        asset_class: "多元资产",
+        sleeve: "other" as const,
+        core_role: "satellite" as const,
+        homogeneity_cluster: "other|GOLD_COMMODITY",
+        ilas_platform: "非投连险-国际股票",
+        currency: "USD",
+        fee_pct: 0.4,
+        alpha_3y: null,
+        r2_3y: null,
+        beta_3y: null,
+        vol_3y: null,
+        div_yield_ttm: null,
+        quant_grade: "A",
+        is_distributing: false,
+      },
+    ];
+    const llmWithCrossPlatform = `### 客观研判
+仅可在纯投连险池内替换。
+
+<tactical_json>
+{
+  "tactical_summary_zh": "新增黄金卫星",
+  "adjusted_holdings": [
+    { "lab_id": "CG9", "adjusted_weight_pct": 50, "reason_zh": "核心" },
+    { "lab_id": "B01", "adjusted_weight_pct": 30, "reason_zh": "固收" },
+    { "lab_id": "GLD", "adjusted_weight_pct": 20, "reason_zh": "跨平台应被拦截" }
+  ]
+}
+</tactical_json>`;
+    const normalized = extractAndNormalizeTacticalJson(
+      llmWithCrossPlatform,
+      aiaProf,
+      aiaRes.baskets[0],
+      poisonedCandPool
+    );
+    expect(normalized.tacticalAdjustment.adjusted_holdings.some((h) => h.lab_id === "GLD")).toBe(false);
   });
 });

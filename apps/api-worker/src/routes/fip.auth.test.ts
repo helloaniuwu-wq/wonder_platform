@@ -380,6 +380,21 @@ describe("Observability & Request ID", () => {
     );
 
     try {
+      const preflightRes = await app.fetch(
+        new Request("http://localhost/api/quant/recommend/explain", {
+          method: "OPTIONS",
+          headers: {
+            Origin: "https://fis.wonderwisdom.online",
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "accept,authorization,content-type",
+          },
+        }),
+        env
+      );
+      expect(preflightRes.status).toBe(204);
+      expect(preflightRes.headers.get("Access-Control-Allow-Origin")).toBe("https://fis.wonderwisdom.online");
+      expect((preflightRes.headers.get("Access-Control-Allow-Headers") || "").toLowerCase()).toContain("accept");
+
       const res = await app.fetch(
         new Request("http://localhost/api/quant/recommend/explain", {
           method: "POST",

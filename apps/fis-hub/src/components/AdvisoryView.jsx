@@ -93,11 +93,11 @@ const GOALS = [
 ];
 
 const SCOPES = [
-  { id: 'all', zh: '全库 306 只（不限平台）', en: 'All 306 Funds' },
-  { id: 'aia_tmp2', zh: 'AIA 卓达智悦2 投连险池', en: 'AIA TMP2 ILAS' },
-  { id: 'global_etf', zh: '全球 / 美日低费 ETF', en: 'Global ETFs' },
-  { id: 'cn_hk_dividend', zh: '中港通红利与 A 股 ETF', en: 'CN / HK Dividend ETFs' },
-  { id: 'bonds_income', zh: '债券与高息防御专场', en: 'Bonds & Income Focus' },
+  { id: 'all', zh: '非投连险全市场基金 / ETF（纯平台外）', en: 'All Non-ILAS Funds & ETFs (Off-Platform)' },
+  { id: 'aia_tmp2', zh: 'AIA 卓达智悦2 投连险池（纯投连险）', en: 'AIA TMP2 ILAS Pool (Pure ILAS)' },
+  { id: 'global_etf', zh: '非投连险 · 全球 / 美日低费 ETF', en: 'Non-ILAS · Global ETFs' },
+  { id: 'cn_hk_dividend', zh: '非投连险 · 中港通红利与 A 股 ETF', en: 'Non-ILAS · CN / HK Dividend ETFs' },
+  { id: 'bonds_income', zh: '债券与高息防御专场（按投连险开关隔离）', en: 'Bonds & Income (Isolated by ILP toggle)' },
 ];
 
 const QUICK_NOTES_TAGS = [
@@ -193,7 +193,20 @@ const AdvisoryView = ({
 
   const handleScopeChange = (nextScope) => {
     setProductScope(nextScope);
-    if (nextScope === 'aia_tmp2') setIlpPlanned(true);
+    if (nextScope === 'aia_tmp2') {
+      setIlpPlanned(true);
+    } else if (nextScope === 'all' || nextScope === 'global_etf' || nextScope === 'cn_hk_dividend') {
+      setIlpPlanned(false);
+    }
+  };
+
+  const handleIlpToggle = (checked) => {
+    setIlpPlanned(checked);
+    if (checked && (productScope === 'all' || productScope === 'global_etf' || productScope === 'cn_hk_dividend')) {
+      setProductScope('aia_tmp2');
+    } else if (!checked && productScope === 'aia_tmp2') {
+      setProductScope('all');
+    }
   };
 
   const handleSubmit = async (e) => {
@@ -321,45 +334,47 @@ const AdvisoryView = ({
     setAiLoading(true);
     setAiProgress({ elapsed: 0, stage: 'connecting', model: aiModel, reasoning_chars: 0, content_chars: 0 });
     setAiError('');
-    try {
-      const payload = {
-        profile: {
-          client_name: clientName.trim() || (isEn ? 'Client' : '客户'),
-          age: age ? parseInt(age, 10) : null,
-          horizon_years: Number(horizonYears),
-          initial_capital: Number(initialCapital),
-          currency,
-          primary_goal: primaryGoal,
-          risk_score: effectiveScore,
-          risk_level: effectiveTier,
-          target_annual_yield_pct: targetYieldPct ? parseFloat(targetYieldPct) : null,
-          annual_withdrawal: annualWithdrawal ? parseFloat(annualWithdrawal) : null,
-          product_scope: productScope,
-          ilp_planned: ilpPlanned,
-          extra_notes: extraNotes.trim(),
-        },
-        recommendation: basket,
-        model: aiModel,
-        stream: true,
-      };
+    const startedAt = Date.now();
 
+    const buildPayload = (useStream) => ({
+      profile: {
+        client_name: clientName.trim() || (isEn ? 'Client' : '客户'),
+        age: age ? parseInt(age, 10) : null,
+        horizon_years: Number(horizonYears),
+        initial_capital: Number(initialCapital),
+        currency,
+        primary_goal: primaryGoal,
+        risk_score: effectiveScore,
+        risk_level: effectiveTier,
+        target_annual_yield_pct: targetYieldPct ? parseFloat(targetYieldPct) : null,
+        annual_withdrawal: annualWithdrawal ? parseFloat(annualWithdrawal) : null,
+        product_scope: productScope,
+        ilp_planned: ilpPlanned,
+        extra_notes: extraNotes.trim(),
+      },
+      recommendation: basket,
+      model: aiModel,
+      stream: useStream,
+    });
+
+    const requestExplain = async (useStream) => {
+      let connected = false;
       const res = await fetch('/api/quant/recommend/explain', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          Accept: 'text/event-stream, application/json',
           ...authHeaders(),
         },
-        body: JSON.stringify(payload),
+        body: JSON.stringify(buildPayload(useStream)),
       });
+      connected = true;
 
       const contentType = (res.headers.get('content-type') || '').toLowerCase();
-      let json = null;
-
-      if (res.ok && contentType.includes('text/event-stream') && res.body?.getReader) {
+      if (useStream && res.ok && contentType.includes('text/event-stream') && res.body?.getReader) {
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
         let buffer = '';
+        let streamJson = null;
 
         const processBlock = (block) => {
           if (!block.trim()) return;
@@ -380,9 +395,11 @@ const AdvisoryView = ({
           if (eventName === 'progress') {
             setAiProgress(parsed);
           } else if (eventName === 'result') {
-            json = parsed;
+            streamJson = parsed;
           } else if (eventName === 'error') {
-            throw new Error(parsed?.detail || 'AI generation failed');
+            const appErr = new Error(parsed?.detail || 'AI generation failed');
+            appErr.isAppError = true;
+            throw appErr;
           }
         };
 
@@ -399,14 +416,37 @@ const AdvisoryView = ({
         if (buffer.trim()) {
           processBlock(buffer);
         }
-        if (!json) {
-          throw new Error(isEn ? 'Stream ended without final AI result' : '连接已结束但未收到完整研判结果，请重试');
+        if (!streamJson) {
+          throw new Error(isEn ? 'Stream ended without final AI result' : '流式连接已结束但未收到完整研判结果');
         }
-      } else {
-        json = await res.json().catch(() => ({}));
-        if (!res.ok) {
-          throw new Error(json.detail || json.error || `HTTP ${res.status}`);
+        return streamJson;
+      }
+
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const httpErr = new Error(json.detail || json.error || `HTTP ${res.status}`);
+        httpErr.isAppError = true;
+        throw httpErr;
+      }
+      return { ...json, connected };
+    };
+
+    try {
+      let json = null;
+      try {
+        json = await requestExplain(true);
+      } catch (streamErr) {
+        if (streamErr?.isAppError) {
+          throw streamErr;
         }
+        setAiProgress({
+          elapsed: Math.round((Date.now() - startedAt) / 1000),
+          stage: 'fallback_retry',
+          model: aiModel,
+          reasoning_chars: 0,
+          content_chars: 0,
+        });
+        json = await requestExplain(false);
       }
 
       setAiAnalysis(json);
@@ -422,7 +462,17 @@ const AdvisoryView = ({
         });
       }
     } catch (err) {
-      setAiError(err.message || 'AI generation failed');
+      const elapsedSec = Math.round((Date.now() - startedAt) / 1000);
+      const rawMsg = err?.message || 'AI generation failed';
+      if (/load failed|failed to fetch|networkerror/i.test(rawMsg)) {
+        setAiError(
+          isEn
+            ? `Network/CORS interruption after ${elapsedSec}s (${rawMsg}). Please refresh once or switch to DeepSeek V4 Pro fast mode.`
+            : `请求在 ${elapsedSec}s 时被网络/代理中断（${rawMsg}）。建议刷新页面清除旧缓存后重试，或选用默认极速旗舰版。`
+        );
+      } else {
+        setAiError(rawMsg);
+      }
     } finally {
       setAiLoading(false);
       setAiProgress(null);
@@ -450,6 +500,7 @@ const AdvisoryView = ({
           return {
             ...orig,
             core_role: adj.core_role || orig.core_role,
+            ilas_platform: orig.ilas_platform ?? adj.ilas_platform ?? null,
             weight_pct: adj.adjusted_weight_pct,
             rationale_zh: adj.reason_zh || orig.rationale_zh,
             rationale_en: adj.reason_en || orig.rationale_en,
@@ -462,6 +513,7 @@ const AdvisoryView = ({
           name: adj.name || adj.lab_id,
           asset_class: adj.asset_class || '基金',
           core_role: adj.core_role || 'satellite',
+          ilas_platform: adj.ilas_platform ?? null,
           fee_pct: adj.fee_pct ?? null,
           data_tier: 'A',
           quant_grade: null,
@@ -805,11 +857,16 @@ const AdvisoryView = ({
                     <input
                       type="checkbox"
                       checked={ilpPlanned}
-                      onChange={(e) => setIlpPlanned(e.target.checked)}
+                      onChange={(e) => handleIlpToggle(e.target.checked)}
                     />
-                    {isEn ? 'ILP Fee Overlay' : '包含 ILP 保单架构'}
+                    {isEn ? 'Pure ILAS Mode (AIA)' : '纯投连险保单架构 (ILP)'}
                   </label>
                 </div>
+              </div>
+              <div style={{ fontSize: '0.73rem', color: 'var(--text-muted)', marginTop: '-6px' }}>
+                {isEn
+                  ? 'Strict Isolation: ILAS platform funds and off-platform funds never mix within the same portfolio.'
+                  : '硬约束：投连险平台基金与平台外基金严格隔离，同一组合内不混配（要么纯血投连险，要么纯非投连险）。'}
               </div>
             </section>
 
@@ -1090,6 +1147,20 @@ const AdvisoryView = ({
                       </div>
                     </div>
                     <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', alignItems: 'center' }}>
+                      <span
+                        style={{
+                          fontSize: '0.68rem',
+                          padding: '2px 6px',
+                          borderRadius: '4px',
+                          background: basket.universe_mode === 'ilas' ? 'rgba(245, 158, 11, 0.14)' : 'rgba(59, 130, 246, 0.12)',
+                          color: basket.universe_mode === 'ilas' ? '#d97706' : 'var(--info)',
+                          fontWeight: 700,
+                        }}
+                      >
+                        {basket.universe_mode === 'ilas'
+                          ? (isEn ? 'Pure ILAS' : '纯投连险 · AIA')
+                          : (isEn ? 'Pure Non-ILAS' : '纯非投连险')}
+                      </span>
                       {basket.metrics?.core_pct != null && (
                         <span style={{ fontSize: '0.68rem', padding: '2px 6px', borderRadius: '4px', background: 'var(--surface-subtle)', color: 'var(--text-secondary)', fontFamily: 'var(--font-mono)' }}>
                           {isEn ? `Core ${basket.metrics.core_pct}% / Sat ${basket.metrics.satellite_pct}%` : `核心 ${basket.metrics.core_pct}% / 卫星 ${basket.metrics.satellite_pct}%`}
@@ -1271,8 +1342,13 @@ const AdvisoryView = ({
                 >
                   <option value="deepseek-pro">
                     {isEn
-                      ? 'DeepSeek V4 Pro (Default · Best Value Deep Thinking)'
-                      : 'DeepSeek V4 Pro (默认首选 · 深度思考极致性价比)'}
+                      ? 'DeepSeek V4 Pro (Default · Fast Flagship ~30s)'
+                      : 'DeepSeek V4 Pro (默认首选 · 深度研判极速版 ~30s)'}
+                  </option>
+                  <option value="deepseek-pro-thinking">
+                    {isEn
+                      ? 'DeepSeek V4 Pro Thinking (Deep CoT ~90s)'
+                      : 'DeepSeek V4 Pro 思考链 (深度 CoT 推演 ~90s)'}
                   </option>
                   <option value="gemini-deep">
                     {isEn
@@ -1345,7 +1421,9 @@ const AdvisoryView = ({
                           ? '撰写正式报告'
                           : aiProgress.stage === 'thinking'
                             ? '深度思维推演'
-                            : '连接模型'
+                            : aiProgress.stage === 'fallback_retry'
+                              ? '流式连接中断，正在切换标准模式重试'
+                              : '连接模型'
                       }`}
                 </span>
                 <span style={{ fontFamily: 'var(--font-mono)', fontSize: '0.75rem', color: 'var(--accent-secondary)' }}>

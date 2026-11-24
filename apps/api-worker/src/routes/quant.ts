@@ -11,7 +11,7 @@ import {
   resolveQuantFund,
 } from "../services/quantStore";
 import { countBusinessDaysBetween } from "../services/quantWatchdog";
-import { buildTacticalCandidatePool, recommendForClient } from "../services/advisoryEngine";
+import { buildTacticalCandidatePool, recommendForClient, resolveBasketUniverseMode } from "../services/advisoryEngine";
 import { callLlmChat, extractAndNormalizeTacticalJson } from "../services/llm";
 import { getFundTopHoldings } from "../services/fundHoldings";
 import { formatMacroPromptBlock, getLatestMacroSnapshot } from "../services/macroStore";
@@ -585,11 +585,17 @@ quantRouter.post("/recommend/explain", async (c) => {
           .join("\n")
       : "无额外候补基金（请基于原篮子标的调整权重）";
 
-  const isIlasMode =
-    profile.product_scope === "aia_tmp2" || Boolean(profile.ilp_planned);
+  const recUniverse = rec?.universe_mode === "ilas" || rec?.universe_mode === "non_ilas"
+    ? rec.universe_mode
+    : resolveBasketUniverseMode(
+        profile,
+        Array.isArray(rec.holdings) ? rec.holdings : [],
+        catalogData.rows
+      );
+  const isIlasMode = recUniverse === "ilas";
   const ilasConstraintRule = isIlasMode
-    ? "4. 【ILAS 平台硬约束】当前属于投连险架构，任何保留或新增标的的 `adjusted_weight_pct` 必须为 >= 10 的整数（或设为 0 表示剔除）；"
-    : "4. 单只保留或新增标的建议权重 >= 5%，避免过于零碎；";
+    ? "4. 【纯投连险平台硬约束】本组合为纯投连险（AIA 卓达智悦2）组合，严禁混入任何平台外非投连险基金/ETF，且所有保留或新增标的的 `adjusted_weight_pct` 必须为 >= 10 的整数（或设为 0 表示剔除）；"
+    : "4. 【纯非投连险硬约束】本组合为纯平台外基金/ETF 组合，严禁混入任何投连险（AIA/ILAS）平台基金；单只保留或新增标的建议权重 >= 5%，避免过于零碎；";
 
   const metricsSummary = rec.metrics
     ? `预期3Y年化: ${rec.metrics.est_cagr_pct}%, 年化波动率: ${rec.metrics.est_vol_pct}%, 夏普比率: ${rec.metrics.est_sharpe}, 参考股息率: ${rec.metrics.est_div_yield_pct}%, 加权年费率: ${rec.metrics.weighted_fee_pct || 0}%`
@@ -606,7 +612,7 @@ quantRouter.post("/recommend/explain", async (c) => {
 - 风险评级: ${profile.risk_level || "稳健"} (评分: ${profile.risk_score || 55}/100)
 - 现金流提取诉求: ${profile.annual_withdrawal ? `每年提取 ${profile.currency} ${profile.annual_withdrawal}` : "无定期提取需求"}
 - 期望年化股息率: ${profile.target_annual_yield_pct ? `${profile.target_annual_yield_pct}%` : "未特别设定"}
-- 架构平台: ${profile.product_scope || "全市场"} ${profile.ilp_planned ? "(含 ILP 投连险架构)" : ""}
+- 架构平台: ${isIlasMode ? "纯投连险架构 (AIA 卓达智悦2)" : "纯平台外非投连险基金/ETF"}（${profile.product_scope || "strict"}）
 - 【重要】客户补充背景与特别诉求:
 ${profile.extra_notes ? profile.extra_notes : "无特别补充事项"}
 
@@ -672,7 +678,7 @@ ${ilasConstraintRule}
     const llmResult = await callLlmChat(c.env, prompt, {
       modelPreference: model,
       temperature: 0.35,
-      maxTokens: 16384,
+      maxTokens: 8192,
       useUpstreamStream: true,
     });
 
@@ -703,87 +709,114 @@ ${ilasConstraintRule}
     content_chars: 0,
   };
 
-  const sseStream = new ReadableStream({
-    async start(controller) {
-      let closed = false;
-      const sendEvent = (eventName: string, dataObj: unknown) => {
-        if (closed) return;
-        try {
-          controller.enqueue(
-            encoder.encode(`event: ${eventName}\ndata: ${JSON.stringify(dataObj)}\n\n`)
-          );
-        } catch {
-          closed = true;
-        }
-      };
+  const { readable, writable } = new TransformStream<Uint8Array, Uint8Array>();
+  const writer = writable.getWriter();
+  let closed = false;
+  let heartbeatTimer: ReturnType<typeof setTimeout> | null = null;
+  let writeChain = Promise.resolve();
 
+  const enqueueChunk = (chunkStr: string) => {
+    if (closed) return;
+    writeChain = writeChain
+      .then(async () => {
+        if (!closed) {
+          await writer.write(encoder.encode(chunkStr));
+        }
+      })
+      .catch(() => {
+        closed = true;
+      });
+  };
+
+  const sendEvent = (eventName: string, dataObj: unknown) => {
+    enqueueChunk(`event: ${eventName}\ndata: ${JSON.stringify(dataObj)}\n\n`);
+  };
+
+  const scheduleHeartbeat = () => {
+    if (closed) return;
+    heartbeatTimer = setTimeout(() => {
+      if (closed) return;
       sendEvent("progress", {
-        elapsed: 0,
+        elapsed: Math.round((Date.now() - startedAt) / 1000),
         ...latestProgress,
       });
+      scheduleHeartbeat();
+    }, 2000);
+  };
 
-      const heartbeatTimer = setInterval(() => {
-        sendEvent("progress", {
-          elapsed: Math.round((Date.now() - startedAt) / 1000),
-          ...latestProgress,
-        });
-      }, 2500);
+  // Emit immediate SSE comment + progress frame so Cloudflare flushes HTTP 200 & CORS headers at once
+  enqueueChunk(": ok\n\n");
+  sendEvent("progress", {
+    elapsed: 0,
+    ...latestProgress,
+  });
+  scheduleHeartbeat();
 
-      try {
-        const llmResult = await callLlmChat(c.env, prompt, {
-          modelPreference: model,
-          temperature: 0.35,
-          maxTokens: 16384,
-          useUpstreamStream: true,
-          onProgress: (info) => {
-            latestProgress = {
-              stage: info.stage,
-              model: info.model,
-              reasoning_chars: info.reasoningChars,
-              content_chars: info.contentChars,
-            };
-            sendEvent("progress", {
-              elapsed: Math.round((Date.now() - startedAt) / 1000),
-              ...latestProgress,
-            });
-          },
-        });
+  const pumpPromise = (async () => {
+    try {
+      const llmResult = await callLlmChat(c.env, prompt, {
+        modelPreference: model,
+        temperature: 0.35,
+        maxTokens: 8192,
+        useUpstreamStream: true,
+        onProgress: (info) => {
+          latestProgress = {
+            stage: info.stage,
+            model: info.model,
+            reasoning_chars: info.reasoningChars,
+            content_chars: info.contentChars,
+          };
+          sendEvent("progress", {
+            elapsed: Math.round((Date.now() - startedAt) / 1000),
+            ...latestProgress,
+          });
+        },
+      });
 
-        const { cleanMarkdown, tacticalAdjustment } = extractAndNormalizeTacticalJson(
-          llmResult.text,
-          profile,
-          rec,
-          candidatePool
-        );
+      const { cleanMarkdown, tacticalAdjustment } = extractAndNormalizeTacticalJson(
+        llmResult.text,
+        profile,
+        rec,
+        candidatePool
+      );
 
-        sendEvent("result", {
-          analysis: cleanMarkdown,
-          tactical_adjustment: tacticalAdjustment,
-          model_used: llmResult.modelUsed,
-          provider: llmResult.provider,
-          reasoning: llmResult.reasoning || null,
-          fallback_reason: llmResult.fallbackReason || null,
-          candidate_pool_count: candidatePool.length,
-        });
-      } catch (err: any) {
-        sendEvent("error", {
-          detail: err?.message || "AI 投顾生成失败，请稍后重试",
-        });
-      } finally {
-        clearInterval(heartbeatTimer);
-        if (!closed) {
-          closed = true;
-          try {
-            controller.close();
-          } catch {
-            // ignore
-          }
+      sendEvent("result", {
+        analysis: cleanMarkdown,
+        tactical_adjustment: tacticalAdjustment,
+        model_used: llmResult.modelUsed,
+        provider: llmResult.provider,
+        reasoning: llmResult.reasoning || null,
+        fallback_reason: llmResult.fallbackReason || null,
+        candidate_pool_count: candidatePool.length,
+      });
+    } catch (err: any) {
+      sendEvent("error", {
+        detail: err?.message || "AI 投顾生成失败，请稍后重试",
+      });
+    } finally {
+      if (heartbeatTimer) {
+        clearTimeout(heartbeatTimer);
+        heartbeatTimer = null;
+      }
+      await writeChain.catch(() => {});
+      if (!closed) {
+        closed = true;
+        try {
+          await writer.close();
+        } catch {
+          // ignore already-closed pipe
         }
       }
-    },
-  });
+    }
+  })();
 
-  return c.body(sseStream, 200, {
+  try {
+    c.executionCtx?.waitUntil(pumpPromise);
+  } catch {
+    // Unit test environment without ExecutionContext
+  }
+
+  return c.body(readable, 200, {
     "Content-Type": "text/event-stream; charset=utf-8",
     "Cache-Control": "no-cache, no-transform",
     "X-Accel-Buffering": "no",

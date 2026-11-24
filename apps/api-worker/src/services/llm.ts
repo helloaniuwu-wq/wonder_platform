@@ -1,8 +1,9 @@
 import type { Env } from "../types";
-import type { TacticalCandidateFund } from "./advisoryEngine";
+import { isIlasFund, resolveBasketUniverseMode, type TacticalCandidateFund } from "./advisoryEngine";
 
 export type ModelPreference =
   | "deepseek-pro"
+  | "deepseek-pro-thinking"
   | "gemini-deep"
   | "qwen-deep"
   | "claude-sonnet"
@@ -16,6 +17,7 @@ export type ModelPreference =
 
 export type NormalizedModelPreference =
   | "deepseek-pro"
+  | "deepseek-pro-thinking"
   | "gemini-deep"
   | "qwen-deep"
   | "claude-sonnet"
@@ -25,8 +27,10 @@ export function normalizeModelPreference(pref?: string): NormalizedModelPreferen
   switch (pref) {
     case "deepseek-pro":
     case "auto":
-    case "reasoner":
       return "deepseek-pro";
+    case "deepseek-pro-thinking":
+    case "reasoner":
+      return "deepseek-pro-thinking";
     case "deepseek-flash":
     case "deepseek":
       return "deepseek-flash";
@@ -75,6 +79,7 @@ export interface TacticalHoldingAdjustment {
   name: string;
   asset_class?: string;
   core_role?: "core" | "satellite";
+  ilas_platform?: string | null;
   fee_pct?: number | null;
   action?: "KEEP" | "INCREASE" | "DECREASE" | "ADD" | "REMOVE";
   base_weight_pct: number;
@@ -193,7 +198,13 @@ export async function callLlmChat(
   const temperature = options.temperature ?? 0.35;
   const maxTokens = options.maxTokens ?? 4096;
   const useStream = Boolean(options.useUpstreamStream || options.onProgress);
-  const attemptTimeoutMs = options.attemptTimeoutMs ?? (useStream ? 115000 : 55000);
+  const attemptTimeoutMs =
+    options.attemptTimeoutMs ??
+    (pref === "deepseek-pro-thinking" || pref === "qwen-deep"
+      ? 115000
+      : useStream
+        ? 75000
+        : 55000);
 
   const errors: string[] = [];
 
@@ -208,13 +219,13 @@ export async function callLlmChat(
     const baseUrl = (env.DEEPSEEK_BASE_URL || "https://api.deepseek.com").replace(/\/+$/, "");
     const configuredModel = (env.DEEPSEEK_MODEL || "").trim();
     const isFlash = pref === "deepseek-flash";
+    const isThinkingPro = pref === "deepseek-pro-thinking";
     const modelName = isFlash
       ? "deepseek-flash"
       : configuredModel && !["deepseek-chat", "deepseek-reasoner"].includes(configuredModel)
         ? configuredModel
         : "deepseek-v4-pro";
 
-    const isThinkingPro = modelName !== "deepseek-flash";
     const payload: Record<string, unknown> = {
       model: modelName,
       messages: [
@@ -222,14 +233,18 @@ export async function callLlmChat(
         { role: "user", content: userPrompt },
       ],
       temperature: isThinkingPro ? 1.0 : temperature,
-      max_tokens: isThinkingPro ? Math.max(maxTokens, 16384) : Math.max(maxTokens, 6144),
+      max_tokens: isThinkingPro
+        ? Math.max(maxTokens, 16384)
+        : isFlash
+          ? Math.max(maxTokens, 6144)
+          : Math.max(maxTokens, 8192),
     };
     if (useStream) {
       payload.stream = true;
     }
     if (isThinkingPro) {
       payload.thinking = { type: "enabled" };
-      // 实测 low 在保持严谨深度链的同时避免 >120s 阻塞超时
+      // 显式选用思考链模式时采用 low 强度，兼顾深度逻辑推演与超时可控
       payload.reasoning_effort = "low";
     } else {
       payload.thinking = { type: "disabled" };
@@ -288,6 +303,11 @@ export async function callLlmChat(
         "deepseek/deepseek-v4-pro",
         "deepseek/deepseek-r1-0528",
       ],
+      "deepseek-pro-thinking": [
+        "deepseek/deepseek-v4-pro-0813",
+        "deepseek/deepseek-v4-pro",
+        "deepseek/deepseek-r1-0528",
+      ],
       "gemini-deep": [
         "google/gemini-3.8-flash",
         "google/gemini-3.7-flash",
@@ -317,13 +337,14 @@ export async function callLlmChat(
       ""
     );
     const budgetMap: Record<NormalizedModelPreference, number> = {
-      "deepseek-pro": 16384,
+      "deepseek-pro": 8192,
+      "deepseek-pro-thinking": 16384,
       "qwen-deep": 16384,
       "gemini-deep": 12288,
       "claude-sonnet": 8192,
       "deepseek-flash": 6144,
     };
-    const effectiveMaxTokens = Math.max(maxTokens, budgetMap[pref] || 12288);
+    const effectiveMaxTokens = Math.max(maxTokens, budgetMap[pref] || 8192);
 
     for (const m of modelsToTry) {
       const controller = new AbortController();
@@ -349,7 +370,7 @@ export async function callLlmChat(
         if (useStream) {
           reqBody.stream = true;
         }
-        if (pref === "deepseek-pro" || pref === "qwen-deep") {
+        if (pref === "deepseek-pro-thinking" || pref === "qwen-deep") {
           reqBody.reasoning = { effort: "low" };
         }
 
@@ -864,6 +885,7 @@ export function extractAndNormalizeTacticalJson(
       name: string;
       asset_class?: string;
       core_role?: "core" | "satellite";
+      ilas_platform?: string | null;
       fee_pct?: number | null;
       baseW: number;
       rawAdjW: number;
@@ -871,6 +893,12 @@ export function extractAndNormalizeTacticalJson(
       reason_en?: string;
       fbIdx: number;
     };
+
+    const basketUniverseMode =
+      rec?.universe_mode === "ilas" || rec?.universe_mode === "non_ilas"
+        ? rec.universe_mode
+        : resolveBasketUniverseMode(profile || {}, baseHoldings);
+    const basketIsIlas = basketUniverseMode === "ilas";
 
     const combined: CombinedEntry[] = baseHoldings.map((h, i) => {
       const keys = baseKeysPerHolding[i];
@@ -890,6 +918,7 @@ export function extractAndNormalizeTacticalJson(
         name: String(h.name || h.lab_id || ""),
         asset_class: h.asset_class,
         core_role: h.core_role,
+        ilas_platform: h.ilas_platform ?? null,
         fee_pct: h.fee_pct ?? null,
         baseW,
         rawAdjW,
@@ -913,6 +942,8 @@ export function extractAndNormalizeTacticalJson(
       if (!key || baseKeySet.has(key)) continue;
       const cand = candLookup.get(key);
       if (!cand || seenAddedSlugs.has(cand.slug)) continue;
+      // 硬约束：严禁跨平台混配（投连险与非投连险互不越界）
+      if (isIlasFund(cand) !== basketIsIlas) continue;
       const rawW = Number(item?.adjusted_weight_pct);
       if (!Number.isFinite(rawW) || rawW <= 0) continue;
       seenAddedSlugs.add(cand.slug);
@@ -923,6 +954,7 @@ export function extractAndNormalizeTacticalJson(
         name: cand.name,
         asset_class: cand.asset_class,
         core_role: cand.core_role,
+        ilas_platform: cand.ilas_platform ?? null,
         fee_pct: cand.fee_pct,
         baseW: 0,
         rawAdjW: Math.max(0, Math.min(100, rawW)),
@@ -938,8 +970,7 @@ export function extractAndNormalizeTacticalJson(
       });
     }
 
-    const isIlas =
-      profile?.product_scope === "aia_tmp2" || Boolean(profile?.ilp_planned);
+    const isIlas = basketIsIlas;
     const activeEntries = combined.filter((e) => e.rawAdjW > 0);
     if (activeEntries.length === 0) {
       return { cleanMarkdown, tacticalAdjustment: fallback };
@@ -1007,6 +1038,7 @@ export function extractAndNormalizeTacticalJson(
         name: entry.name,
         asset_class: entry.asset_class,
         core_role: entry.core_role,
+        ilas_platform: entry.ilas_platform ?? null,
         fee_pct: entry.fee_pct,
         action,
         base_weight_pct: entry.baseW,
