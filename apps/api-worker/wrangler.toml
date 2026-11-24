@@ -11,9 +11,9 @@ OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 OPENROUTER_VISION_MODEL = "dots-studio/dots-3-note-preview:free"
 OPENROUTER_VISION_MODEL_FALLBACK = "nvidia/nemotron-3.5-super-vl:free"
 OPENROUTER_VISION_MODEL_LASTRESORT = "inclusionai/ling-3.0-flash-vl"
-OPENROUTER_DEEPSEEK_MODEL = "deepseek/deepseek-chat"
+OPENROUTER_DEEPSEEK_MODEL = "deepseek/deepseek-v4-pro-0813"
 DEEPSEEK_BASE_URL = "https://api.deepseek.com"
-DEEPSEEK_MODEL = "deepseek-chat"
+DEEPSEEK_MODEL = "deepseek-v4-pro"
 CORS_ORIGINS = "https://wonderwisdom.online,https://www.wonderwisdom.online,https://company.wonderwisdom.online,https://fis.wonderwisdom.online,http://localhost:3000,http://localhost:5174,http://localhost:5175"
 
 # ── Cloudflare D1 Serverless SQLite 绑定 ──────────────────────────

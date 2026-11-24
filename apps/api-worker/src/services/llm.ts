@@ -1,12 +1,46 @@
 import type { Env } from "../types";
 
 export type ModelPreference =
-  | "deepseek"
-  | "reasoner"
+  | "deepseek-pro"
+  | "gemini-deep"
+  | "qwen-deep"
   | "claude-sonnet"
+  | "deepseek-flash"
+  // 向后兼容旧参数
+  | "auto"
+  | "reasoner"
+  | "deepseek"
   | "gemini-pro"
-  | "gemini"
-  | "auto";
+  | "gemini";
+
+export type NormalizedModelPreference =
+  | "deepseek-pro"
+  | "gemini-deep"
+  | "qwen-deep"
+  | "claude-sonnet"
+  | "deepseek-flash";
+
+export function normalizeModelPreference(pref?: string): NormalizedModelPreference {
+  switch (pref) {
+    case "deepseek-pro":
+    case "auto":
+    case "reasoner":
+      return "deepseek-pro";
+    case "deepseek-flash":
+    case "deepseek":
+      return "deepseek-flash";
+    case "gemini-deep":
+    case "gemini-pro":
+    case "gemini":
+      return "gemini-deep";
+    case "qwen-deep":
+      return "qwen-deep";
+    case "claude-sonnet":
+      return "claude-sonnet";
+    default:
+      return "deepseek-pro";
+  }
+}
 
 export interface LlmChatOptions {
   modelPreference?: ModelPreference;
@@ -20,6 +54,7 @@ export interface LlmChatResult {
   modelUsed: string;
   provider: "deepseek" | "openrouter" | "fallback_rule";
   reasoning?: string;
+  fallbackReason?: string;
 }
 
 export interface TacticalHoldingAdjustment {
@@ -58,33 +93,54 @@ export interface TacticalAdjustmentPayload {
 
 /**
  * 结构化投资顾问与宏观量化分析 LLM 调用服务
- * 优先采用高性价比模型（DeepSeek V3 官方直连 / OpenRouter Gemini 2.5 Flash 备选）
+ * 优先采用深度推理与高性价比模型矩阵（DeepSeek V4 Pro 官方直连 / OpenRouter Gemini 3.8 Flash / Qwen 3.7 Plus / Claude Sonnet 5.5）
  */
 export async function callLlmChat(
   env: Env,
   userPrompt: string,
   options: LlmChatOptions = {}
 ): Promise<LlmChatResult> {
-  const pref = options.modelPreference || "auto";
+  const pref = normalizeModelPreference(options.modelPreference);
   const systemPrompt =
     options.systemPrompt ||
     "你是一位资深的买方量化投资顾问与财富规划专家。请基于客户画像、真实底层资产量化指标、当前宏观利率（高位维持）与权益估值（ERP压缩与估值中枢）环境，给出严谨、专业、结构清晰且具有实操性的配置归因与分析建议。";
   const temperature = options.temperature ?? 0.35;
-  const maxTokens = options.maxTokens ?? 3000;
+  const maxTokens = options.maxTokens ?? 4096;
 
   const errors: string[] = [];
 
-  // 1. 优先判定是否需要直连 OpenRouter 顶级旗舰模型（Claude 3.7 Sonnet / Gemini 2.5 Pro / Gemini Flash）
+  // 1. 优先判定是否需要直连 OpenRouter（Gemini 3.8 Flash / Qwen 3.7 Plus / Claude Sonnet 5.5）
   const openrouterKey = (env.OPENROUTER_API_KEY || "").trim();
   const deepseekKey = (env.DEEPSEEK_API_KEY || "").trim();
-  const openrouterFirst = pref === "claude-sonnet" || pref === "gemini-pro" || pref === "gemini";
+  const openrouterFirst =
+    pref === "gemini-deep" || pref === "qwen-deep" || pref === "claude-sonnet";
 
   const tryDeepseekDirect = async (): Promise<LlmChatResult | null> => {
     if (!deepseekKey) return null;
     try {
       const baseUrl = (env.DEEPSEEK_BASE_URL || "https://api.deepseek.com").replace(/\/+$/, "");
-      const modelName =
-        pref === "reasoner" ? "deepseek-reasoner" : env.DEEPSEEK_MODEL || "deepseek-chat";
+      const configuredModel = (env.DEEPSEEK_MODEL || "").trim();
+      const isFlash = pref === "deepseek-flash";
+      const modelName = isFlash
+        ? "deepseek-flash"
+        : configuredModel && !["deepseek-chat", "deepseek-reasoner"].includes(configuredModel)
+          ? configuredModel
+          : "deepseek-v4-pro";
+
+      const isThinkingPro = modelName !== "deepseek-flash";
+      const payload: Record<string, unknown> = {
+        model: modelName,
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: userPrompt },
+        ],
+        temperature: isThinkingPro ? 1.0 : temperature,
+        max_tokens: isThinkingPro ? Math.max(maxTokens, 6144) : Math.max(maxTokens, 4096),
+      };
+      if (isThinkingPro) {
+        payload.thinking = { type: "enabled" };
+        payload.reasoning_effort = "high";
+      }
 
       const res = await fetch(`${baseUrl}/chat/completions`, {
         method: "POST",
@@ -92,15 +148,7 @@ export async function callLlmChat(
           Authorization: `Bearer ${deepseekKey}`,
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({
-          model: modelName,
-          messages: [
-            { role: "system", content: systemPrompt },
-            { role: "user", content: userPrompt },
-          ],
-          temperature: pref === "reasoner" ? 1.0 : temperature,
-          max_tokens: maxTokens,
-        }),
+        body: JSON.stringify(payload),
       });
 
       if (res.ok) {
@@ -123,31 +171,42 @@ export async function callLlmChat(
 
   const tryOpenRouterChain = async (): Promise<LlmChatResult | null> => {
     if (!openrouterKey) return null;
-    const candidateMap: Record<ModelPreference, string[]> = {
-      "claude-sonnet": [
-        "anthropic/claude-3.7-sonnet",
-        "anthropic/claude-3.5-sonnet",
-        "deepseek/deepseek-chat",
-        "google/gemini-2.5-flash",
+    const candidateMap: Record<NormalizedModelPreference, string[]> = {
+      "deepseek-pro": [
+        "deepseek/deepseek-v4-pro-0813",
+        "deepseek/deepseek-v4-pro",
+        "deepseek/deepseek-r1-0528",
       ],
-      "gemini-pro": [
-        "google/gemini-2.5-pro-preview",
+      "gemini-deep": [
+        "google/gemini-3.8-flash",
+        "google/gemini-3.7-flash",
         "google/gemini-2.5-pro",
-        "google/gemini-2.5-flash",
-        "deepseek/deepseek-chat",
       ],
-      gemini: ["google/gemini-2.5-flash", "deepseek/deepseek-chat"],
-      reasoner: ["deepseek/deepseek-r1", "deepseek/deepseek-chat", "google/gemini-2.5-flash"],
-      deepseek: ["deepseek/deepseek-chat", "google/gemini-2.5-flash"],
-      auto: ["deepseek/deepseek-chat", "google/gemini-2.5-flash", "anthropic/claude-3.5-haiku"],
+      "qwen-deep": [
+        "qwen/qwen3.7-plus",
+        "qwen/qwen3.8-max-0902",
+        "qwen/qwen3-235b-a22b-thinking-2507",
+      ],
+      "claude-sonnet": [
+        "anthropic/claude-sonnet-5.5",
+        "anthropic/claude-sonnet-5",
+        "anthropic/claude-sonnet-4.6",
+      ],
+      "deepseek-flash": [
+        "deepseek/deepseek-v4.1-flash",
+        "deepseek/deepseek-v4-flash-0731",
+        "deepseek/deepseek-v3.2",
+      ],
     };
-    const modelsToTry = (candidateMap[pref] || candidateMap.auto).filter(
+    const modelsToTry = (candidateMap[pref] || candidateMap["deepseek-pro"]).filter(
       (m, i, arr) => arr.indexOf(m) === i
     );
     const baseUrl = (env.OPENROUTER_BASE_URL || "https://openrouter.ai/api/v1").replace(
       /\/+$/,
       ""
     );
+    const effectiveMaxTokens =
+      pref === "deepseek-flash" ? Math.max(maxTokens, 4096) : Math.max(maxTokens, 6144);
 
     for (const m of modelsToTry) {
       try {
@@ -166,14 +225,17 @@ export async function callLlmChat(
               { role: "user", content: userPrompt },
             ],
             temperature,
-            max_tokens: maxTokens,
+            max_tokens: effectiveMaxTokens,
           }),
         });
 
         if (res.ok) {
           const json = (await res.json()) as any;
           const text = json.choices?.[0]?.message?.content || "";
-          const reasoning = json.choices?.[0]?.message?.reasoning || undefined;
+          const reasoning =
+            json.choices?.[0]?.message?.reasoning ||
+            json.choices?.[0]?.message?.reasoning_content ||
+            undefined;
           if (text) {
             return { text, modelUsed: m, provider: "openrouter", reasoning };
           }
@@ -205,6 +267,10 @@ export async function callLlmChat(
     text: generateQuantitativeFallbackAnalysis(userPrompt),
     modelUsed: "Rule-Based Quant Advisory Fallback",
     provider: "fallback_rule",
+    fallbackReason:
+      errors.length > 0
+        ? errors.slice(0, 3).join(" | ")
+        : "未配置 DEEPSEEK_API_KEY 或 OPENROUTER_API_KEY",
   };
 }
 

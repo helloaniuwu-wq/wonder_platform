@@ -553,7 +553,7 @@ quantRouter.post("/recommend/explain", async (c) => {
   const body = await c.req.json<any>().catch(() => ({}));
   const profile = body.profile || {};
   const rec = body.recommendation || {};
-  const model = body.model || "auto";
+  const model = body.model || "deepseek-pro";
   const macroSnap = await getLatestMacroSnapshot(c.env.DB);
   const macroBlock = formatMacroPromptBlock(macroSnap);
 
@@ -634,7 +634,7 @@ ${macroBlock}
   const llmResult = await callLlmChat(c.env, prompt, {
     modelPreference: model,
     temperature: 0.35,
-    maxTokens: 3200,
+    maxTokens: 8192,
   });
 
   const { cleanMarkdown, tacticalAdjustment } = extractAndNormalizeTacticalJson(
@@ -649,6 +649,7 @@ ${macroBlock}
     model_used: llmResult.modelUsed,
     provider: llmResult.provider,
     reasoning: llmResult.reasoning || null,
+    fallback_reason: llmResult.fallbackReason || null,
   });
 });
 

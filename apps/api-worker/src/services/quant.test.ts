@@ -794,3 +794,140 @@ describe("Client IPS Report Generator & Narrative Co-Author", () => {
     expect(docxBytes[1]).toBe(0x4b);
   });
 });
+
+describe("callLlmChat deep-analysis model routing", () => {
+  it("routes deepseek-pro (and legacy auto/reasoner) to DeepSeek V4 Pro with thinking enabled and >=6144 max_tokens", async () => {
+    const calls: Array<{ url: string; body: any }> = [];
+    const spy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = typeof input === "string" ? input : (input as Request).url;
+      const body = init?.body ? JSON.parse(String(init.body)) : {};
+      calls.push({ url, body });
+      return new Response(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content: "### 一、宏观利率与估值时钟研判\n深度分析正文",
+                reasoning_content: "先评估美债10Y与SPY ERP，再配置短债与红利底仓。",
+              },
+            },
+          ],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } }
+      );
+    });
+
+    try {
+      const env: any = {
+        DEEPSEEK_API_KEY: "ds-test-key",
+        OPENROUTER_API_KEY: "or-test-key",
+        DEEPSEEK_BASE_URL: "https://api.deepseek.com",
+        DEEPSEEK_MODEL: "deepseek-v4-pro",
+      };
+
+      const res = await callLlmChat(env, "分析组合", {
+        modelPreference: "deepseek-pro",
+        maxTokens: 3200,
+      });
+
+      expect(calls).toHaveLength(1);
+      expect(calls[0].url).toBe("https://api.deepseek.com/chat/completions");
+      expect(calls[0].body.model).toBe("deepseek-v4-pro");
+      expect(calls[0].body.thinking).toEqual({ type: "enabled" });
+      expect(calls[0].body.reasoning_effort).toBe("high");
+      expect(calls[0].body.max_tokens).toBeGreaterThanOrEqual(6144);
+      expect(res.provider).toBe("deepseek");
+      expect(res.modelUsed).toBe("deepseek-v4-pro");
+      expect(res.reasoning).toContain("SPY ERP");
+
+      // Legacy "auto" should also map to deepseek-pro
+      const resLegacy = await callLlmChat(env, "分析组合", { modelPreference: "auto" });
+      expect(resLegacy.modelUsed).toBe("deepseek-v4-pro");
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("routes gemini-deep, qwen-deep, and claude-sonnet to OpenRouter primary models", async () => {
+    const requestedModels: string[] = [];
+    const spy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = typeof input === "string" ? input : (input as Request).url;
+      const body = init?.body ? JSON.parse(String(init.body)) : {};
+      expect(url).toBe("https://openrouter.ai/api/v1/chat/completions");
+      requestedModels.push(body.model);
+      return new Response(
+        JSON.stringify({
+          choices: [{ message: { content: "OpenRouter 深度报告", reasoning: "CoT trace" } }],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } }
+      );
+    });
+
+    try {
+      const env: any = {
+        DEEPSEEK_API_KEY: "ds-test-key",
+        OPENROUTER_API_KEY: "or-test-key",
+        OPENROUTER_BASE_URL: "https://openrouter.ai/api/v1",
+      };
+
+      const r1 = await callLlmChat(env, "p1", { modelPreference: "gemini-deep" });
+      const r2 = await callLlmChat(env, "p2", { modelPreference: "qwen-deep" });
+      const r3 = await callLlmChat(env, "p3", { modelPreference: "claude-sonnet" });
+
+      expect(requestedModels).toEqual([
+        "google/gemini-3.8-flash",
+        "qwen/qwen3.7-plus",
+        "anthropic/claude-sonnet-5.5",
+      ]);
+      expect(r1.provider).toBe("openrouter");
+      expect(r2.modelUsed).toBe("qwen/qwen3.7-plus");
+      expect(r3.modelUsed).toBe("anthropic/claude-sonnet-5.5");
+      expect(r1.reasoning).toBe("CoT trace");
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("falls back along OpenRouter chain, then to DeepSeek, and returns fallbackReason when all fail", async () => {
+    const attempts: string[] = [];
+    let shouldAllFail = false;
+
+    const spy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = typeof input === "string" ? input : (input as Request).url;
+      const body = init?.body ? JSON.parse(String(init.body)) : {};
+      attempts.push(`${url}#${body.model}`);
+
+      if (!shouldAllFail && body.model === "google/gemini-3.7-flash") {
+        return new Response(
+          JSON.stringify({ choices: [{ message: { content: "fallback to 3.7 flash ok" } }] }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        );
+      }
+      return new Response("upstream error", { status: 500 });
+    });
+
+    try {
+      const env: any = {
+        DEEPSEEK_API_KEY: "ds-test-key",
+        OPENROUTER_API_KEY: "or-test-key",
+        OPENROUTER_BASE_URL: "https://openrouter.ai/api/v1",
+        DEEPSEEK_BASE_URL: "https://api.deepseek.com",
+      };
+
+      const resDegraded = await callLlmChat(env, "p", { modelPreference: "gemini-deep" });
+      expect(resDegraded.provider).toBe("openrouter");
+      expect(resDegraded.modelUsed).toBe("google/gemini-3.7-flash");
+      expect(attempts[0]).toContain("google/gemini-3.8-flash");
+      expect(attempts[1]).toContain("google/gemini-3.7-flash");
+
+      shouldAllFail = true;
+      attempts.length = 0;
+      const resAllFailed = await callLlmChat(env, "测试提示词", { modelPreference: "gemini-deep" });
+      expect(resAllFailed.provider).toBe("fallback_rule");
+      expect(resAllFailed.fallbackReason).toContain("HTTP 500");
+      expect(attempts.some((a) => a.startsWith("https://api.deepseek.com/chat/completions#deepseek-v4-pro"))).toBe(true);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+});

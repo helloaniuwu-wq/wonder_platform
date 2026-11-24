@@ -78,14 +78,14 @@ def parse_factsheet_with_llm(text: str, fund_name: str) -> dict[str, Any] | None
             "DeepSeek",
             env.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com").rstrip("/"),
             env["DEEPSEEK_API_KEY"],
-            env.get("DEEPSEEK_MODEL", "deepseek-chat"),
+            env.get("DEEPSEEK_MODEL", "deepseek-flash"),
         ))
     if env.get("OPENROUTER_API_KEY"):
         providers.append((
             "OpenRouter",
             env.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1").rstrip("/"),
             env["OPENROUTER_API_KEY"],
-            env.get("OPENROUTER_DEEPSEEK_MODEL", "deepseek/deepseek-chat"),
+            env.get("OPENROUTER_DEEPSEEK_MODEL", "deepseek/deepseek-v4.1-flash"),
         ))
     if not providers:
         return None

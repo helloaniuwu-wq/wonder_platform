@@ -606,7 +606,11 @@ ${candBlock || "沿用現有持倉調整權重"}
 </reeval_json>`;
 
     try {
-      const llmRes = await callLlmChat(env, prompt, { maxTokens: 1600, temperature: 0.25 });
+      const llmRes = await callLlmChat(env, prompt, {
+        modelPreference: "deepseek-pro",
+        maxTokens: 4096,
+        temperature: 0.25,
+      });
       aiProvider = llmRes.provider;
       modelUsed = llmRes.modelUsed;
       const tagMatch = llmRes.text.match(/<reeval_json>\s*([\s\S]*?)\s*<\/reeval_json>/i);

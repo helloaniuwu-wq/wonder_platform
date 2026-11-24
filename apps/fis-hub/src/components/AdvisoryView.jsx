@@ -157,7 +157,7 @@ const AdvisoryView = ({
   const [result, setResult] = useState(null);
 
   // ── AI 归因分析状态 ────────────────────────────────────────────────────────
-  const [aiModel, setAiModel] = useState('auto');
+  const [aiModel, setAiModel] = useState('deepseek-pro');
   const [aiLoading, setAiLoading] = useState(false);
   const [aiError, setAiError] = useState('');
   const [aiAnalysis, setAiAnalysis] = useState(null);
@@ -1174,11 +1174,31 @@ const AdvisoryView = ({
                   className="atelier-select"
                   style={{ fontSize: '0.78rem', padding: '4px 8px', width: 'auto' }}
                 >
-                  <option value="auto">DeepSeek V3 (官方推荐·极速)</option>
-                  <option value="reasoner">DeepSeek R1 (深度推理旗舰)</option>
-                  <option value="claude-sonnet">Claude 3.7 Sonnet (私行投研文风)</option>
-                  <option value="gemini-pro">Gemini 2.5 Pro (深度宏观研判)</option>
-                  <option value="gemini">Gemini 2.5 Flash (OpenRouter)</option>
+                  <option value="deepseek-pro">
+                    {isEn
+                      ? 'DeepSeek V4 Pro (Default · Best Value Deep Thinking)'
+                      : 'DeepSeek V4 Pro (默认首选 · 深度思考极致性价比)'}
+                  </option>
+                  <option value="gemini-deep">
+                    {isEn
+                      ? 'Gemini 3.8 Flash (OpenRouter · Macro Deep Analysis)'
+                      : 'Gemini 3.8 Flash (OpenRouter · 深度宏观研判高性价比)'}
+                  </option>
+                  <option value="qwen-deep">
+                    {isEn
+                      ? 'Qwen 3.7 Plus (OpenRouter · CN/HK Finance Value)'
+                      : 'Qwen 3.7 Plus (OpenRouter · 中文金融/投连险超值深度)'}
+                  </option>
+                  <option value="claude-sonnet">
+                    {isEn
+                      ? 'Claude Sonnet 5.5 (OpenRouter · Private Bank Flagship)'
+                      : 'Claude Sonnet 5.5 (OpenRouter · 私行级报告文风旗舰)'}
+                  </option>
+                  <option value="deepseek-flash">
+                    {isEn
+                      ? 'DeepSeek V4.1 Flash (Fast Thinking · Ultra-Low Cost)'
+                      : 'DeepSeek V4.1 Flash (极速思考 · 极致省成本)'}
+                  </option>
                 </select>
 
                 <button
@@ -1220,6 +1240,72 @@ const AdvisoryView = ({
                     {copied ? <><Check size={13} style={{ color: 'var(--success)' }} /> {isEn ? 'Copied' : '已复制'}</> : <><Copy size={13} /> {isEn ? 'Copy Full Report' : '复制完整研判'}</>}
                   </button>
                 </div>
+
+                {/* 兜底规则引擎提示条（未配置 Key 或上游异常时提醒） */}
+                {aiAnalysis.provider === 'fallback_rule' && (
+                  <div
+                    style={{
+                      padding: '8px 12px',
+                      borderRadius: '6px',
+                      background: 'rgba(245, 158, 11, 0.1)',
+                      border: '1px solid rgba(245, 158, 11, 0.35)',
+                      color: 'var(--warning, #d97706)',
+                      fontSize: '0.78rem',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '8px',
+                    }}
+                  >
+                    <AlertCircle size={15} style={{ flexShrink: 0 }} />
+                    <span>
+                      {isEn
+                        ? `Running deterministic fallback (${aiAnalysis.fallback_reason || 'API key not configured'}).`
+                        : `当前已回退至量化规则引擎（原因：${aiAnalysis.fallback_reason || '未配置大模型 API Key'}）。`}
+                    </span>
+                  </div>
+                )}
+
+                {/* 可折叠 AI 深度思考推理过程 (Chain-of-Thought) */}
+                {aiAnalysis.reasoning && (
+                  <details
+                    style={{
+                      background: 'var(--bg-elevated, rgba(148, 163, 184, 0.06))',
+                      border: '1px solid var(--border-subtle)',
+                      borderRadius: '6px',
+                      padding: '8px 12px',
+                      fontSize: '0.78rem',
+                    }}
+                  >
+                    <summary
+                      style={{
+                        cursor: 'pointer',
+                        fontWeight: 600,
+                        color: 'var(--text-secondary)',
+                        userSelect: 'none',
+                      }}
+                    >
+                      {isEn
+                        ? 'View AI Deep Reasoning Trace (Chain-of-Thought)'
+                        : '查看 AI 深度推理思考过程（Chain-of-Thought）'}
+                    </summary>
+                    <pre
+                      style={{
+                        marginTop: '8px',
+                        marginBottom: 0,
+                        whiteSpace: 'pre-wrap',
+                        wordBreak: 'break-word',
+                        fontFamily: 'var(--font-mono)',
+                        fontSize: '0.74rem',
+                        lineHeight: 1.55,
+                        color: 'var(--text-muted)',
+                        maxHeight: '320px',
+                        overflowY: 'auto',
+                      }}
+                    >
+                      {aiAnalysis.reasoning}
+                    </pre>
+                  </details>
+                )}
 
                 {/* Render Markdown cleanly */}
                 <MarkdownReport content={aiAnalysis.analysis} />
