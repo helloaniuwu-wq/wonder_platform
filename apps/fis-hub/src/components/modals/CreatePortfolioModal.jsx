@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Database } from 'lucide-react';
 import FundCatalogPickerModal from './FundCatalogPickerModal';
+import { lookupCOI } from '../../utils/ilpConfigCalc';
 
 /**
  * Modal for creating a new portfolio.
@@ -144,6 +145,60 @@ const CreatePortfolioModal = ({
                   />
                 </div>
               </div>
+
+              {(newPf.wrapper_type || 'AIA_TMP2') === 'AIA_TMP2' && (
+                <div
+                  style={{
+                    background: 'rgba(var(--accent-color-rgb), 0.05)',
+                    border: '1px solid var(--border-subtle)',
+                    borderLeft: '3px solid var(--accent-color)',
+                    borderRadius: '6px',
+                    padding: '10px 12px',
+                    marginBottom: '12px',
+                  }}
+                >
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px', flexWrap: 'wrap', gap: '6px' }}>
+                    <span style={{ fontSize: '0.76rem', fontWeight: 700, color: 'var(--accent-color)' }}>
+                      投连险受保人费率匹配（每个组合独立）
+                    </span>
+                    <span style={{ fontSize: '0.72rem', fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)' }}>
+                      匹配 COI：{lookupCOI(Number(newPf.ilp_age ?? 35), newPf.ilp_gender || 'male').toFixed(2)}‰/年
+                    </span>
+                  </div>
+                  <div className="form-row" style={{ marginBottom: 0 }}>
+                    <div className="form-group" style={{ flex: 1, marginBottom: 0 }}>
+                      <label>受保人性别</label>
+                      <select
+                        value={newPf.ilp_gender || 'male'}
+                        onChange={e => setNewPf({ ...newPf, ilp_gender: e.target.value })}
+                      >
+                        <option value="male">男 (Male)</option>
+                        <option value="female">女 (Female)</option>
+                      </select>
+                    </div>
+                    <div className="form-group" style={{ flex: 1, marginBottom: 0 }}>
+                      <label>投保年龄</label>
+                      <input
+                        type="number"
+                        min="0"
+                        max="80"
+                        value={newPf.ilp_age ?? 35}
+                        onChange={e => setNewPf({ ...newPf, ilp_age: parseInt(e.target.value, 10) || 0 })}
+                      />
+                    </div>
+                    <div className="form-group" style={{ flex: 1, marginBottom: 0 }}>
+                      <label>吸烟状况</label>
+                      <select
+                        value={newPf.ilp_smoker ? 'yes' : 'no'}
+                        onChange={e => setNewPf({ ...newPf, ilp_smoker: e.target.value === 'yes' })}
+                      >
+                        <option value="no">非吸烟</option>
+                        <option value="yes">吸烟</option>
+                      </select>
+                    </div>
+                  </div>
+                </div>
+              )}
 
               <div className="form-group">
                 <label>Allocations (Total: {(totalWeight * 100).toFixed(0)}%)</label>

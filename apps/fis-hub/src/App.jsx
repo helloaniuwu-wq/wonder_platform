@@ -361,6 +361,9 @@ function App() {
       wrapper_type: isAiaBasket ? 'AIA_TMP2' : 'BROKER_ETF',
       drift_tolerance_pct: 5,
       max_drawdown_pct: Number(profile?.target_envelope?.max_drawdown_pct || 15),
+      ilp_gender: 'male',
+      ilp_age: Number(profile?.age || 35),
+      ilp_smoker: false,
       is_public: false,
       allocations: allocArray,
     });
@@ -387,6 +390,9 @@ function App() {
     wrapper_type: 'AIA_TMP2',
     drift_tolerance_pct: 5,
     max_drawdown_pct: 15,
+    ilp_gender: 'male',
+    ilp_age: 35,
+    ilp_smoker: false,
     is_public: false,
     allocations: [{ isin: '', weight: 0.5, manual_price: '' }, { isin: '', weight: 0.5, manual_price: '' }]
   });
@@ -603,6 +609,19 @@ function App() {
             drift_tolerance: Number(newPf.drift_tolerance_pct || 5) / 100,
             max_drawdown_limit: Number(newPf.max_drawdown_pct || 15) / 100,
           },
+          ...((newPf.wrapper_type || 'AIA_TMP2') === 'AIA_TMP2'
+            ? {
+                ilp_config: {
+                  enabled: true,
+                  age: Math.max(0, Math.min(80, parseInt(newPf.ilp_age, 10) || 35)),
+                  gender: newPf.ilp_gender || 'male',
+                  smoker: Boolean(newPf.ilp_smoker),
+                  premium: Number.isFinite(budgetVal) ? budgetVal : 0,
+                  currency: newPf.base_currency || 'USD',
+                  enrollment_rate: null,
+                },
+              }
+            : {}),
         }
       });
 

@@ -1,0 +1,11 @@
+CREATE TABLE IF NOT EXISTS portfolio_ilp_config (
+  portfolio_id INTEGER NOT NULL PRIMARY KEY,
+  enabled INTEGER NOT NULL DEFAULT 0,
+  age INTEGER NOT NULL DEFAULT 35,
+  gender TEXT NOT NULL DEFAULT 'male',
+  smoker INTEGER NOT NULL DEFAULT 0,
+  premium REAL NOT NULL DEFAULT 0,
+  currency TEXT NOT NULL DEFAULT 'USD',
+  enrollment_rate REAL,
+  updated_at TEXT DEFAULT (CURRENT_TIMESTAMP)
+);

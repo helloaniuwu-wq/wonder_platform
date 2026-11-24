@@ -91,6 +91,10 @@ fipRouter.post("/portfolios/new", async (c) => {
         raw.monitoring_config && typeof raw.monitoring_config === "object" && !Array.isArray(raw.monitoring_config)
           ? (raw.monitoring_config as Record<string, any>)
           : null,
+      ilp_config:
+        raw.ilp_config && typeof raw.ilp_config === "object" && !Array.isArray(raw.ilp_config)
+          ? (raw.ilp_config as Record<string, unknown>)
+          : null,
     };
   });
 
@@ -261,6 +265,14 @@ fipRouter.post("/portfolios/new", async (c) => {
         .run();
     } catch {
       // ignore if monitoring table doesn't exist in mock/legacy DB
+    }
+  }
+
+  if (body.ilp_config) {
+    try {
+      await writePortfolioIlpConfig(c.env.DB, Number(id), body.ilp_config);
+    } catch {
+      // ignore if portfolio_ilp_config table doesn't exist in mock DB
     }
   }
 
@@ -1040,32 +1052,192 @@ fipRouter.post("/portfolios/rebalance/undo/:id", async (c) => {
 // ── ILP Config ─────────────────────────────────────────────────────────────
 const ILP_DEFAULTS = {
   age: 35,
-  gender: "M",
-  smoker: 0,
+  gender: "male" as const,
+  smoker: false,
   premium: 100000,
   currency: "USD",
-  enrollment_rate: 0.05,
+  enrollment_rate: null as number | null,
 };
+
+function normalizeIlpGender(raw: unknown, defaultVal: "male" | "female" = "male"): "male" | "female" {
+  if (raw === undefined || raw === null || String(raw).trim() === "") return defaultVal;
+  const val = String(raw).trim().toLowerCase();
+  if (val === "male" || val === "m" || val === "男") return "male";
+  if (val === "female" || val === "f" || val === "女") return "female";
+  throw new HttpError(400, "性別 必須為 male / female (或 M / F)");
+}
+
+let portfolioIlpSchemaReady = false;
+async function ensurePortfolioIlpTable(db: D1Database) {
+  if (portfolioIlpSchemaReady) return;
+  try {
+    await db
+      .prepare(
+        `CREATE TABLE IF NOT EXISTS portfolio_ilp_config (
+          portfolio_id INTEGER NOT NULL PRIMARY KEY,
+          enabled INTEGER NOT NULL DEFAULT 0,
+          age INTEGER NOT NULL DEFAULT 35,
+          gender TEXT NOT NULL DEFAULT 'male',
+          smoker INTEGER NOT NULL DEFAULT 0,
+          premium REAL NOT NULL DEFAULT 0,
+          currency TEXT NOT NULL DEFAULT 'USD',
+          enrollment_rate REAL,
+          updated_at TEXT DEFAULT (CURRENT_TIMESTAMP)
+        )`
+      )
+      .run();
+    portfolioIlpSchemaReady = true;
+  } catch {
+    // Graceful no-op in mock D1 test environments
+  }
+}
+
+async function readPortfolioIlpConfig(db: D1Database, portfolioId: number) {
+  await ensurePortfolioIlpTable(db);
+  try {
+    const row = await db
+      .prepare("SELECT * FROM portfolio_ilp_config WHERE portfolio_id = ?")
+      .bind(portfolioId)
+      .first<any>();
+    if (!row) {
+      return {
+        portfolio_id: portfolioId,
+        configured: false,
+        enabled: false,
+        age: 35,
+        gender: "male" as const,
+        smoker: false,
+        premium: 0,
+        currency: "USD",
+        enrollment_rate: null as number | null,
+        updated_at: null as string | null,
+      };
+    }
+    return {
+      portfolio_id: portfolioId,
+      configured: true,
+      enabled: Boolean(row.enabled),
+      age: Number(row.age ?? 35),
+      gender: normalizeIlpGender(row.gender),
+      smoker: Boolean(row.smoker),
+      premium: Number(row.premium ?? 0),
+      currency: row.currency || "USD",
+      enrollment_rate: row.enrollment_rate != null ? Number(row.enrollment_rate) : null,
+      updated_at: row.updated_at || null,
+    };
+  } catch {
+    return {
+      portfolio_id: portfolioId,
+      configured: false,
+      enabled: false,
+      age: 35,
+      gender: "male" as const,
+      smoker: false,
+      premium: 0,
+      currency: "USD",
+      enrollment_rate: null as number | null,
+      updated_at: null as string | null,
+    };
+  }
+}
+
+async function writePortfolioIlpConfig(
+  db: D1Database,
+  portfolioId: number,
+  rawBody: Record<string, unknown>
+) {
+  await ensurePortfolioIlpTable(db);
+  const age = Math.round(optFiniteNumber(rawBody, "age", 35, { min: 0, max: 80, label: "受保人年齡" }));
+  const gender = normalizeIlpGender(rawBody.gender);
+  const smoker = Boolean(rawBody.smoker);
+  const premium = optFiniteNumber(rawBody, "premium", 0, { min: 0, label: "整付保費" });
+  const currency = optCurrency(rawBody, "currency", "USD");
+  const rawEnroll = rawBody.enrollment_rate;
+  const enrollmentRate =
+    rawEnroll === null || rawEnroll === undefined || rawEnroll === ""
+      ? null
+      : optFiniteNumber(rawBody, "enrollment_rate", 0, { min: 0, max: 1, label: "開戶獎賞率" });
+  const enabled = rawBody.enabled !== undefined ? Boolean(rawBody.enabled) : true;
+  const nowIso = new Date().toISOString();
+
+  await db
+    .prepare(
+      `INSERT OR REPLACE INTO portfolio_ilp_config
+         (portfolio_id, enabled, age, gender, smoker, premium, currency, enrollment_rate, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .bind(
+      portfolioId,
+      enabled ? 1 : 0,
+      age,
+      gender,
+      smoker ? 1 : 0,
+      premium,
+      currency,
+      enrollmentRate,
+      nowIso
+    )
+    .run();
+
+  return {
+    portfolio_id: portfolioId,
+    configured: true,
+    enabled,
+    age,
+    gender,
+    smoker,
+    premium,
+    currency,
+    enrollment_rate: enrollmentRate,
+    updated_at: nowIso,
+  };
+}
+
+fipRouter.get("/portfolios/:id/ilp-config", async (c) => {
+  const id = parsePositiveIntId(c.req.param("id"), "組合 ID");
+  await assertPortfolioRead(c, id);
+  return c.json(await readPortfolioIlpConfig(c.env.DB, id));
+});
+
+fipRouter.put("/portfolios/:id/ilp-config", async (c) => {
+  const user = await requireUser(c);
+  const id = parsePositiveIntId(c.req.param("id"), "組合 ID");
+  await assertPortfolioWrite(c, user, id);
+  const body = await parseJsonBody(c, (raw) => raw as Record<string, unknown>);
+  const saved = await writePortfolioIlpConfig(c.env.DB, id, body);
+  await writeAuditLog(c.env.DB, {
+    userId: user.id,
+    action: "portfolio.ilp_config_update",
+    resourceType: "portfolio",
+    resourceId: id,
+    detail: saved,
+  });
+  return c.json({ success: true, ...saved });
+});
 
 async function readIlpConfig(db: D1Database, userId: string) {
   const row = await db.prepare("SELECT * FROM user_ilp_config WHERE user_id = ?").bind(userId).first<any>();
   if (!row) return { ...ILP_DEFAULTS };
   return {
-    age: row.age,
-    gender: row.gender,
-    smoker: row.smoker,
-    premium: row.premium,
-    currency: row.currency,
-    enrollment_rate: row.enrollment_rate,
+    age: Number(row.age ?? 35),
+    gender: normalizeIlpGender(row.gender),
+    smoker: Boolean(row.smoker),
+    premium: Number(row.premium ?? 0),
+    currency: row.currency || "USD",
+    enrollment_rate: row.enrollment_rate != null ? Number(row.enrollment_rate) : null,
   };
 }
 
 async function writeIlpConfig(db: D1Database, userId: string, rawBody: Record<string, unknown>) {
-  const age = optFiniteNumber(rawBody, "age", 35, { min: 0, max: 120, label: "年齡" });
-  const gender = optEnum(rawBody, "gender", ["M", "F"] as const, "M", "性別");
+  const age = Math.round(optFiniteNumber(rawBody, "age", 35, { min: 0, max: 80, label: "年齡" }));
+  const gender = normalizeIlpGender(rawBody.gender);
   const premium = optFiniteNumber(rawBody, "premium", 100000, { min: 0, label: "保費" });
   const currency = optCurrency(rawBody, "currency", "USD");
-  const enrollmentRate = optFiniteNumber(rawBody, "enrollment_rate", 0.05, { min: 0, max: 1, label: "費率" });
+  const rawEnroll = rawBody.enrollment_rate;
+  const enrollmentRate =
+    rawEnroll === null || rawEnroll === undefined || rawEnroll === ""
+      ? null
+      : optFiniteNumber(rawBody, "enrollment_rate", 0.05, { min: 0, max: 1, label: "費率" });
   await db
     .prepare(
       `INSERT OR REPLACE INTO user_ilp_config (user_id, age, gender, smoker, premium, currency, enrollment_rate, updated_at)

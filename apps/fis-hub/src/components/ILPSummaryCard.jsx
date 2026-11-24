@@ -1,4 +1,5 @@
 import React from 'react';
+import { lookupCOI, normalizeIlpGender } from '../utils/ilpConfigCalc';
 
 // ════════════════════════════════════════════════════════════════════════
 //  ILP 保障与传承可视化卡片（Nordic Gallery Minimal Edition）
@@ -14,6 +15,9 @@ const ILPSummaryCard = ({
 }) => {
   if (!ilpConfig || !ilpConfig.totalPremium) return null;
 
+  const normGender = normalizeIlpGender(ilpConfig.gender);
+  const ageNum = Number(ilpConfig.age ?? 35);
+  const matchedCoiRate = lookupCOI(ageNum, normGender);
   const sumAssured = ilpConfig.totalPremium * 1.05;
   const cv = currentCV || 0;
   const coverRatio = sumAssured > 0 ? Math.min(cv / sumAssured * 100, 100) : 0;
@@ -36,7 +40,7 @@ const ILPSummaryCard = ({
       }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <h4 style={{ margin: 0, color: 'var(--accent-color)', fontSize: '1rem' }}>投连险（ILP）模式</h4>
+            <h4 style={{ margin: 0, color: 'var(--accent-color)', fontSize: '1rem' }}>投连险（ILP）模式 · 本组合独立费率</h4>
           </div>
           {onEditConfig && (
             <button
@@ -45,14 +49,15 @@ const ILPSummaryCard = ({
               className="action-btn-secondary"
               style={{ padding: '4px 12px', fontSize: '0.78rem' }}
             >
-              修改设定
+              修改性别/年龄与费率
             </button>
           )}
         </div>
 
         <div style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', marginBottom: '12px', fontFamily: 'var(--font-mono)' }}>
-          受保人：{ilpConfig.age}岁 · {ilpConfig.gender === 'male' ? '男' : '女'}
+          受保人：{ageNum}岁 · {normGender === 'female' ? '女' : '男'}
           {ilpConfig.smoker ? ' · 吸烟者' : ' · 非吸烟者'}
+          &nbsp;·&nbsp;匹配 COI：<strong style={{ color: 'var(--accent-color)' }}>{matchedCoiRate.toFixed(2)}‰/年</strong>
           &nbsp;&nbsp;|&nbsp;&nbsp;整付保费：{fmt(ilpConfig.totalPremium)} {ilpConfig.currency || 'USD'}
           &nbsp;&nbsp;|&nbsp;&nbsp;身故赔偿：{fmt(sumAssured)}
         </div>
@@ -70,7 +75,7 @@ const ILPSummaryCard = ({
               户口价值费：活跃
             </div>
             <div style={{ fontSize: '0.78rem', color: 'var(--text-secondary)' }}>
-              保险费用：{ilpConfig.age + Math.floor(month / 12) < 80 ? '活跃' : '已豁免'}
+              保险费用（COI {matchedCoiRate.toFixed(2)}‰/年）：{ageNum + Math.floor(month / 12) < 80 ? '活跃' : '已豁免'}
             </div>
           </div>
 

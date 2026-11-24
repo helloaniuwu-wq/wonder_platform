@@ -34,9 +34,17 @@ export const ILP_COI_TABLE = {
   }
 };
 
+/** 统一性别口径：兼容 'male'/'female'、'M'/'F'、'男'/'女' */
+export function normalizeIlpGender(gender) {
+  const g = String(gender || '').trim().toLowerCase();
+  if (g === 'female' || g === 'f' || g === '女') return 'female';
+  return 'male';
+}
+
 /** 查表：按年龄和性别获取 COI 费率 */
 export function lookupCOI(age, gender) {
-  const table = ILP_COI_TABLE[gender] || ILP_COI_TABLE.male;
+  const normGender = normalizeIlpGender(gender);
+  const table = ILP_COI_TABLE[normGender] || ILP_COI_TABLE.male;
   const keys = Object.keys(table).map(Number).sort((a, b) => b - a);
   for (const k of keys) { if (age >= k) return table[k]; }
   return table[0];

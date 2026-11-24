@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { useLang } from '../i18n/langCore';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
@@ -10,10 +10,13 @@ import {
 import { COLORS, fmtMoney, fmtAxis, fmtCompact, getCurrencySymbol } from '../utils/currency';
 import { buildPortfolioDriftRows } from '../utils/fundQuantUtils';
 import { findCatalogFund } from '../utils/portfolioXRay';
+import { authHeaders } from '../utils/auth';
+import { lookupCOI, normalizeIlpGender } from '../utils/ilpConfigCalc';
 import ILPSummaryCard from './ILPSummaryCard';
 import PortfolioXRayPanel from './PortfolioXRayPanel';
 import PortfolioMonitorTab from './PortfolioMonitorTab';
 import HoldingsReconcileModal from './modals/HoldingsReconcileModal';
+import PortfolioILPModal from './PortfolioILPModal';
 import { calcILPMonthlyFee, getEnrollmentBonusRate } from '../utils/ilpImpactUtils';
 
 /**
@@ -30,59 +33,180 @@ const PortfolioView = ({
   handleOpenCompModal, handleOpenManageDivModal,
   handleRebalancePreview, handleUndoRebalance,
   canEdit,
-  ilpEnabled, ilpConfig,
-  onOpenIlpEnrollmentModal,
   onPortfolioMutated,
 }) => {
   const { t } = useLang();
   const ccy = data?.base_currency || 'USD';
 
+  const [portfolioIlp, setPortfolioIlp] = useState(null);
+  const [ilpModalOpen, setIlpModalOpen] = useState(false);
   const [applyIlpToChart, setApplyIlpToChart] = useState(false);
   const [isLogScale, setIsLogScale] = useState(false);
   const [showMoreMenu, setShowMoreMenu] = useState(false);
   const [ocrModalOpen, setOcrModalOpen] = useState(false);
 
-  const ilpHistoryData = useMemo(() => {
-    if (!applyIlpToChart || !ilpEnabled || !(ilpConfig?.totalPremium > 0) || historyData.length === 0) {
-      return historyData;
-    }
-    const firstVal = historyData[0]?.value || 1;
-    const effectivePremium = firstVal;
-    const bonusRate = ilpConfig.enrollmentRate ?? getEnrollmentBonusRate(ilpConfig.totalPremium || effectivePremium);
-    const enrollmentBonus = effectivePremium * bonusRate;
-    const initialMultiplier = (firstVal + enrollmentBonus) / firstVal;
-    let ilpMultiplier = initialMultiplier;
+  // 切换组合时立即按 key 重置当前组合的 ILP 配置，防止上一组合的受保人信息串台
+  const [ilpLoadedKey, setIlpLoadedKey] = useState(null);
+  if (activeId !== ilpLoadedKey) {
+    setIlpLoadedKey(activeId);
+    setPortfolioIlp(null);
+    setApplyIlpToChart(false);
+    setIlpModalOpen(false);
+  }
 
-    return historyData.map((d, i) => {
-      if (i > 0) {
-        const growthFactor = firstVal > 0 ? d.value / firstVal : 1;
-        const ilpAV = effectivePremium * growthFactor;
-        const fees = calcILPMonthlyFee(i + 1, ilpAV, ilpConfig);
-        const feeRate = ilpAV > 0 ? fees.netFee / ilpAV : 0;
-        ilpMultiplier = ilpMultiplier * (1 - feeRate);
-      }
-      const ilp_value = Math.max(0, d.value * ilpMultiplier);
-      return { ...d, ilp_value, raw_value: d.value, ilp_bonus: i === 0 ? enrollmentBonus : 0 };
-    });
-  }, [applyIlpToChart, ilpEnabled, ilpConfig, historyData]);
-
-  const ilpSummary = useMemo(() => {
-    if (!applyIlpToChart || ilpHistoryData.length === 0) return null;
-    const first = ilpHistoryData[0];
-    const last  = ilpHistoryData[ilpHistoryData.length - 1];
-    const rawCagr = data?.annualized_return != null ? parseFloat(data.annualized_return) : 0;
-    const drag = last?.raw_value > 0 ? ((last.raw_value - last.ilp_value) / last.raw_value) * 100 : 0;
-    const ilpMultiplier = last?.raw_value > 0 && last?.ilp_value > 0 ? last.ilp_value / last.raw_value : 1;
-    const ilpCagr = rawCagr * ilpMultiplier;
-    const enrollmentBonus = first?.ilp_bonus ?? 0;
-    return { rawFinal: last?.raw_value, ilpFinal: last?.ilp_value, rawCagr, ilpCagr, drag, enrollmentBonus };
-  }, [applyIlpToChart, ilpHistoryData, data]);
+  useEffect(() => {
+    if (!activeId) return;
+    let cancelled = false;
+    fetch(`/api/portfolios/${activeId}/ilp-config`, { headers: authHeaders() })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((cfg) => {
+        if (cancelled || !cfg) return;
+        const normalized = {
+          configured: Boolean(cfg.configured),
+          enabled: Boolean(cfg.enabled),
+          age: Number(cfg.age ?? 35),
+          gender: normalizeIlpGender(cfg.gender),
+          smoker: Boolean(cfg.smoker),
+          totalPremium: Number(cfg.premium ?? 0),
+          currency: cfg.currency || ccy || 'USD',
+          enrollmentRate: cfg.enrollment_rate != null ? Number(cfg.enrollment_rate) : null,
+          updated_at: cfg.updated_at || null,
+        };
+        setPortfolioIlp(normalized);
+        setApplyIlpToChart(Boolean(normalized.configured && normalized.enabled));
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [activeId, ccy]);
 
   const activePfObj = portfolios.find(p => p.id === activeId);
   const activePfName = activePfObj?.name;
   const activeStrategy = activePfObj?.dividend_strategy;
   const detailsList = data?.details;
   const targetAllocs = activePfObj?.target_allocations;
+
+  const suggestedPremium = useMemo(() => {
+    const firstVal = Number(historyData?.[0]?.value || 0);
+    if (firstVal > 0) return Math.round(firstVal);
+    const nav = Number(data?.total_nav || data?.total_market_value || 0);
+    return nav > 0 ? Math.round(nav) : 100000;
+  }, [historyData, data]);
+
+  const effectiveIlpConfig = useMemo(() => {
+    if (!portfolioIlp?.configured) return null;
+    const prem = portfolioIlp.totalPremium > 0 ? portfolioIlp.totalPremium : suggestedPremium;
+    return {
+      ...portfolioIlp,
+      totalPremium: prem,
+      gender: normalizeIlpGender(portfolioIlp.gender),
+      age: Number(portfolioIlp.age ?? 35),
+    };
+  }, [portfolioIlp, suggestedPremium]);
+
+  const handleToggleIlp = async () => {
+    if (!portfolioIlp?.configured) {
+      setIlpModalOpen(true);
+      return;
+    }
+    const nextEnabled = !applyIlpToChart;
+    setApplyIlpToChart(nextEnabled);
+    setPortfolioIlp((prev) => (prev ? { ...prev, enabled: nextEnabled } : prev));
+    if (canEdit && activeId) {
+      try {
+        await fetch(`/api/portfolios/${activeId}/ilp-config`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json', ...authHeaders() },
+          body: JSON.stringify({
+            enabled: nextEnabled,
+            age: portfolioIlp.age ?? 35,
+            gender: normalizeIlpGender(portfolioIlp.gender),
+            smoker: Boolean(portfolioIlp.smoker),
+            premium: Number(portfolioIlp.totalPremium || suggestedPremium),
+            currency: portfolioIlp.currency || ccy || 'USD',
+            enrollment_rate: portfolioIlp.enrollmentRate ?? null,
+          }),
+        });
+      } catch {
+        // Keep local toggle even if persistence transiently fails
+      }
+    }
+  };
+
+  const ilpHistoryData = useMemo(() => {
+    if (!applyIlpToChart || !effectiveIlpConfig || !(effectiveIlpConfig.totalPremium > 0) || historyData.length === 0) {
+      return historyData;
+    }
+    const firstVal = historyData[0]?.value || 1;
+    const effectivePremium = effectiveIlpConfig.totalPremium;
+    const bonusRate =
+      effectiveIlpConfig.enrollmentRate !== null && effectiveIlpConfig.enrollmentRate !== undefined
+        ? effectiveIlpConfig.enrollmentRate
+        : getEnrollmentBonusRate(effectivePremium);
+    const enrollmentBonus = effectivePremium * bonusRate;
+    const effectivePrincipal = effectivePremium + enrollmentBonus;
+    const initialMultiplier = (firstVal + (firstVal * bonusRate)) / firstVal;
+    let ilpMultiplier = initialMultiplier;
+
+    const startDateObj = historyData[0]?.date ? new Date(historyData[0].date) : null;
+    const hasValidStart = startDateObj && !Number.isNaN(startDateObj.getTime());
+
+    return historyData.map((d, i) => {
+      if (i > 0) {
+        const growthFactor = firstVal > 0 ? d.value / firstVal : 1;
+        const ilpAV = effectivePrincipal * growthFactor;
+        let monthIndex = i + 1;
+        if (hasValidStart && d?.date) {
+          const curD = new Date(d.date);
+          if (!Number.isNaN(curD.getTime())) {
+            monthIndex = Math.max(
+              1,
+              (curD.getUTCFullYear() - startDateObj.getUTCFullYear()) * 12 +
+                (curD.getUTCMonth() - startDateObj.getUTCMonth()) +
+                1
+            );
+          }
+        }
+        const fees = calcILPMonthlyFee(monthIndex, ilpAV, {
+          ...effectiveIlpConfig,
+          totalPremium: effectivePremium,
+        });
+        const feeRate = ilpAV > 0 ? fees.netFee / ilpAV : 0;
+        ilpMultiplier = ilpMultiplier * (1 - feeRate);
+      }
+      const ilp_value = Math.max(0, d.value * ilpMultiplier);
+      return {
+        ...d,
+        ilp_value,
+        raw_value: d.value,
+        ilp_bonus: i === 0 ? firstVal * bonusRate : 0,
+      };
+    });
+  }, [applyIlpToChart, effectiveIlpConfig, historyData]);
+
+  const ilpSummary = useMemo(() => {
+    if (!applyIlpToChart || !effectiveIlpConfig || ilpHistoryData.length === 0) return null;
+    const first = ilpHistoryData[0];
+    const last = ilpHistoryData[ilpHistoryData.length - 1];
+    const rawCagr = data?.annualized_return != null ? parseFloat(data.annualized_return) : 0;
+    const drag = last?.raw_value > 0 ? ((last.raw_value - last.ilp_value) / last.raw_value) * 100 : 0;
+    const ilpMultiplier = last?.raw_value > 0 && last?.ilp_value > 0 ? last.ilp_value / last.raw_value : 1;
+    const ilpCagr = rawCagr * ilpMultiplier;
+    const enrollmentBonus = first?.ilp_bonus ?? 0;
+    const matchedCoiRate = lookupCOI(effectiveIlpConfig.age, effectiveIlpConfig.gender);
+    return {
+      rawFinal: last?.raw_value,
+      ilpFinal: last?.ilp_value,
+      rawCagr,
+      ilpCagr,
+      drag,
+      enrollmentBonus,
+      age: effectiveIlpConfig.age,
+      gender: effectiveIlpConfig.gender,
+      matchedCoiRate,
+    };
+  }, [applyIlpToChart, effectiveIlpConfig, ilpHistoryData, data]);
   const driftRows = useMemo(
     () => buildPortfolioDriftRows(detailsList || [], targetAllocs || {}),
     [detailsList, targetAllocs]
@@ -314,14 +438,14 @@ const PortfolioView = ({
 
       {effectiveSubTab === 'performance' && (
         <>
-          {/* ILP 状态卡（紧凑模式） */}
-          {ilpEnabled && ilpConfig && ilpConfig.totalPremium > 0 && (
+          {/* ILP 状态卡（紧凑模式，按本组合独立配置显示） */}
+          {applyIlpToChart && effectiveIlpConfig && effectiveIlpConfig.totalPremium > 0 && (
             <ILPSummaryCard
-              ilpConfig={ilpConfig}
+              ilpConfig={effectiveIlpConfig}
               currentCV={data?.details?.reduce((sum, h) => sum + (h.market_value || 0), 0) || 0}
               currentMonth={0}
               compact={true}
-              onEditConfig={onOpenIlpEnrollmentModal}
+              onEditConfig={() => setIlpModalOpen(true)}
             />
           )}
 
@@ -392,21 +516,44 @@ const PortfolioView = ({
                     {isLogScale ? 'Log Scale' : 'Linear Scale'}
                   </button>
                 )}
-                {ilpEnabled && ilpConfig?.totalPremium > 0 && historyData.length > 0 && (
-                  <button
-                    type="button"
-                    onClick={() => setApplyIlpToChart(v => !v)}
-                    className="action-btn-secondary"
-                    style={{
-                      padding: '5px 12px',
-                      fontSize: '0.78rem',
-                      background: applyIlpToChart ? 'rgba(var(--accent-color-rgb), 0.1)' : 'var(--surface-subtle)',
-                      borderColor: applyIlpToChart ? 'var(--accent-color)' : 'var(--border-subtle)',
-                      color: applyIlpToChart ? 'var(--accent-color)' : 'var(--text-secondary)',
-                    }}
-                  >
-                    {applyIlpToChart ? t('portfolio.ilpApplied') : t('portfolio.applyIlp')}
-                  </button>
+                {historyData.length > 0 && (
+                  <>
+                    <button
+                      type="button"
+                      onClick={handleToggleIlp}
+                      className="action-btn-secondary"
+                      style={{
+                        padding: '5px 12px',
+                        fontSize: '0.78rem',
+                        background: applyIlpToChart ? 'rgba(var(--accent-color-rgb), 0.1)' : 'var(--surface-subtle)',
+                        borderColor: applyIlpToChart ? 'var(--accent-color)' : 'var(--border-subtle)',
+                        color: applyIlpToChart ? 'var(--accent-color)' : 'var(--text-secondary)',
+                      }}
+                    >
+                      {applyIlpToChart
+                        ? t('portfolio.ilpApplied')
+                        : portfolioIlp?.configured
+                          ? t('portfolio.applyIlp')
+                          : '投连险适配 (设性别/年龄)'}
+                    </button>
+                    {portfolioIlp?.configured && (
+                      <button
+                        type="button"
+                        onClick={() => setIlpModalOpen(true)}
+                        className="action-btn-secondary"
+                        title="修改本组合的投连险受保人性别、年龄与保费费率"
+                        style={{
+                          padding: '5px 10px',
+                          fontSize: '0.75rem',
+                          fontFamily: 'var(--font-mono)',
+                          color: 'var(--accent-color)',
+                          borderColor: 'rgba(var(--accent-color-rgb), 0.35)',
+                        }}
+                      >
+                        {normalizeIlpGender(portfolioIlp.gender) === 'female' ? '女' : '男'} · {portfolioIlp.age ?? 35}岁 · COI {lookupCOI(portfolioIlp.age ?? 35, portfolioIlp.gender).toFixed(2)}‰ ✎
+                      </button>
+                    )}
+                  </>
                 )}
               </div>
             </div>
@@ -549,6 +696,19 @@ const PortfolioView = ({
                 marginTop: '16px', padding: '14px 16px', borderRadius: 'var(--card-radius)',
                 background: 'var(--surface-subtle)', border: '1px solid var(--border-subtle)',
               }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px', flexWrap: 'wrap', gap: '8px' }}>
+                  <span style={{ fontSize: '0.78rem', fontWeight: 700, color: 'var(--accent-color)' }}>
+                    本组合专属 ILP 费率适配 · 受保人 {ilpSummary.age} 岁（{ilpSummary.gender === 'female' ? '女' : '男'}）· COI {ilpSummary.matchedCoiRate.toFixed(2)}‰/年
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setIlpModalOpen(true)}
+                    className="action-btn-secondary"
+                    style={{ fontSize: '0.72rem', padding: '3px 9px' }}
+                  >
+                    调整受保人性别 / 年龄
+                  </button>
+                </div>
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(135px, 1fr))', gap: '12px', marginBottom: '10px' }}>
                   {[
                     { label: '开户奖赏（期初计入）', val: `+${fmtMoney(ilpSummary.enrollmentBonus, 1, ccy)}`, color: 'var(--accent-secondary)', sub: 'ILP曲线期初高于原始曲线' },
@@ -566,7 +726,7 @@ const PortfolioView = ({
                   ))}
                 </div>
                 <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', borderTop: '1px solid var(--border-subtle)', paddingTop: '8px', lineHeight: 1.5 }}>
-                  ILP 曲线期初值 = 组合初始投入 + 开户奖赏（以基金单位计入）· 之后逐月扣减前期费 / 户口价值费 / COI（账户价值 ≥ 保额后 COI = 0）· 第6年起享有长期客户奖赏
+                  ILP 曲线期初值 = 组合初始投入 + 开户奖赏（以基金单位计入）· 之后逐月扣减前期费 / 户口价值费 / COI（按 {ilpSummary.age} 岁{ilpSummary.gender === 'female' ? '女性' : '男性'}费率表匹配，账户价值 ≥ 保额后 COI = 0）· 第6年起享有长期客户奖赏
                 </div>
               </div>
             )}
@@ -1083,6 +1243,21 @@ const PortfolioView = ({
         portfolioId={activeId}
         portfolioName={activePfName}
         onReconciled={onPortfolioMutated}
+      />
+
+      <PortfolioILPModal
+        open={ilpModalOpen}
+        onClose={() => setIlpModalOpen(false)}
+        portfolioId={activeId}
+        portfolioName={activePfName}
+        baseCurrency={ccy}
+        suggestedPremium={suggestedPremium}
+        initialConfig={portfolioIlp}
+        canEdit={canEdit}
+        onSaved={(savedCfg) => {
+          setPortfolioIlp(savedCfg);
+          setApplyIlpToChart(Boolean(savedCfg.enabled));
+        }}
       />
     </div>
   );

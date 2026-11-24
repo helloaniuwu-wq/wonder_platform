@@ -18,23 +18,12 @@
  *   长期客户奖赏(月61+): 按 AV 阶梯计算 / 月
  */
 
-// ── COI 费率表（年费率 / 每千元风险额，按年龄）────────────────────────────
-const COI_TABLE = {
-  male: {
-    0: 1.81, 18: 1.16, 25: 1.17, 30: 1.19, 35: 1.35,
-    40: 1.78, 45: 2.68, 50: 4.15, 55: 6.48,
-    60: 10.75, 65: 19.23, 70: 29.80, 75: 60.00, 80: 108.76,
-  },
-  female: {
-    0: 1.81, 18: 1.15, 25: 1.15, 30: 1.15, 35: 1.24,
-    40: 1.48, 45: 1.98, 50: 3.01, 55: 4.31,
-    60: 6.95, 65: 12.61, 70: 21.46, 75: 45.00, 80: 76.34,
-  },
-};
+import { ILP_COI_TABLE, normalizeIlpGender } from './ilpConfigCalc';
 
-/** 查找 COI 年费率（/千元风险额） */
+/** 查找 COI 年费率（/千元风险额，复用 AIA 逐龄分性别精确费率表） */
 export function lookupCOI(currentAge, gender) {
-  const table = COI_TABLE[gender] || COI_TABLE.male;
+  const normGender = normalizeIlpGender(gender);
+  const table = ILP_COI_TABLE[normGender] || ILP_COI_TABLE.male;
   const keys = Object.keys(table).map(Number).sort((a, b) => b - a);
   for (const k of keys) {
     if (currentAge >= k) return table[k];
@@ -84,6 +73,7 @@ export function calcLoyaltyBonusMonthly(accountValue) {
  */
 export function calcILPMonthlyFee(month, accountValue, ilpConfig) {
   const { age = 35, gender = 'male', totalPremium = 0 } = ilpConfig;
+  const normGender = normalizeIlpGender(gender);
   const AV = Math.max(0, accountValue);
   // 身故赔偿 = 已缴保费 × 105%
   const sumAssured = totalPremium * 1.05;
@@ -99,15 +89,15 @@ export function calcILPMonthlyFee(month, accountValue, ilpConfig) {
 
   // 3. 保险费 COI：当 AV >= 身故赔偿时风险额为 0，无保险费
   const riskAmt = Math.max(0, sumAssured - AV);
-  const coiAnnualRate = lookupCOI(ageNow, gender);    // 年费率 / 千元风险额
-  const coi = riskAmt * coiAnnualRate / 1000 / 12;    // 月费
+  const coiAnnualRate = lookupCOI(ageNow, normGender);    // 年费率 / 千元风险额
+  const coi = riskAmt * coiAnnualRate / 1000 / 12;        // 月费
 
   // 4. 长期客户奖赏（第 61 个月起）
   const loyaltyBonus = month >= 61 ? calcLoyaltyBonusMonthly(AV) : 0;
 
   const netFee = initialCharge + accountCharge + coi - loyaltyBonus;
 
-  return { initialCharge, accountCharge, coi, loyaltyBonus, netFee, ageNow, riskAmt, sumAssured, AV };
+  return { initialCharge, accountCharge, coi, coiAnnualRate, loyaltyBonus, netFee, ageNow, riskAmt, sumAssured, AV };
 }
 
 /**

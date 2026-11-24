@@ -9,6 +9,7 @@ interface MockState {
   transactions: Record<number, { id: number; portfolio_id: number }>;
   manual_dividends: Record<number, { id: number; portfolio_id: number }>;
   advisor_clients: Array<{ advisor_id: string; client_id: string; is_active: number }>;
+  portfolio_ilp_config: Record<number, { portfolio_id: number; enabled: number; age: number; gender: string; smoker: number; premium: number; currency: string; enrollment_rate: number | null; updated_at: string }>;
 }
 
 function createMockDb(state: MockState): D1Database {
@@ -27,6 +28,10 @@ function createMockDb(state: MockState): D1Database {
         if (sql.includes("FROM portfolios WHERE id = ?")) {
           const p = state.portfolios[Number(params[0])];
           return (p || null) as T | null;
+        }
+        if (sql.includes("FROM portfolio_ilp_config WHERE portfolio_id = ?")) {
+          const cfg = state.portfolio_ilp_config[Number(params[0])];
+          return (cfg || null) as T | null;
         }
         if (sql.includes("FROM advisor_clients WHERE advisor_id = ? AND client_id = ?")) {
           const hit = state.advisor_clients.find(
@@ -55,7 +60,23 @@ function createMockDb(state: MockState): D1Database {
         }
         return { results: [] as T[], success: true, meta: {} as any };
       },
-      run: async () => ({ success: true, meta: { changes: 1, last_row_id: 1 } as any }),
+      run: async () => {
+        if (sql.includes("INSERT OR REPLACE INTO portfolio_ilp_config")) {
+          const pid = Number(params[0]);
+          state.portfolio_ilp_config[pid] = {
+            portfolio_id: pid,
+            enabled: Number(params[1] ?? 1),
+            age: Number(params[2] ?? 35),
+            gender: String(params[3] ?? "male"),
+            smoker: Number(params[4] ?? 0),
+            premium: Number(params[5] ?? 0),
+            currency: String(params[6] ?? "USD"),
+            enrollment_rate: params[7] != null ? Number(params[7]) : null,
+            updated_at: String(params[8] ?? new Date().toISOString()),
+          };
+        }
+        return { success: true, meta: { changes: 1, last_row_id: 1 } as any };
+      },
     };
     return stmt;
   };
@@ -113,10 +134,22 @@ function makeState(): MockState {
         sort_order: 2,
         created_at: "2026-01-01T00:00:00Z",
       },
+      11: {
+        id: 11,
+        name: "Private Portfolio Two",
+        user_id: "owner-1",
+        is_public: 0,
+        base_currency: "HKD",
+        dividend_strategy: "REINVEST",
+        target_allocations: "{}",
+        sort_order: 3,
+        created_at: "2026-01-01T00:00:00Z",
+      },
     },
     transactions: { 100: { id: 100, portfolio_id: 10 } },
     manual_dividends: { 200: { id: 200, portfolio_id: 10 } },
     advisor_clients: [{ advisor_id: "adv-1", client_id: "owner-1", is_active: 1 }],
+    portfolio_ilp_config: {},
   };
 }
 
@@ -436,5 +469,124 @@ describe("Observability & Request ID", () => {
     } finally {
       fetchSpy.mockRestore();
     }
+  });
+});
+
+describe("Per-Portfolio ILP Config Isolation", () => {
+  it("stores and retrieves independent gender/age ILP settings per portfolio with validation and IDOR guard", async () => {
+    const state = makeState();
+    const env = makeEnv(state);
+    const ownerToken = await createAccessToken({ sub: "owner-1" }, env);
+    const otherToken = await createAccessToken({ sub: "other-1" }, env);
+
+    // 1. Unconfigured portfolio returns configured=false
+    const initRes = await app.fetch(
+      new Request("http://localhost/api/portfolios/10/ilp-config", {
+        headers: { Authorization: `Bearer ${ownerToken}` },
+      }),
+      env
+    );
+    expect(initRes.status).toBe(200);
+    const initJson = (await initRes.json()) as any;
+    expect(initJson.configured).toBe(false);
+    expect(initJson.enabled).toBe(false);
+
+    // 2. Save female age 46 on portfolio 10 and male age 32 (using legacy 'M') on portfolio 11
+    const put10 = await app.fetch(
+      new Request("http://localhost/api/portfolios/10/ilp-config", {
+        method: "PUT",
+        headers: { Authorization: `Bearer ${ownerToken}`, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          enabled: true,
+          age: 46,
+          gender: "F",
+          smoker: false,
+          premium: 500000,
+          currency: "USD",
+          enrollment_rate: null,
+        }),
+      }),
+      env
+    );
+    expect(put10.status).toBe(200);
+
+    const put11 = await app.fetch(
+      new Request("http://localhost/api/portfolios/11/ilp-config", {
+        method: "PUT",
+        headers: { Authorization: `Bearer ${ownerToken}`, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          enabled: true,
+          age: 32,
+          gender: "male",
+          smoker: true,
+          premium: 800000,
+          currency: "HKD",
+          enrollment_rate: 0.055,
+        }),
+      }),
+      env
+    );
+    expect(put11.status).toBe(200);
+
+    // Verify independent reads without cross-contamination
+    const get10 = (await (
+      await app.fetch(
+        new Request("http://localhost/api/portfolios/10/ilp-config", {
+          headers: { Authorization: `Bearer ${ownerToken}` },
+        }),
+        env
+      )
+    ).json()) as any;
+    expect(get10.configured).toBe(true);
+    expect(get10.gender).toBe("female");
+    expect(get10.age).toBe(46);
+    expect(get10.premium).toBe(500000);
+
+    const get11 = (await (
+      await app.fetch(
+        new Request("http://localhost/api/portfolios/11/ilp-config", {
+          headers: { Authorization: `Bearer ${ownerToken}` },
+        }),
+        env
+      )
+    ).json()) as any;
+    expect(get11.configured).toBe(true);
+    expect(get11.gender).toBe("male");
+    expect(get11.age).toBe(32);
+    expect(get11.smoker).toBe(true);
+    expect(get11.currency).toBe("HKD");
+    expect(get11.enrollment_rate).toBe(0.055);
+
+    // 3. Reject invalid gender or out-of-range age with 400
+    const badGender = await app.fetch(
+      new Request("http://localhost/api/portfolios/10/ilp-config", {
+        method: "PUT",
+        headers: { Authorization: `Bearer ${ownerToken}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ age: 40, gender: "X", premium: 100000 }),
+      }),
+      env
+    );
+    expect(badGender.status).toBe(400);
+
+    const badAge = await app.fetch(
+      new Request("http://localhost/api/portfolios/10/ilp-config", {
+        method: "PUT",
+        headers: { Authorization: `Bearer ${ownerToken}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ age: 99, gender: "male", premium: 100000 }),
+      }),
+      env
+    );
+    expect(badAge.status).toBe(400);
+
+    // 4. IDOR protection blocks non-owner from modifying portfolio 10 ILP config
+    const idorRes = await app.fetch(
+      new Request("http://localhost/api/portfolios/10/ilp-config", {
+        method: "PUT",
+        headers: { Authorization: `Bearer ${otherToken}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ age: 40, gender: "male", premium: 100000 }),
+      }),
+      env
+    );
+    expect(idorRes.status).toBe(403);
   });
 });
