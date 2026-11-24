@@ -47,6 +47,7 @@ export interface TargetEnvelope {
   target_equity_pct: number;
   target_bond_pct: number;
   target_other_pct: number;
+  equity_hard_cap_pct: number;
   max_vol_pct: number;
   max_drawdown_pct: number;
   income_focus: boolean;
@@ -103,6 +104,8 @@ export interface CustomBasketHolding {
   name: string;
   asset_class: string;
   sleeve: "equity" | "bond" | "other";
+  core_role: "core" | "satellite";
+  homogeneity_cluster?: string;
   ilas_platform: string | null;
   currency: string;
   data_tier: string;
@@ -111,12 +114,35 @@ export interface CustomBasketHolding {
   ret_3y_ann: number | null;
   vol_3y: number | null;
   sharpe_3y: number | null;
+  alpha_3y?: number | null;
+  r2_3y?: number | null;
   div_yield_ttm: number | null;
   fee_pct: number | null;
   is_distributing: boolean;
   weight_pct: number;
   rationale_zh: string;
   rationale_en: string;
+}
+
+export interface TacticalCandidateFund {
+  slug: string;
+  lab_id: string;
+  code: string;
+  name: string;
+  asset_class: string;
+  sleeve: "equity" | "bond" | "other";
+  core_role: "core" | "satellite";
+  homogeneity_cluster: string;
+  ilas_platform: string | null;
+  currency: string;
+  fee_pct: number | null;
+  alpha_3y: number | null;
+  r2_3y: number | null;
+  beta_3y: number | null;
+  vol_3y: number | null;
+  div_yield_ttm: number | null;
+  quant_grade: string | null;
+  is_distributing: boolean;
 }
 
 export interface CustomFundBasket {
@@ -136,6 +162,8 @@ export interface CustomFundBasket {
     equity_pct: number;
     bond_pct: number;
     other_pct: number;
+    core_pct: number;
+    satellite_pct: number;
     distributing_pct: number;
     series_backed_count: number;
   };
@@ -303,9 +331,19 @@ export function normalizeProfile(raw: Partial<ClientAdvisoryProfile>): ClientAdv
   };
 }
 
+export function getHorizonEquityHardCap(horizonYears: number): number {
+  const h = Number(horizonYears || 10);
+  if (h < 3) return 20;
+  if (h < 5) return 35;
+  if (h < 10) return 60;
+  if (h < 20) return 80;
+  return 90;
+}
+
 export function getRiskEnvelope(profile: ClientAdvisoryProfile): TargetEnvelope {
   const level = profile.risk_level || riskLevelFromScore(profile.risk_score ?? 55);
   const base = RISK_META[level];
+  const equityHardCap = getHorizonEquityHardCap(profile.horizon_years);
   let equity = base.equity;
   let bond = base.bond;
   let other = base.other;
@@ -330,6 +368,13 @@ export function getRiskEnvelope(profile: ClientAdvisoryProfile): TargetEnvelope 
     const shift = Math.min(5, Math.max(0, bond - 10));
     equity += shift;
     bond -= shift;
+  }
+
+  // Enforce Obsidian horizon equity hard cap (cannot be breached)
+  if (equity > equityHardCap) {
+    const excess = equity - equityHardCap;
+    equity = equityHardCap;
+    bond += excess;
   }
 
   // Keep exact sum = 100
@@ -357,13 +402,14 @@ export function getRiskEnvelope(profile: ClientAdvisoryProfile): TargetEnvelope 
     target_equity_pct: equity,
     target_bond_pct: bond,
     target_other_pct: other,
+    equity_hard_cap_pct: equityHardCap,
     max_vol_pct: base.maxVol,
     max_drawdown_pct: base.maxDd,
     income_focus: incomeFocus,
     withdrawal_rate_pct: withdrawalRatePct,
     suggested_rebalance_freq: freq,
-    summary_zh: `${base.label_zh} · 建议股债多元比 ${equity}% / ${bond}% / ${other}%，波动预算 ≤${base.maxVol}%${incomeFocus ? " · 侧重派息现金流" : ""}`,
-    summary_en: `${base.label_en} · Target ${equity}% Eq / ${bond}% FI / ${other}% Alt, Vol budget <= ${base.maxVol}%${incomeFocus ? " · Income tilt" : ""}`,
+    summary_zh: `${base.label_zh} · 建议股债多元比 ${equity}% / ${bond}% / ${other}%（期限权益硬顶 ≤${equityHardCap}%），波动预算 ≤${base.maxVol}%${incomeFocus ? " · 侧重派息现金流" : ""}`,
+    summary_en: `${base.label_en} · Target ${equity}% Eq / ${bond}% FI / ${other}% Alt (Horizon Eq Cap <=${equityHardCap}%), Vol <= ${base.maxVol}%${incomeFocus ? " · Income tilt" : ""}`,
   };
 }
 
@@ -780,6 +826,178 @@ function matchesProductScope(row: QuantFundCatalogRow, scope: ProductScope): boo
   return true;
 }
 
+const CORE_FUND_CODES = new Set([
+  "SPY",
+  "VOO",
+  "VTI",
+  "VT",
+  "ACWI",
+  "CSPX",
+  "IWDA",
+  "VWRA",
+  "VEA",
+  "AGG",
+  "BND",
+  "BNDX",
+  "BIL",
+  "SGOV",
+  "SHY",
+  "BSV",
+  "IEF",
+  "CSH2",
+  "B01",
+  "M11",
+  "M13",
+  "CG9",
+  "F16",
+  "W06",
+]);
+
+/**
+ * 依据 Obsidian《基金配置框架》划分「核心 (Beta/压舱)」与「卫星 (Alpha/主题/分散)」。
+ */
+export function inferFundRole(row: QuantFundCatalogRow): "core" | "satellite" {
+  const rawRole = (row.role || "").trim();
+  if (rawRole === "核心") return "core";
+  if (rawRole === "卫星") return "satellite";
+
+  const codeUp = (row.code || row.aia_code || "").trim().toUpperCase();
+  if (CORE_FUND_CODES.has(codeUp)) return "core";
+
+  const text = `${row.name || ""} ${row.name_en || ""} ${row.ilas_platform || ""}`.toLowerCase();
+  const isSatelliteKeyword =
+    /高收益|高息|新兴|科技|生物|医疗|医药|半导体|黄金|商品|原油|主题|优先|备兑|小盘|中国|港股|日本|亚洲|亚太|reit|high yield|emerging|tech|biotech|gold|commodity|preferred|covered|small|china|japan|asia/i.test(
+      text
+    );
+  if (isSatelliteKeyword) return "satellite";
+
+  const isCoreKeyword =
+    /全球|环球|全世界|标普|综合债|总债|国债|短期债|短债|极短期|货币|美元现金|核心|平衡|total bond|total stock|total world|aggregate|core|treasury|money market|balanced|s&p 500/i.test(
+      text
+    );
+  if (isCoreKeyword) return "core";
+
+  return "satellite";
+}
+
+/**
+ * 识别基金的细分子赛道（底层资产同质性集群），防止选入底层高度相似的重复标的。
+ */
+export function getFundHomogeneityCluster(row: QuantFundCatalogRow): string {
+  const sleeve = classifyFundSleeve(row);
+  const text = `${row.code || ""} ${row.aia_code || ""} ${row.name || ""} ${row.name_en || ""} ${row.ilas_platform || ""} ${row.benchmark_code || ""}`.toLowerCase();
+
+  if (sleeve === "other") {
+    if (/黄金|gold|gld|iau|商品|commodity|dbc|原油|油/i.test(text)) return "other|GOLD_COMMODITY";
+    if (/reit|vnq|地产|房产/i.test(text)) return "other|REIT";
+    return "other|MULTI_ASSET";
+  }
+
+  if (sleeve === "bond") {
+    if (
+      row.benchmark_code === "BIL" ||
+      /货币|现金|t-bill|国库券|短债|短期债|极短期|short|ultra|bil|sgov|shy|bsv|csh2|boxx|m13|b01|w06/i.test(
+        text
+      )
+    ) {
+      return "bond|SHORT_CASH";
+    }
+    if (/优先|preferred|pc4|zp4/i.test(text)) return "bond|PREFERRED";
+    if (/新兴|emerging|亚洲债|asian.*bond|中国债|china.*bond|c03|c09|z69|j07|i27|z22/i.test(text)) {
+      return "bond|EM_ASIA_BOND";
+    }
+    if (
+      row.benchmark_code === "HYG" ||
+      /高收益|high yield|hyg|i28|g16|m10|z08|credit allocation/i.test(text)
+    ) {
+      return "bond|HY_CREDIT";
+    }
+    if (/长期|20y|tlt|long treasury/i.test(text)) return "bond|LONG_TREASURY";
+    return "bond|IG_CORE";
+  }
+
+  // sleeve === "equity"
+  if (/科技|nasdaq|qqq|eqqq|生物|医疗|医药|半导体|biotech|tech|health|semiconductor|d05/i.test(text)) {
+    return "equity|SECTOR_THEME";
+  }
+  if (/日本|japan|1306|topix|nikkei/i.test(text)) return "equity|JAPAN";
+  if (
+    row.benchmark_code === "2800.HK" ||
+    row.benchmark_code === "sh510300" ||
+    /中国|港股|恒生|hsi|沪深|中证|a股|大中华|china|hk|a17|z01|v02|51\d{4}|159\d{3}|2800/i.test(
+      text
+    )
+  ) {
+    return "equity|HK_CN";
+  }
+  if (/新兴|亚洲|亚太|emerging|asia|vwo|eimi/i.test(text)) return "equity|EM_ASIA";
+  if (/红利|股息|价值|schd|vym|vig|dgro|hdv|jepi|jepq|divo|dividend|value/i.test(text)) {
+    return /美|us|schd|vym|vig|dgro|hdv|jepi|jepq|divo/i.test(text)
+      ? "equity|US_DIV_VALUE"
+      : "equity|GLOBAL_DIV_VALUE";
+  }
+  if (/美股|标普|美国|s&p|spy|voo|vti|cspx|russell/i.test(text)) return "equity|US_BROAD";
+  if (/收益|高息|派息|income|covered|备兑/i.test(text)) return "equity|GLOBAL_INCOME";
+  if (row.benchmark_code === "SPY") return "equity|US_BROAD";
+  return "equity|GLOBAL_BROAD";
+}
+
+/**
+ * 基于前十大持仓指纹识别底层资产真实重合度。
+ */
+export function computeHoldingsOverlap(
+  a: QuantFundCatalogRow,
+  b: QuantFundCatalogRow
+): { jaccard: number; sharedCount: number; isHighOverlap: boolean } {
+  const keysA = a.top_holding_keys || [];
+  const keysB = b.top_holding_keys || [];
+  if (keysA.length < 4 || keysB.length < 4) {
+    return { jaccard: 0, sharedCount: 0, isHighOverlap: false };
+  }
+  const setA = new Set(keysA);
+  const setB = new Set(keysB);
+  let sharedCount = 0;
+  for (const k of setA) {
+    if (setB.has(k)) sharedCount++;
+  }
+  const unionSize = setA.size + setB.size - sharedCount;
+  const jaccard = unionSize > 0 ? sharedCount / unionSize : 0;
+  return {
+    jaccard,
+    sharedCount,
+    isHighOverlap: jaccard >= 0.35 || sharedCount >= 4,
+  };
+}
+
+/**
+ * 同质基金优胜劣汰打分（用户准则）：
+ * 1) 优先选择费率最低 + 显著正向 Alpha（扣费后净 Alpha > 0.5%）最高的基金；
+ * 2) 若无显著正向 Alpha（被动指数或 Alpha <= 0），则选择与基准指数最贴合（高 R²、Beta 近 1.0）且费率最低的基金。
+ */
+export function computeHomogeneousQualityScore(row: QuantFundCatalogRow): number {
+  const fee = row.fee_pct != null ? row.fee_pct : 0.65;
+  const alphaPct = row.alpha_3y != null ? row.alpha_3y * 100 : null;
+  const netAlphaPct = alphaPct != null ? alphaPct - fee : null;
+  const tierBonus = row.data_tier === "A" ? 4 : row.data_tier === "B" ? 2 : 0;
+
+  if (alphaPct != null && alphaPct > 0.2 && netAlphaPct != null && netAlphaPct > 0.5) {
+    return 70 + clamp(netAlphaPct * 8, 0, 45) - clamp(fee * 3, 0, 12) + tierBonus;
+  }
+
+  const r2 = row.r2_3y != null ? clamp(row.r2_3y, 0, 1) : 0.5;
+  const betaDiff = row.beta_3y != null ? Math.abs(row.beta_3y - 1.0) : 0.25;
+  return 40 + r2 * 35 - clamp(betaDiff * 14, 0, 20) - clamp(fee * 14, 0, 30) + tierBonus;
+}
+
+export function compareHomogeneousFunds(a: QuantFundCatalogRow, b: QuantFundCatalogRow): number {
+  const diff = computeHomogeneousQualityScore(b) - computeHomogeneousQualityScore(a);
+  if (Math.abs(diff) > 1e-6) return diff;
+  const feeA = a.fee_pct ?? 0.65;
+  const feeB = b.fee_pct ?? 0.65;
+  if (Math.abs(feeA - feeB) > 1e-6) return feeA - feeB;
+  return (b.quant_score ?? 50) - (a.quant_score ?? 50);
+}
+
 function scoreFundCandidate(
   row: QuantFundCatalogRow,
   envelope: TargetEnvelope,
@@ -793,10 +1011,11 @@ function scoreFundCandidate(
   else if (row.data_tier === "B") score += 12;
   else if (row.data_tier === "C") score += 4;
 
-  // Sharpe & Morningstar quality bonuses
+  // Sharpe, Alpha/R2/Fee quality & Morningstar bonuses
   if (row.sharpe_3y != null) score += clamp(row.sharpe_3y * 8, -10, 14);
   if (row.morningstar_stars != null) score += (row.morningstar_stars - 3) * 3;
   if (row.tags.includes("推荐选择")) score += 6;
+  score += clamp((computeHomogeneousQualityScore(row) - 55) * 0.35, -12, 18);
 
   // Currency convenience slight bonus
   if (row.currency === preferredCurrency) score += 2.5;
@@ -818,49 +1037,145 @@ function scoreFundCandidate(
     score -= 8;
   }
 
-  // Lower fee slightly rewarded
+  // Lower fee rewarded (Obsidian A6: cost is the only certain return)
   if (row.fee_pct != null) {
-    score -= clamp(row.fee_pct * 2.5, 0, 6);
+    score -= clamp(row.fee_pct * 4.0, 0, 10);
   }
 
   return score;
 }
 
-function normalizeBasketWeights(holdings: CustomBasketHolding[]): CustomBasketHolding[] {
+function normalizeBasketWeights(
+  holdings: CustomBasketHolding[],
+  opts: {
+    minWeightPct?: number;
+    maxWeightPct?: number;
+    maxSatelliteTotalPct?: number;
+  } = {}
+): CustomBasketHolding[] {
   if (holdings.length === 0) return [];
-  const rawTotal = holdings.reduce((s, h) => s + h.weight_pct, 0) || 100;
-  const rounded = holdings.map((h) => ({
-    ...h,
-    weight_pct: Math.max(5, Math.round((h.weight_pct / rawTotal) * 20) * 5), // clean 5% increments
-  }));
-  const sum = rounded.reduce((s, h) => s + h.weight_pct, 0);
-  const diff = 100 - sum;
-  if (diff !== 0) {
-    // Apply residual to largest holding
-    let maxIdx = 0;
-    for (let i = 1; i < rounded.length; i++) {
-      if (rounded[i].weight_pct > rounded[maxIdx].weight_pct) maxIdx = i;
+  const n = holdings.length;
+  const minW = Math.min(opts.minWeightPct ?? 5, Math.floor(100 / n));
+  const step = minW >= 10 ? 5 : 5;
+  // Ensure feasible upper bound when n is small (e.g. 3 holdings can't sum to 100 if max=35)
+  const feasibleMax = Math.max(opts.maxWeightPct ?? 35, Math.ceil(100 / n / step) * step);
+  const satCap = opts.maxSatelliteTotalPct ?? 30;
+
+  const rawTotal = holdings.reduce((s, h) => s + Math.max(0, h.weight_pct), 0) || 100;
+  const weights = holdings.map((h) => {
+    const scaled = (Math.max(0, h.weight_pct) / rawTotal) * 100;
+    const snapped = Math.round(scaled / step) * step;
+    return clamp(snapped, minW, feasibleMax);
+  });
+
+  // Enforce Core-Satellite rule: total satellite weight <= satCap (excess flows to core)
+  const coreIdx = holdings
+    .map((h, i) => (h.core_role === "core" ? i : -1))
+    .filter((i) => i >= 0);
+  const satIdx = holdings
+    .map((h, i) => (h.core_role === "satellite" ? i : -1))
+    .filter((i) => i >= 0);
+
+  if (coreIdx.length > 0 && satIdx.length > 0) {
+    let satSum = satIdx.reduce((s, i) => s + weights[i], 0);
+    while (satSum > satCap) {
+      // Find largest satellite above minW, then shift step to smallest core below feasibleMax
+      const decTarget = satIdx
+        .filter((i) => weights[i] - step >= minW)
+        .sort((a, b) => weights[b] - weights[a])[0];
+      const incTarget = coreIdx
+        .filter((i) => weights[i] + step <= feasibleMax)
+        .sort((a, b) => weights[a] - weights[b])[0];
+      if (decTarget == null || incTarget == null) break;
+      weights[decTarget] -= step;
+      weights[incTarget] += step;
+      satSum -= step;
     }
-    rounded[maxIdx].weight_pct = Math.max(5, rounded[maxIdx].weight_pct + diff);
   }
-  return rounded;
+
+  // Reconcile sum === 100 in 5% (or 1%) steps while respecting bounds and satellite cap
+  let diff = 100 - weights.reduce((s, w) => s + w, 0);
+  let guard = 0;
+  while (diff !== 0 && guard < 100) {
+    guard++;
+    const delta = diff > 0 ? Math.min(step, diff) : -Math.min(step, -diff);
+    const satSumNow = satIdx.reduce((s, i) => s + weights[i], 0);
+    const candidates = holdings
+      .map((_, i) => i)
+      .filter((i) => {
+        const next = weights[i] + delta;
+        if (next < minW || next > feasibleMax) return false;
+        if (
+          delta > 0 &&
+          holdings[i].core_role === "satellite" &&
+          coreIdx.length > 0 &&
+          satSumNow + delta > satCap
+        ) {
+          return false;
+        }
+        return true;
+      })
+      .sort((a, b) => {
+        if (delta > 0) {
+          // Prefer boosting core first
+          if (holdings[a].core_role !== holdings[b].core_role) {
+            return holdings[a].core_role === "core" ? -1 : 1;
+          }
+          return weights[a] - weights[b];
+        }
+        return weights[b] - weights[a];
+      });
+
+    if (candidates.length === 0) {
+      // Final fallback without feasibleMax cap so total strictly equals 100
+      const fallbackIdx = coreIdx[0] ?? 0;
+      weights[fallbackIdx] = Math.max(minW, weights[fallbackIdx] + diff);
+      break;
+    }
+    weights[candidates[0]] += delta;
+    diff -= delta;
+  }
+
+  return holdings.map((h, i) => ({ ...h, weight_pct: weights[i] }));
 }
 
-function buildFundRationale(row: QuantFundCatalogRow, sleeve: "equity" | "bond" | "other", wantIncome: boolean) {
+function buildFundRationale(
+  row: QuantFundCatalogRow,
+  sleeve: "equity" | "bond" | "other",
+  coreRole: "core" | "satellite",
+  wantIncome: boolean
+) {
   const partsZh: string[] = [];
   const partsEn: string[] = [];
 
+  partsZh.push(coreRole === "core" ? "核心仓(Beta)" : "卫星仓(Alpha/分散)");
+  partsEn.push(coreRole === "core" ? "Core (Beta)" : "Satellite (Alpha/Diversifier)");
+
   if (sleeve === "bond") {
     partsZh.push("压舱固收");
-    partsEn.push("Defensive fixed income");
+    partsEn.push("Fixed income");
   } else if (sleeve === "other") {
     partsZh.push("多元分散");
-    partsEn.push("Multi-asset diversifier");
+    partsEn.push("Multi-asset");
   } else {
-    partsZh.push("核心权益增长");
-    partsEn.push("Core equity sleeve");
+    partsZh.push("权益增长");
+    partsEn.push("Equity");
   }
 
+  const fee = row.fee_pct;
+  const alphaPct = row.alpha_3y != null ? row.alpha_3y * 100 : null;
+  if (alphaPct != null && alphaPct > 0.2 && (fee == null || alphaPct - fee > 0.5)) {
+    partsZh.push(`超额 α +${alphaPct.toFixed(1)}%`);
+    partsEn.push(`Alpha +${alphaPct.toFixed(1)}%`);
+  } else if (row.r2_3y != null && row.r2_3y >= 0.85) {
+    partsZh.push(`高贴合 R²=${row.r2_3y.toFixed(2)}`);
+    partsEn.push(`Index fit R²=${row.r2_3y.toFixed(2)}`);
+  }
+
+  if (fee != null) {
+    partsZh.push(`费率 ${fee.toFixed(2)}%`);
+    partsEn.push(`TER ${fee.toFixed(2)}%`);
+  }
   if (row.quant_grade) {
     partsZh.push(`量化 ${row.quant_grade} 级`);
     partsEn.push(`Quant ${row.quant_grade}`);
@@ -871,8 +1186,8 @@ function buildFundRationale(row: QuantFundCatalogRow, sleeve: "equity" | "bond" 
   }
   if (wantIncome && row.is_distributing) {
     const yStr = row.div_yield_ttm != null ? `(${(row.div_yield_ttm * 100).toFixed(1)}%)` : "";
-    partsZh.push(`派息分红${yStr}`);
-    partsEn.push(`Distributing${yStr}`);
+    partsZh.push(`派息${yStr}`);
+    partsEn.push(`Dist${yStr}`);
   }
 
   return {
@@ -910,12 +1225,16 @@ function computeMetricsSafe(holdings: InternalHolding[]) {
   let eq = 0;
   let bd = 0;
   let oth = 0;
+  let corePct = 0;
+  let satPct = 0;
   let dist = 0;
   let backed = 0;
   for (const h of holdings) {
     if (h.sleeve === "equity") eq += h.weight_pct;
     else if (h.sleeve === "bond") bd += h.weight_pct;
     else oth += h.weight_pct;
+    if (h.core_role === "core") corePct += h.weight_pct;
+    else satPct += h.weight_pct;
     if (h.is_distributing) dist += h.weight_pct;
     if (h.data_tier === "A" || h.data_tier === "B") backed++;
   }
@@ -930,35 +1249,101 @@ function computeMetricsSafe(holdings: InternalHolding[]) {
     equity_pct: eq,
     bond_pct: bd,
     other_pct: oth,
+    core_pct: corePct,
+    satellite_pct: satPct,
     distributing_pct: dist,
     series_backed_count: backed,
   };
 }
 
+interface PickDiverseState {
+  usedTwins: Set<string>;
+  usedSlugs: Set<string>;
+  usedClusters: Set<string>;
+  usedNameKeys: Set<string>;
+  managerCounts: Map<string, number>;
+  pickedRows: QuantFundCatalogRow[];
+}
+
+function createPickState(): PickDiverseState {
+  return {
+    usedTwins: new Set<string>(),
+    usedSlugs: new Set<string>(),
+    usedClusters: new Set<string>(),
+    usedNameKeys: new Set<string>(),
+    managerCounts: new Map<string, number>(),
+    pickedRows: [],
+  };
+}
+
+/**
+ * 同质赛道内仅保留「最低费率 + 最高 Alpha（无显著 Alpha 时取最高 R² 指数贴合 + 最低费率）」的头号胜出者，
+ * 再跨赛道挑选，同时检查前十大持仓指纹重合度与管理人集中度（≤2 只）。
+ */
 function pickDiverseFromPool(
   pool: QuantFundCatalogRow[],
   limit: number,
-  usedTwins: Set<string>,
-  usedSlugs: Set<string>
+  state: PickDiverseState,
+  opts: { allowClusterReuseFallback?: boolean } = {}
 ): QuantFundCatalogRow[] {
-  const picked: QuantFundCatalogRow[] = [];
-  const usedNameKeys = new Set<string>();
+  if (limit <= 0 || pool.length === 0) return [];
 
+  // Group by homogeneity cluster and rank within each cluster strictly by compareHomogeneousFunds
+  const bestByCluster = new Map<string, QuantFundCatalogRow[]>();
   for (const row of pool) {
-    if (picked.length >= limit) break;
-    if (usedSlugs.has(row.slug)) continue;
-    const codeKey = (row.code || row.slug).toUpperCase();
-    if (usedTwins.has(codeKey) || (row.twin_code && usedTwins.has(row.twin_code.toUpperCase()))) {
-      continue;
-    }
-    const baseName = (row.name || "").split("(")[0].split("（")[0].slice(0, 8);
-    if (baseName && usedNameKeys.has(baseName)) continue;
+    const cl = getFundHomogeneityCluster(row);
+    const list = bestByCluster.get(cl) || [];
+    list.push(row);
+    bestByCluster.set(cl, list);
+  }
+  const clusterRepresentatives: QuantFundCatalogRow[] = [];
+  for (const [, list] of bestByCluster.entries()) {
+    list.sort(compareHomogeneousFunds);
+    clusterRepresentatives.push(list[0]);
+  }
+  // Order representatives by the caller's overall candidate score order
+  const poolIndex = new Map(pool.map((r, idx) => [r.slug, idx]));
+  clusterRepresentatives.sort((a, b) => (poolIndex.get(a.slug) ?? 0) - (poolIndex.get(b.slug) ?? 0));
 
-    picked.push(row);
-    usedSlugs.add(row.slug);
-    usedTwins.add(codeKey);
-    if (row.twin_code) usedTwins.add(row.twin_code.toUpperCase());
-    if (baseName) usedNameKeys.add(baseName);
+  const picked: QuantFundCatalogRow[] = [];
+  const tryPick = (candidates: QuantFundCatalogRow[], strictClusterAndMgr: boolean) => {
+    for (const row of candidates) {
+      if (picked.length >= limit) break;
+      if (state.usedSlugs.has(row.slug)) continue;
+
+      const codeKey = (row.code || row.slug).toUpperCase();
+      if (state.usedTwins.has(codeKey) || (row.twin_code && state.usedTwins.has(row.twin_code.toUpperCase()))) {
+        continue;
+      }
+      const baseName = (row.name || "").split("(")[0].split("（")[0].slice(0, 8);
+      if (baseName && state.usedNameKeys.has(baseName)) continue;
+
+      const cluster = getFundHomogeneityCluster(row);
+      if (strictClusterAndMgr && state.usedClusters.has(cluster)) continue;
+
+      const mgr = (row.manager || "").trim().toLowerCase();
+      if (strictClusterAndMgr && mgr && mgr !== "mgr" && (state.managerCounts.get(mgr) || 0) >= 2) {
+        continue;
+      }
+
+      // Check Top 10 holdings overlap against all already picked funds
+      const hasHoldingsCollision = state.pickedRows.some((prev) => computeHoldingsOverlap(prev, row).isHighOverlap);
+      if (hasHoldingsCollision) continue;
+
+      picked.push(row);
+      state.pickedRows.push(row);
+      state.usedSlugs.add(row.slug);
+      state.usedClusters.add(cluster);
+      state.usedTwins.add(codeKey);
+      if (row.twin_code) state.usedTwins.add(row.twin_code.toUpperCase());
+      if (baseName) state.usedNameKeys.add(baseName);
+      if (mgr) state.managerCounts.set(mgr, (state.managerCounts.get(mgr) || 0) + 1);
+    }
+  };
+
+  tryPick(clusterRepresentatives, true);
+  if (picked.length < limit && opts.allowClusterReuseFallback) {
+    tryPick(pool, false);
   }
   return picked;
 }
@@ -988,6 +1373,13 @@ function buildSingleBasket(
     targetBd += 10;
   }
 
+  // Re-assert Obsidian horizon equity hard cap
+  if (targetEq > envelope.equity_hard_cap_pct) {
+    const excess = targetEq - envelope.equity_hard_cap_pct;
+    targetEq = envelope.equity_hard_cap_pct;
+    targetBd += excess;
+  }
+
   const scoredPool = [...rows]
     .filter((r) => !excludeSlugs.has(r.slug))
     .sort(
@@ -995,7 +1387,6 @@ function buildSingleBasket(
         scoreFundCandidate(b, envelope, mode, profile.currency) -
         scoreFundCandidate(a, envelope, mode, profile.currency)
     );
-  // Fallback if excluding previous basket left fewer than 4 funds
   const activePool =
     scoredPool.length >= 4
       ? scoredPool
@@ -1005,51 +1396,135 @@ function buildSingleBasket(
             scoreFundCandidate(a, envelope, mode, profile.currency)
         );
 
-  const eqPool = activePool.filter((r) => classifyFundSleeve(r) === "equity");
-  const bdPool = activePool.filter((r) => classifyFundSleeve(r) === "bond");
+  const isIlas = profile.product_scope === "aia_tmp2" || Boolean(profile.ilp_planned);
+  const minWeightPct = isIlas ? 10 : 5;
+  const maxSatelliteTotalPct =
+    envelope.risk_level === "conservative" || mode === "defensive" ? 15 : 30;
+
+  // Partition into Core vs Satellite pools while respecting equity/bond/other sleeves
+  const eqCorePool = activePool.filter((r) => classifyFundSleeve(r) === "equity" && inferFundRole(r) === "core");
+  const eqSatPool = activePool.filter((r) => classifyFundSleeve(r) === "equity" && inferFundRole(r) === "satellite");
+  const bdCorePool = activePool.filter((r) => classifyFundSleeve(r) === "bond" && inferFundRole(r) === "core");
+  const bdSatPool = activePool.filter((r) => classifyFundSleeve(r) === "bond" && inferFundRole(r) === "satellite");
   const othPool = activePool.filter((r) => classifyFundSleeve(r) === "other");
 
-  const eqSlots = targetEq >= 60 ? 3 : targetEq >= 25 ? 2 : targetEq > 0 ? 1 : 0;
-  const bdSlots = targetBd >= 55 ? 3 : targetBd >= 25 ? 2 : targetBd > 0 ? 1 : 0;
-  const othSlots = targetOth >= 5 && othPool.length > 0 ? 1 : 0;
+  const eqAllPool = activePool.filter((r) => classifyFundSleeve(r) === "equity");
+  const bdAllPool = activePool.filter((r) => classifyFundSleeve(r) === "bond");
 
-  const usedSlugs = new Set<string>();
-  const usedTwins = new Set<string>();
+  const state = createPickState();
+  const pickedWithRole: Array<{ row: QuantFundCatalogRow; sleeve: "equity" | "bond" | "other"; coreRole: "core" | "satellite"; weight: number }> = [];
 
-  const pickedEq = pickDiverseFromPool(eqPool, eqSlots, usedTwins, usedSlugs);
-  const pickedBd = pickDiverseFromPool(bdPool, bdSlots, usedTwins, usedSlugs);
-  const pickedOth = pickDiverseFromPool(othPool, othSlots, usedTwins, usedSlugs);
+  // Allocate Core slots first (>= 70% of portfolio)
+  const satBudget = isIlas
+    ? maxSatelliteTotalPct >= 20
+      ? 20
+      : maxSatelliteTotalPct >= 10
+        ? 10
+        : 0
+    : maxSatelliteTotalPct;
+  const eqSatTarget = targetEq >= 35 && eqSatPool.length > 0 ? Math.min(15, satBudget) : 0;
+  const othSatTarget = targetOth >= minWeightPct && othPool.length > 0 ? Math.min(targetOth, Math.max(minWeightPct, satBudget - eqSatTarget)) : 0;
+  const bdSatTarget =
+    targetBd >= 40 && bdSatPool.length > 0 && eqSatTarget + othSatTarget + minWeightPct <= satBudget
+      ? minWeightPct
+      : 0;
 
-  // Redistribute missing sleeve weights cleanly
-  let effEq = pickedEq.length > 0 ? targetEq : 0;
-  let effBd = pickedBd.length > 0 ? targetBd : 0;
-  let effOth = pickedOth.length > 0 ? targetOth : 0;
-  const missing = 100 - (effEq + effBd + effOth);
-  if (missing > 0) {
-    if (pickedEq.length > 0 && pickedBd.length === 0) effEq += missing;
-    else if (pickedBd.length > 0 && pickedEq.length === 0) effBd += missing;
-    else if (pickedEq.length > 0) effEq += missing;
-    else if (pickedBd.length > 0) effBd += missing;
-    else effOth += missing;
+  const eqCoreTarget = Math.max(0, targetEq - eqSatTarget);
+  const bdCoreTarget = Math.max(0, targetBd - bdSatTarget);
+
+  const eqCoreSlots = eqCoreTarget >= 50 ? 2 : eqCoreTarget > 0 ? 1 : 0;
+  const bdCoreSlots = bdCoreTarget >= 45 ? 2 : bdCoreTarget > 0 ? 1 : 0;
+
+  const pickedEqCore = pickDiverseFromPool(
+    eqCorePool.length > 0 ? eqCorePool : eqAllPool,
+    eqCoreSlots,
+    state,
+    { allowClusterReuseFallback: true }
+  );
+  const pickedBdCore = pickDiverseFromPool(
+    bdCorePool.length > 0 ? bdCorePool : bdAllPool,
+    bdCoreSlots,
+    state,
+    { allowClusterReuseFallback: true }
+  );
+
+  // Pick up to 2 satellite slots across equity/other/bond without overlapping core clusters or holdings
+  const pickedEqSat =
+    eqSatTarget >= minWeightPct
+      ? pickDiverseFromPool(eqSatPool, 1, state)
+      : [];
+  const pickedOthSat =
+    othSatTarget >= minWeightPct
+      ? pickDiverseFromPool(othPool, 1, state)
+      : [];
+  const pickedBdSat =
+    bdSatTarget >= minWeightPct
+      ? pickDiverseFromPool(bdSatPool, 1, state)
+      : [];
+
+  // Redistribute weights cleanly across actual picked buckets
+  const wEqCore = pickedEqCore.length > 0 ? eqCoreTarget : 0;
+  const wEqSat = pickedEqSat.length > 0 ? eqSatTarget : 0;
+  const wBdCore = pickedBdCore.length > 0 ? bdCoreTarget : 0;
+  const wBdSat = pickedBdSat.length > 0 ? bdSatTarget : 0;
+  const wOth = pickedOthSat.length > 0 ? othSatTarget : 0;
+
+  let residual = 100 - (wEqCore + wEqSat + wBdCore + wBdSat + wOth);
+  let adjEqCore = wEqCore;
+  let adjBdCore = wBdCore;
+  if (residual > 0) {
+    if (pickedEqCore.length > 0 && pickedBdCore.length === 0) adjEqCore += residual;
+    else if (pickedBdCore.length > 0 && pickedEqCore.length === 0) adjBdCore += residual;
+    else if (pickedBdCore.length > 0 && targetBd >= targetEq) adjBdCore += residual;
+    else if (pickedEqCore.length > 0) adjEqCore += residual;
+    else if (pickedBdCore.length > 0) adjBdCore += residual;
+    residual = 0;
   }
 
-  // If total picked < 3, top up from overall scored pool
-  const selectedPairs: Array<{ row: QuantFundCatalogRow; sleeve: "equity" | "bond" | "other"; weight: number }> = [];
-  for (const r of pickedEq) selectedPairs.push({ row: r, sleeve: "equity", weight: effEq / pickedEq.length });
-  for (const r of pickedBd) selectedPairs.push({ row: r, sleeve: "bond", weight: effBd / pickedBd.length });
-  for (const r of pickedOth) selectedPairs.push({ row: r, sleeve: "other", weight: effOth / pickedOth.length });
+  for (const r of pickedEqCore) {
+    pickedWithRole.push({ row: r, sleeve: "equity", coreRole: "core", weight: adjEqCore / pickedEqCore.length });
+  }
+  for (const r of pickedBdCore) {
+    pickedWithRole.push({ row: r, sleeve: "bond", coreRole: "core", weight: adjBdCore / pickedBdCore.length });
+  }
+  for (const r of pickedEqSat) {
+    pickedWithRole.push({ row: r, sleeve: "equity", coreRole: "satellite", weight: wEqSat / pickedEqSat.length });
+  }
+  for (const r of pickedBdSat) {
+    pickedWithRole.push({ row: r, sleeve: "bond", coreRole: "satellite", weight: wBdSat / pickedBdSat.length });
+  }
+  for (const r of pickedOthSat) {
+    pickedWithRole.push({
+      row: r,
+      sleeve: "other",
+      coreRole: inferFundRole(r),
+      weight: wOth / pickedOthSat.length,
+    });
+  }
 
-  if (selectedPairs.length < 3 && activePool.length > selectedPairs.length) {
-    const extra = pickDiverseFromPool(activePool, 4 - selectedPairs.length, usedTwins, usedSlugs);
+  // Ensure at least 3 holdings when catalog allows
+  if (pickedWithRole.length < 3 && activePool.length > pickedWithRole.length) {
+    const coreFirst = [
+      ...activePool.filter((r) => inferFundRole(r) === "core"),
+      ...activePool.filter((r) => inferFundRole(r) === "satellite"),
+    ];
+    const extra = pickDiverseFromPool(coreFirst, 3 - pickedWithRole.length, state, {
+      allowClusterReuseFallback: true,
+    });
     for (const r of extra) {
-      selectedPairs.push({ row: r, sleeve: classifyFundSleeve(r), weight: 15 });
+      pickedWithRole.push({
+        row: r,
+        sleeve: classifyFundSleeve(r),
+        coreRole: inferFundRole(r),
+        weight: minWeightPct,
+      });
     }
   }
 
   const wantIncome = mode === "income_boost" || (mode === "core" && envelope.income_focus);
-  const internalHoldings: InternalHolding[] = selectedPairs.map(({ row, sleeve, weight }) => {
+  const internalHoldings: InternalHolding[] = pickedWithRole.map(({ row, sleeve, coreRole, weight }) => {
     const labId = row.code && row.code !== "—" ? row.code : row.slug;
-    const rat = buildFundRationale(row, sleeve, wantIncome);
+    const rat = buildFundRationale(row, sleeve, coreRole, wantIncome);
     return {
       slug: row.slug,
       code: row.code || row.slug,
@@ -1057,6 +1532,8 @@ function buildSingleBasket(
       name: row.name,
       asset_class: row.asset_class,
       sleeve,
+      core_role: coreRole,
+      homogeneity_cluster: getFundHomogeneityCluster(row),
       ilas_platform: row.ilas_platform,
       currency: row.currency,
       data_tier: row.data_tier,
@@ -1065,6 +1542,8 @@ function buildSingleBasket(
       ret_3y_ann: row.ret_3y_ann,
       vol_3y: row.vol_3y,
       sharpe_3y: row.sharpe_3y,
+      alpha_3y: row.alpha_3y,
+      r2_3y: row.r2_3y,
       max_dd_3y: row.max_dd_3y,
       div_yield_ttm: row.div_yield_ttm,
       fee_pct: row.fee_pct,
@@ -1075,7 +1554,11 @@ function buildSingleBasket(
     };
   });
 
-  const normHoldings = normalizeBasketWeights(internalHoldings).map((h, i) => ({
+  const normHoldings = normalizeBasketWeights(internalHoldings, {
+    minWeightPct,
+    maxWeightPct: 35,
+    maxSatelliteTotalPct,
+  }).map((h, i) => ({
     ...internalHoldings[i],
     weight_pct: h.weight_pct,
   }));
@@ -1101,7 +1584,6 @@ export function buildCustomFundBaskets(
   const scope = profile.product_scope || "all";
   let scoped = recommendedOnly.filter((r) => matchesProductScope(r, scope));
   if (scoped.length < 3) {
-    // Graceful relaxation if custom test/partial DB has few items in this scope
     scoped = catalogRows.filter((r) => matchesProductScope(r, scope));
   }
   if (scoped.length < 3) {
@@ -1116,14 +1598,14 @@ export function buildCustomFundBaskets(
     envelope,
     "core",
     "core",
-    "方案一 · 核心量化优选组合",
-    "Plan A · Core Quant Allocation",
-    "紧贴客户风险预算与投资期限，在合规基金池内兼顾夏普比率与大类分散",
-    "Aligned with risk budget and horizon, optimizing Sharpe ratio & diversification",
+    "方案一 · 核心+卫星量化优选组合",
+    "Plan A · Core-Satellite Quant Allocation",
+    "遵循核心 ≥70%（Beta压舱）/ 卫星 ≤30%（Alpha分散）原则，同质赛道优中选低费高α标",
+    "Core ≥70% / Satellite ≤30% discipline with lowest-fee & highest-alpha deduplication",
     new Set()
   );
 
-  // Exclude top-2 core equity picks so Plan B offers meaningful variation
+  // Exclude top-2 core picks so Plan B offers meaningful variation
   const excludeForAlt = new Set(coreBasket.holdings.slice(0, 2).map((h) => h.slug));
   const useDefensiveAlt = envelope.income_focus || envelope.risk_level === "conservative";
 
@@ -1136,11 +1618,11 @@ export function buildCustomFundBaskets(
     useDefensiveAlt ? "方案二 · 低波稳健防御备选" : "方案二 · 高息现金流增强备选",
     useDefensiveAlt ? "Plan B · Low-Vol Defensive Alt" : "Plan B · Income & Dividend Enhanced",
     useDefensiveAlt
-      ? "加厚债券与低波动压舱仓位，在市场回撤期进一步压缩净值下行"
-      : "提高派息型标的比重，在成长同时增强可支配现金分红",
+      ? "加厚核心固收压舱仓位，严控卫星比例，在市场回撤期进一步压缩净值下行"
+      : "在核心底仓上提高高股息与现金派息比例，兼顾长期增长与可支配现金分红",
     useDefensiveAlt
-      ? "Tilts further into low-volatility fixed income to dampen market drawdowns"
-      : "Increases distributing yield sleeve for steady interim cash distributions",
+      ? "Tilts further into core low-volatility fixed income to dampen drawdowns"
+      : "Increases distributing dividend sleeve alongside core holdings for steady cashflow",
     excludeForAlt
   );
 
@@ -1149,6 +1631,94 @@ export function buildCustomFundBaskets(
     scopedCount: scoped.length,
     backedCount,
   };
+}
+
+/**
+ * 为 AI 首席投顾构建同平台 Top 14 候补基金白名单池（每个细分同质赛道保留最优 1 只，优先覆盖当前篮子尚未涵盖的互补品种如黄金/港股红利/短债/长债）。
+ */
+export function buildTacticalCandidatePool(
+  catalogRows: QuantFundCatalogRow[],
+  rawProfile: Partial<ClientAdvisoryProfile>,
+  currentHoldings: Array<{ slug?: string; lab_id?: string; code?: string }>,
+  limit = 14
+): TacticalCandidateFund[] {
+  const profile = normalizeProfile(rawProfile);
+  const scope = profile.product_scope || "all";
+  const recommendedOnly = catalogRows.filter((r) => !r.tags.includes("非推荐选择"));
+  let scoped = recommendedOnly.filter((r) => matchesProductScope(r, scope));
+  if (scoped.length < 4) {
+    scoped = catalogRows.filter((r) => matchesProductScope(r, scope));
+  }
+  if (scoped.length < 4) {
+    scoped = recommendedOnly.length > 0 ? recommendedOnly : catalogRows;
+  }
+
+  const currentIds = new Set<string>();
+  const currentClusters = new Set<string>();
+  const currentRows: QuantFundCatalogRow[] = [];
+
+  for (const h of currentHoldings || []) {
+    if (h.slug) currentIds.add(String(h.slug).toUpperCase());
+    if (h.lab_id) currentIds.add(String(h.lab_id).toUpperCase());
+    if (h.code) currentIds.add(String(h.code).toUpperCase());
+  }
+
+  for (const r of catalogRows) {
+    const keys = [r.slug, r.code, r.aia_code, r.isin].filter(Boolean).map((x) => String(x).toUpperCase());
+    if (keys.some((k) => currentIds.has(k))) {
+      currentRows.push(r);
+      currentClusters.add(getFundHomogeneityCluster(r));
+      if (r.twin_code) currentIds.add(r.twin_code.toUpperCase());
+    }
+  }
+
+  // Group remaining candidates by homogeneity cluster and keep the #1 winner per cluster
+  const bestByCluster = new Map<string, QuantFundCatalogRow>();
+  for (const r of scoped) {
+    const keys = [r.slug, r.code, r.aia_code, r.isin, r.twin_code]
+      .filter(Boolean)
+      .map((x) => String(x).toUpperCase());
+    if (keys.some((k) => currentIds.has(k))) continue;
+    if (currentRows.some((cur) => computeHoldingsOverlap(cur, r).isHighOverlap)) continue;
+
+    const cluster = getFundHomogeneityCluster(r);
+    const existing = bestByCluster.get(cluster);
+    if (!existing || compareHomogeneousFunds(r, existing) < 0) {
+      bestByCluster.set(cluster, r);
+    }
+  }
+
+  const reps = Array.from(bestByCluster.values());
+  // Prioritize clusters NOT yet represented in currentHoldings (e.g. gold, HK/CN, short cash, long bond, EM)
+  reps.sort((a, b) => {
+    const clA = getFundHomogeneityCluster(a);
+    const clB = getFundHomogeneityCluster(b);
+    const missingA = currentClusters.has(clA) ? 0 : 1;
+    const missingB = currentClusters.has(clB) ? 0 : 1;
+    if (missingA !== missingB) return missingB - missingA;
+    return compareHomogeneousFunds(a, b);
+  });
+
+  return reps.slice(0, limit).map((r) => ({
+    slug: r.slug,
+    lab_id: r.code && r.code !== "—" ? r.code : r.slug,
+    code: r.code || r.slug,
+    name: r.name,
+    asset_class: r.asset_class,
+    sleeve: classifyFundSleeve(r),
+    core_role: inferFundRole(r),
+    homogeneity_cluster: getFundHomogeneityCluster(r),
+    ilas_platform: r.ilas_platform,
+    currency: r.currency,
+    fee_pct: r.fee_pct,
+    alpha_3y: r.alpha_3y,
+    r2_3y: r.r2_3y,
+    beta_3y: r.beta_3y,
+    vol_3y: r.vol_3y,
+    div_yield_ttm: r.div_yield_ttm,
+    quant_grade: r.quant_grade,
+    is_distributing: r.is_distributing,
+  }));
 }
 
 export async function recommendForClient(

@@ -40,6 +40,7 @@ export interface QuantFundCatalogRow {
   avg_rating?: string | null;
   credit_quality?: string | null;
   morningstar_url?: string | null;
+  top_holding_keys?: string[];
   // Metrics joined from wq_fund_metrics
   as_of_date: string | null;
   valuation_date: string | null;
@@ -128,6 +129,56 @@ function safeJsonArray(raw: string | null | undefined): string[] {
   }
 }
 
+const GENERIC_HOLDING_STOPWORDS = new Set([
+  "cash",
+  "money market",
+  "sl agency",
+  "treasury bill",
+  "t-bill",
+  "currency",
+  "usd",
+  "hkd",
+  "eur",
+  "cny",
+  "rmb",
+  "cash collateral",
+  "cash & equivalents",
+  "现金",
+  "货币",
+]);
+
+export function extractHoldingKeys(rawJson: string | null | undefined): string[] {
+  if (!rawJson) return [];
+  try {
+    const parsed = JSON.parse(rawJson);
+    const list = Array.isArray(parsed?.holdings) ? parsed.holdings : Array.isArray(parsed) ? parsed : [];
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const item of list) {
+      const sym = String(item?.symbol || "").trim();
+      const name = String(item?.name || "").trim();
+      const rawKey = (sym && sym.length >= 2 && sym.toLowerCase() !== "null" ? sym : name)
+        .toLowerCase()
+        .replace(/[^a-z0-9\u4e00-\u9fa5]+/g, " ")
+        .trim();
+      if (!rawKey || rawKey.length < 2) continue;
+      if (GENERIC_HOLDING_STOPWORDS.has(rawKey) || rawKey.includes("cash funds") || rawKey.includes("sl agency")) {
+        continue;
+      }
+      // Compact normalized fingerprint (first 24 chars without spaces)
+      const norm = rawKey.replace(/\s+/g, "").slice(0, 24);
+      if (norm && !seen.has(norm)) {
+        seen.add(norm);
+        out.push(norm);
+        if (out.length >= 10) break;
+      }
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
 export async function loadQuantCatalog(db: D1Database): Promise<{
   rows: QuantFundCatalogRow[];
   lookup: Map<string, QuantFundCatalogRow>;
@@ -149,7 +200,7 @@ export async function loadQuantCatalog(db: D1Database): Promise<{
             f.is_distributing, f.benchmark_code, f.primary_source,
             COALESCE(m.data_tier, f.data_tier) AS data_tier,
             f.is_trackable, f.status,
-            f.duration, f.yield_pct, f.avg_rating, f.credit_quality, f.morningstar_url,
+            f.duration, f.yield_pct, f.avg_rating, f.credit_quality, f.morningstar_url, f.top_holdings_json,
             m.as_of_date, m.valuation_date, m.latest_nav,
             m.ret_1m, m.ret_3m, m.ret_6m, m.ret_ytd, m.ret_1y, m.ret_3y_ann, m.ret_5y_ann,
             m.vol_1y, m.vol_3y, m.max_dd_1y, m.max_dd_3y, m.max_dd_5y, m.dd_recovery_days,
@@ -219,6 +270,7 @@ export async function loadQuantCatalog(db: D1Database): Promise<{
       avg_rating: r.avg_rating || null,
       credit_quality: r.credit_quality || null,
       morningstar_url: r.morningstar_url || null,
+      top_holding_keys: extractHoldingKeys(r.top_holdings_json),
       as_of_date: r.as_of_date || null,
       valuation_date: r.valuation_date || null,
       latest_nav: r.latest_nav != null ? Number(r.latest_nav) : null,

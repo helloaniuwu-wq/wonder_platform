@@ -377,29 +377,56 @@ const AdvisoryView = ({
     });
   };
 
+  const mergeTacticalHoldingsIntoBasket = (basketHoldings = [], adjustedHoldings = []) => {
+    const baseById = new Map(
+      (basketHoldings || []).map((h) => [String(h.lab_id || h.slug || '').toUpperCase(), h])
+    );
+    return (adjustedHoldings || [])
+      .filter((adj) => Number(adj.adjusted_weight_pct || 0) > 0)
+      .map((adj) => {
+        const key = String(adj.lab_id || adj.slug || '').toUpperCase();
+        const orig = baseById.get(key);
+        if (orig) {
+          return {
+            ...orig,
+            core_role: adj.core_role || orig.core_role,
+            weight_pct: adj.adjusted_weight_pct,
+            rationale_zh: adj.reason_zh || orig.rationale_zh,
+            rationale_en: adj.reason_en || orig.rationale_en,
+          };
+        }
+        return {
+          slug: adj.slug || adj.lab_id,
+          code: adj.lab_id,
+          lab_id: adj.lab_id,
+          name: adj.name || adj.lab_id,
+          asset_class: adj.asset_class || '基金',
+          core_role: adj.core_role || 'satellite',
+          fee_pct: adj.fee_pct ?? null,
+          data_tier: 'A',
+          quant_grade: null,
+          weight_pct: adj.adjusted_weight_pct,
+          rationale_zh: adj.reason_zh || 'AI 候补白名单增配标的',
+          rationale_en: adj.reason_en || 'Added from AI whitelist pool',
+        };
+      });
+  };
+
   const handleApplyTacticalToBasket = () => {
     const tactical = aiAnalysis?.tactical_adjustment;
     if (!tactical || !Array.isArray(tactical.adjusted_holdings) || !result?.custom_fund_baskets) return;
-    const mapById = new Map(
-      tactical.adjusted_holdings.map((h) => [String(h.lab_id || '').toUpperCase(), h])
-    );
     setResult((prev) => {
       if (!prev || !Array.isArray(prev.custom_fund_baskets)) return prev;
       const updatedBaskets = prev.custom_fund_baskets.map((b, idx) => {
         if (idx !== selectedBasketIndex) return b;
+        const merged = mergeTacticalHoldingsIntoBasket(b.holdings, tactical.adjusted_holdings);
+        const corePct = merged.filter((x) => x.core_role !== 'satellite').reduce((s, x) => s + Number(x.weight_pct || 0), 0);
+        const satPct = Math.max(0, 100 - corePct);
         return {
           ...b,
           ai_adjusted: true,
-          holdings: (b.holdings || []).map((h) => {
-            const adj = mapById.get(String(h.lab_id || '').toUpperCase());
-            if (!adj) return h;
-            return {
-              ...h,
-              weight_pct: adj.adjusted_weight_pct,
-              rationale_zh: adj.reason_zh || h.rationale_zh,
-              rationale_en: adj.reason_en || h.rationale_en,
-            };
-          }),
+          holdings: merged,
+          metrics: b.metrics ? { ...b.metrics, core_pct: corePct, satellite_pct: satPct } : b.metrics,
         };
       });
       return { ...prev, custom_fund_baskets: updatedBaskets };
@@ -442,13 +469,15 @@ const AdvisoryView = ({
     const tactical = aiAnalysis?.tactical_adjustment;
     const basket = (result?.custom_fund_baskets || [])[selectedBasketIndex] || result?.custom_fund_baskets?.[0];
     if (!tactical || !Array.isArray(tactical.adjusted_holdings) || tactical.adjusted_holdings.length === 0) return;
+    const activeAdj = tactical.adjusted_holdings.filter((h) => Number(h.adjusted_weight_pct || 0) > 0);
+    if (activeAdj.length === 0) return;
     const title = isEn
       ? `${basket?.title_en || 'AI Tactical Basket'} · AI Adjusted`
       : `${basket?.title_zh || 'AI 战术修正组合'} · AI战术修正`;
     onSendToLab(
-      tactical.adjusted_holdings.map((h) => ({ id: h.lab_id, weight: h.adjusted_weight_pct })),
+      activeAdj.map((h) => ({ id: h.lab_id, weight: h.adjusted_weight_pct })),
       title,
-      buildAdvisoryHandoffProfile(title, tactical.adjusted_holdings, tactical.lab_directives)
+      buildAdvisoryHandoffProfile(title, activeAdj, tactical.lab_directives)
     );
   };
 
@@ -456,24 +485,11 @@ const AdvisoryView = ({
     const tactical = aiAnalysis?.tactical_adjustment;
     const basket = (result?.custom_fund_baskets || [])[selectedBasketIndex] || result?.custom_fund_baskets?.[0];
     if (!tactical || !basket) return;
-    const mapById = new Map(
-      (tactical.adjusted_holdings || []).map((h) => [String(h.lab_id || '').toUpperCase(), h])
-    );
     const adjustedBasket = {
       ...basket,
       title_zh: `${basket.title_zh || '优选组合'} (AI调仓)`,
       title_en: `${basket.title_en || 'Quant Basket'} (AI Adjusted)`,
-      holdings: (basket.holdings || []).map((h) => {
-        const adj = mapById.get(String(h.lab_id || '').toUpperCase());
-        return adj
-          ? {
-              ...h,
-              weight_pct: adj.adjusted_weight_pct,
-              rationale_zh: adj.reason_zh || h.rationale_zh,
-              rationale_en: adj.reason_en || h.rationale_en,
-            }
-          : h;
-      }),
+      holdings: mergeTacticalHoldingsIntoBasket(basket.holdings, tactical.adjusted_holdings),
     };
     onCreatePortfolio(adjustedBasket, prof);
   };
@@ -1014,6 +1030,11 @@ const AdvisoryView = ({
                       </div>
                     </div>
                     <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', alignItems: 'center' }}>
+                      {basket.metrics?.core_pct != null && (
+                        <span style={{ fontSize: '0.68rem', padding: '2px 6px', borderRadius: '4px', background: 'var(--surface-subtle)', color: 'var(--text-secondary)', fontFamily: 'var(--font-mono)' }}>
+                          {isEn ? `Core ${basket.metrics.core_pct}% / Sat ${basket.metrics.satellite_pct}%` : `核心 ${basket.metrics.core_pct}% / 卫星 ${basket.metrics.satellite_pct}%`}
+                        </span>
+                      )}
                       {basket.ai_adjusted && (
                         <span style={{ fontSize: '0.68rem', padding: '2px 6px', borderRadius: '4px', background: 'rgba(16, 185, 129, 0.14)', color: 'var(--success)', fontWeight: 700 }}>
                           ⚡ {isEn ? 'AI Tilted' : 'AI 已调仓'}
@@ -1081,6 +1102,20 @@ const AdvisoryView = ({
                                   <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, color: 'var(--accent-color)' }}>
                                     {h.lab_id}
                                   </span>
+                                  {h.core_role && (
+                                    <span
+                                      style={{
+                                        fontSize: '0.64rem',
+                                        padding: '1px 5px',
+                                        borderRadius: '3px',
+                                        fontWeight: 700,
+                                        background: h.core_role === 'core' ? 'rgba(59, 130, 246, 0.12)' : 'rgba(168, 85, 247, 0.12)',
+                                        color: h.core_role === 'core' ? 'var(--info)' : 'var(--accent-secondary)',
+                                      }}
+                                    >
+                                      {h.core_role === 'core' ? (isEn ? 'Core' : '核心') : (isEn ? 'Sat' : '卫星')}
+                                    </span>
+                                  )}
                                   <span style={{ fontWeight: 600, color: 'var(--text-primary)' }}>{h.name}</span>
                                 </div>
                                 <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: '2px' }}>
@@ -1397,13 +1432,30 @@ const AdvisoryView = ({
                           <tbody>
                             {adjHoldings.map((h) => {
                               const delta = Number(h.delta_pct || 0);
-                              const deltaColor = delta > 0 ? 'var(--success)' : delta < 0 ? 'var(--warning)' : 'var(--text-muted)';
-                              const deltaBg = delta > 0 ? 'rgba(16, 185, 129, 0.12)' : delta < 0 ? 'rgba(245, 158, 11, 0.14)' : 'var(--surface-subtle)';
+                              const isAdded = h.action === 'ADD';
+                              const isRemoved = h.action === 'REMOVE' || Number(h.adjusted_weight_pct || 0) === 0;
+                              const deltaColor = isAdded || delta > 0 ? 'var(--success)' : isRemoved ? 'var(--text-muted)' : delta < 0 ? 'var(--warning)' : 'var(--text-muted)';
+                              const deltaBg = isAdded || delta > 0 ? 'rgba(16, 185, 129, 0.12)' : isRemoved ? 'var(--surface-subtle)' : delta < 0 ? 'rgba(245, 158, 11, 0.14)' : 'var(--surface-subtle)';
                               return (
-                                <tr key={h.lab_id} style={{ borderBottom: '1px solid var(--border-subtle)' }}>
+                                <tr key={h.lab_id} style={{ borderBottom: '1px solid var(--border-subtle)', opacity: isRemoved ? 0.6 : 1 }}>
                                   <td style={{ padding: '7px 4px', whiteSpace: 'nowrap' }}>
-                                    <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, color: 'var(--accent-color)' }}>{h.lab_id}</span>
-                                    <span style={{ marginLeft: '6px', color: 'var(--text-primary)', fontWeight: 600 }}>{h.name}</span>
+                                    <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, color: 'var(--accent-color)', textDecoration: isRemoved ? 'line-through' : 'none' }}>{h.lab_id}</span>
+                                    {h.core_role && (
+                                      <span style={{ marginLeft: '5px', fontSize: '0.62rem', padding: '1px 4px', borderRadius: '3px', fontWeight: 700, background: h.core_role === 'core' ? 'rgba(59, 130, 246, 0.12)' : 'rgba(168, 85, 247, 0.12)', color: h.core_role === 'core' ? 'var(--info)' : 'var(--accent-secondary)' }}>
+                                        {h.core_role === 'core' ? (isEn ? 'Core' : '核心') : (isEn ? 'Sat' : '卫星')}
+                                      </span>
+                                    )}
+                                    {isAdded && (
+                                      <span style={{ marginLeft: '5px', fontSize: '0.62rem', padding: '1px 5px', borderRadius: '3px', fontWeight: 700, background: 'rgba(16, 185, 129, 0.14)', color: 'var(--success)' }}>
+                                        {isEn ? 'NEW' : '新增/替换'}
+                                      </span>
+                                    )}
+                                    {isRemoved && (
+                                      <span style={{ marginLeft: '5px', fontSize: '0.62rem', padding: '1px 5px', borderRadius: '3px', fontWeight: 700, background: 'var(--surface-inset)', color: 'var(--text-muted)' }}>
+                                        {isEn ? 'REMOVED' : '已剔除'}
+                                      </span>
+                                    )}
+                                    <span style={{ marginLeft: '6px', color: 'var(--text-primary)', fontWeight: 600, textDecoration: isRemoved ? 'line-through' : 'none' }}>{h.name}</span>
                                   </td>
                                   <td style={{ textAlign: 'right', padding: '7px 6px', fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)' }}>
                                     {h.base_weight_pct}%
@@ -1413,7 +1465,7 @@ const AdvisoryView = ({
                                   </td>
                                   <td style={{ textAlign: 'center', padding: '7px 6px', whiteSpace: 'nowrap' }}>
                                     <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: '0.72rem', padding: '2px 7px', borderRadius: '999px', background: deltaBg, color: deltaColor }}>
-                                      {delta > 0 ? `+${delta}% ↑` : delta < 0 ? `${delta}% ↓` : '0%'}
+                                      {isAdded ? `+${h.adjusted_weight_pct}% NEW` : isRemoved ? `${delta}% OUT` : delta > 0 ? `+${delta}% ↑` : delta < 0 ? `${delta}% ↓` : '0%'}
                                     </span>
                                   </td>
                                   <td style={{ padding: '7px 6px', fontSize: '0.74rem', color: 'var(--text-secondary)' }}>

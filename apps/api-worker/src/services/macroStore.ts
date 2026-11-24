@@ -122,9 +122,9 @@ export function formatMacroPromptBlock(snap: MacroSnapshotRow): string {
   const fmt = (v: number | null, suffix = "") => (v != null ? `${v}${suffix}` : "N/A");
   return [
     `【当前宏观利率、估值与大宗商品时钟 (观测日: ${snap.as_of_date}, 数据源: ${snap.source})】`,
-    `1. **利率与收益率曲线**: 美债 10Y = ${fmt(snap.us10y_yield, "%")}，3M 短端现金利率 = ${fmt(snap.us3m_yield, "%")}，10Y-3M 利差 = ${fmt(snap.yield_curve_10y_3m, "%")}。短久期美元固收具备确定性票息保护。`,
+    `1. **利率与收益率曲线**: 美债 10Y = ${fmt(snap.us10y_yield, "%")}，3M 短端现金利率 = ${fmt(snap.us3m_yield, "%")}，10Y-3M 利差 = ${fmt(snap.yield_curve_10y_3m, "%")}。`,
     `2. **全球权益估值与 ERP**: 标普500 估算 PE = ${fmt(snap.spy_pe_est, "x")}（近5年分位 ${fmt(snap.spy_pe_pctile, "%")}），股权风险溢价 (ERP) = ${fmt(snap.spy_erp, "%")}；恒生指数 5 年估值分位 = ${fmt(snap.hsi_pe_pctile, "%")}。`,
-    `3. **黄金与通胀避险**: COMEX 黄金 = USD ${fmt(snap.gold_price)}（偏离 200 日均线 ${fmt(snap.gold_ma200_pct, "%")}），高债务与地缘周期中黄金作为尾部避险与去美元对冲至关重要。`,
+    `3. **黄金与通胀避险**: COMEX 黄金 = USD ${fmt(snap.gold_price)}（偏离 200 日均线 ${fmt(snap.gold_ma200_pct, "%")}）。`,
     `4. **原油、铜与商品周期**: WTI 原油 = USD ${fmt(snap.wti_oil_price)}（20日涨跌 ${fmt(snap.oil_ret_20d, "%")}），布伦特 = USD ${fmt(snap.brent_oil_price)}；COMEX 铜 = USD ${fmt(snap.copper_price)}，铜金比 = ${fmt(snap.copper_gold_ratio)}（趋势: ${snap.copper_gold_trend}），商品指数 DBC = USD ${fmt(snap.dbc_price)}。`,
     `5. **美元与信用利差**: 美元指数 DXY = ${fmt(snap.dxy_index)}，高收益债/国债比值 HYG/IEF = ${fmt(snap.hyg_ief_ratio)}。`,
     `6. **系统触发宏观信号 (Regime Flags)**: ${snap.regime_flags.length > 0 ? snap.regime_flags.join(", ") : "NEUTRAL"}`,

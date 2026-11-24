@@ -11,7 +11,7 @@ import {
   resolveQuantFund,
 } from "../services/quantStore";
 import { countBusinessDaysBetween } from "../services/quantWatchdog";
-import { recommendForClient } from "../services/advisoryEngine";
+import { buildTacticalCandidatePool, recommendForClient } from "../services/advisoryEngine";
 import { callLlmChat, extractAndNormalizeTacticalJson } from "../services/llm";
 import { getFundTopHoldings } from "../services/fundHoldings";
 import { formatMacroPromptBlock, getLatestMacroSnapshot } from "../services/macroStore";
@@ -554,23 +554,48 @@ quantRouter.post("/recommend/explain", async (c) => {
   const profile = body.profile || {};
   const rec = body.recommendation || {};
   const model = body.model || "deepseek-pro";
-  const macroSnap = await getLatestMacroSnapshot(c.env.DB);
+  const [macroSnap, catalogData] = await Promise.all([
+    getLatestMacroSnapshot(c.env.DB),
+    loadQuantCatalog(c.env.DB),
+  ]);
   const macroBlock = formatMacroPromptBlock(macroSnap);
+  const candidatePool = buildTacticalCandidatePool(
+    catalogData.rows,
+    profile,
+    Array.isArray(rec.holdings) ? rec.holdings : [],
+    14
+  );
 
   const holdingsSummary = Array.isArray(rec.holdings)
     ? rec.holdings
         .map(
           (h: any) =>
-            `- ${h.lab_id || h.slug} (${h.name || "未命名"}): 权重 ${h.weight_pct || h.weight}%, 资产类型: ${h.asset_class || "大类标的"}, 角色逻辑: ${h.rationale_zh || h.rationale_en || "核心资产"}`
+            `- ${h.lab_id || h.slug} (${h.name || "未命名"}): 权重 ${h.weight_pct || h.weight}%, 角色=${h.core_role === "satellite" ? "卫星" : "核心"}, 资产类型=${h.asset_class || "大类标的"}, 费率=${h.fee_pct != null ? `${h.fee_pct}%` : "N/A"}, Alpha=${h.alpha_3y != null ? `${(h.alpha_3y * 100).toFixed(2)}%` : "N/A"}, R²=${h.r2_3y != null ? h.r2_3y.toFixed(2) : "N/A"}, 逻辑: ${h.rationale_zh || h.rationale_en || "核心资产"}`
         )
         .join("\n")
     : "暂无明细";
+
+  const candidatePoolBlock =
+    candidatePool.length > 0
+      ? candidatePool
+          .map(
+            (cand) =>
+              `- ${cand.lab_id} (${cand.name}): 类别=${cand.asset_class}, 定位=${cand.core_role === "core" ? "核心" : "卫星"}, 赛道=${cand.homogeneity_cluster}, 平台=${cand.ilas_platform || "全市场"}, 费率=${cand.fee_pct != null ? `${cand.fee_pct}%` : "N/A"}, Alpha=${cand.alpha_3y != null ? `${(cand.alpha_3y * 100).toFixed(2)}%` : "N/A"}, R²=${cand.r2_3y != null ? cand.r2_3y.toFixed(2) : "N/A"}, 股息=${cand.div_yield_ttm != null ? `${(cand.div_yield_ttm * 100).toFixed(1)}%` : "N/A"}, 评级=${cand.quant_grade || "N/A"}`
+          )
+          .join("\n")
+      : "无额外候补基金（请基于原篮子标的调整权重）";
+
+  const isIlasMode =
+    profile.product_scope === "aia_tmp2" || Boolean(profile.ilp_planned);
+  const ilasConstraintRule = isIlasMode
+    ? "4. 【ILAS 平台硬约束】当前属于投连险架构，任何保留或新增标的的 `adjusted_weight_pct` 必须为 >= 10 的整数（或设为 0 表示剔除）；"
+    : "4. 单只保留或新增标的建议权重 >= 5%，避免过于零碎；";
 
   const metricsSummary = rec.metrics
     ? `预期3Y年化: ${rec.metrics.est_cagr_pct}%, 年化波动率: ${rec.metrics.est_vol_pct}%, 夏普比率: ${rec.metrics.est_sharpe}, 参考股息率: ${rec.metrics.est_div_yield_pct}%, 加权年费率: ${rec.metrics.weighted_fee_pct || 0}%`
     : "未提供汇总指标";
 
-  const prompt = `请作为买方量化首席投资顾问，为以下客户及为其量身匹配的资产组合出具一份专业的投资配置分析与归因报告。
+  const prompt = `请作为买方量化首席投资顾问，为以下客户及为其匹配的资产组合出具一份专业、客观中立的投资配置分析与归因报告。
 
 【客户基本画像与核心需求】
 - 客户姓名/称呼: ${profile.client_name || "尊贵客户"}
@@ -585,35 +610,43 @@ quantRouter.post("/recommend/explain", async (c) => {
 - 【重要】客户补充背景与特别诉求:
 ${profile.extra_notes ? profile.extra_notes : "无特别补充事项"}
 
-【为其量身定制的资产组合方案】
+【当前推荐组合方案与持仓明细】
 方案名称: ${rec.title_zh || rec.title || "量化优选配置方案"}
 组合概括: ${rec.subtitle_zh || rec.subtitle || ""}
 量化指标: ${metricsSummary}
 底层资产持仓明细:
 ${holdingsSummary}
 
+【同平台候补基金白名单池（如客户特殊诉求或宏观对冲需要替换/新增标的，可直接选用池内真实代码，严禁编造池外代码）】
+${candidatePoolBlock}
+
 ${macroBlock}
 
-【报告输出要求】
+【配置原则与报告输出要求】
+1. 严格遵循「核心—卫星」配置原则（核心资产 ≥ 70% 承担 Beta 压舱，卫星资产合计 ≤ 30% 承担 Alpha/低相关分散），并审视同质性、费率与指数贴合度/Alpha 效率；
+2. 完全基于上方实时宏观数据客观判断所处利率与估值周期，禁止套用刻板预设观点；任何偏离或换基建议必须附带明确的**退出/复位条件**。
 请使用规范清晰的 Markdown 格式输出，包含以下章节结构：
-### 一、宏观利率与估值时钟研判（结合当前高息固收与权益估值分位数的配置必要性）
-### 二、客户画像与个性化诉求深度响应（结合客户补充背景、税务/开支/久期精准分析）
-### 三、推荐组合底层资产角色分工与攻守机制（详述短债/红利/宽基各资产的作用与互补性）
-### 四、未来宏观情景推演与极端压力韧性（降息释放资本利得、通胀滞胀、权益回调下的表现预案）
+### 一、宏观利率与市场估值时钟研判（基于当期利率、利差、ERP 与大宗商品数据的中性客观研判）
+### 二、客户画像与个性化诉求深度响应（结合客户补充背景、税务/开支/久期/外部资产敞口精准分析）
+### 三、核心—卫星角色分工、底层重合度与换基增配评估（审视当前组合并论证是否需从候补池替换或增配标的）
+### 四、多宏观情景推演与极端压力韧性（利率上行/降息周期、滞胀、权益回调下的表现预案与退出复位纪律）
 ### 五、量身定制的操作建议与后续跟踪要点（建仓节奏、再平衡阈值、分红再投资建议）
 
 要求：专业严谨、数据扎实、结构清晰，不要将正文包裹在 \`\`\`markdown 代码块中。
 
-【重要：结构化战术调仓与实验室参数指令输出】
-在整份正文报告的**最末尾**，请务必紧跟一段严格合法的 JSON（用 <tactical_json> 和 </tactical_json> 标签包裹），把你的分析结论转化为可直接指导「组合权重修正」与「策略实验室模拟」的结构化指令：
-1. \`adjusted_holdings\` 只能包含上述底层资产持仓明细里已有的 \`lab_id\`（严禁新增或编造外部代码），各 \`adjusted_weight_pct\` 必须为非负整数且严格相加等于 100；
-2. 如果客户补充诉求中有特定年份刚性大额支出（例如3年后留学支出15万）或分阶段提领需求，请精准提取到 \`lab_directives\` 的 \`withdrawal\` / \`withdrawal_2\` 与起止年份中；
-3. 格式示例如下（请替换为你的真实测算数值）：
+【重要：结构化战术调仓、换基与实验室参数指令输出】
+在整份正文报告的**最末尾**，请务必紧跟一段严格合法的 JSON（用 <tactical_json> 和 </tactical_json> 标签包裹），把你的分析结论转化为可直接指导「权重修正 / 换基增配」与「策略实验室模拟」的结构化指令：
+1. \`adjusted_holdings\` 中的 \`lab_id\` 只能来自上方【底层资产持仓明细】或【同平台候补基金白名单池】（严禁编造池外代码）；
+2. 若认为应从候补池替换或新增标的（如增配黄金、短债或港股红利等），可在 \`adjusted_holdings\` 中将原被替换标的设为 \`0\`（或替换），并加入候补池标的的 \`lab_id\` 与目标整数权重；
+3. 所有 \`adjusted_weight_pct\` 必须为非负整数且严格相加等于 100，并尽量保持卫星合计 ≤ 30%；
+${ilasConstraintRule}
+5. 如果客户补充诉求中有特定年份刚性大额支出（例如3年后留学支出15万）或分阶段提领需求，请精准提取到 \`lab_directives\` 的 \`withdrawal\` / \`withdrawal_2\` 与起止年份中；
+6. 格式示例如下（请替换为你的真实测算数值）：
 <tactical_json>
 {
-  "tactical_summary_zh": "一句话高度概括本次战术偏离的核心依据与方向",
+  "tactical_summary_zh": "一句话概括本次核心—卫星调整/换基依据及退出复位条件",
   "adjusted_holdings": [
-    { "lab_id": "BIL", "adjusted_weight_pct": 35, "reason_zh": "上调理由与在组合中角色" }
+    { "lab_id": "BIL", "adjusted_weight_pct": 35, "reason_zh": "调整或保留理由（若为新增请说明补充角色）" }
   ],
   "lab_directives": {
     "cma_mode": "forward_looking",
@@ -640,7 +673,8 @@ ${macroBlock}
   const { cleanMarkdown, tacticalAdjustment } = extractAndNormalizeTacticalJson(
     llmResult.text,
     profile,
-    rec
+    rec,
+    candidatePool
   );
 
   return c.json({
@@ -650,6 +684,7 @@ ${macroBlock}
     provider: llmResult.provider,
     reasoning: llmResult.reasoning || null,
     fallback_reason: llmResult.fallbackReason || null,
+    candidate_pool_count: candidatePool.length,
   });
 });
 

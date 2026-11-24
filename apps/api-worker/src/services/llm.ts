@@ -1,4 +1,5 @@
 import type { Env } from "../types";
+import type { TacticalCandidateFund } from "./advisoryEngine";
 
 export type ModelPreference =
   | "deepseek-pro"
@@ -62,6 +63,9 @@ export interface TacticalHoldingAdjustment {
   slug?: string;
   name: string;
   asset_class?: string;
+  core_role?: "core" | "satellite";
+  fee_pct?: number | null;
+  action?: "KEEP" | "INCREASE" | "DECREASE" | "ADD" | "REMOVE";
   base_weight_pct: number;
   adjusted_weight_pct: number;
   delta_pct: number;
@@ -103,7 +107,7 @@ export async function callLlmChat(
   const pref = normalizeModelPreference(options.modelPreference);
   const systemPrompt =
     options.systemPrompt ||
-    "你是一位资深的买方量化投资顾问与财富规划专家。请基于客户画像、真实底层资产量化指标、当前宏观利率（高位维持）与权益估值（ERP压缩与估值中枢）环境，给出严谨、专业、结构清晰且具有实操性的配置归因与分析建议。";
+    "你是一位资深的买方量化投资顾问与财富规划专家。请基于客户画像、底层资产真实量化指标以及当期宏观利率、权益估值与大宗商品实时观测数据，客观中立地评估宏观周期位置，遵循核心—卫星配置原则给出严谨、专业、结构清晰且具有实操性的配置归因与战术建议。";
   const temperature = options.temperature ?? 0.35;
   const maxTokens = options.maxTokens ?? 4096;
 
@@ -615,12 +619,13 @@ export function buildDeterministicTacticalAdjustment(
 
 /**
  * 从 LLM 回复中提取并标准化结构化调仓指令 <tactical_json>...</tactical_json> 或尾部 ```json``` 块，
- * 剥离 JSON 标签返回纯净 Markdown，并对权重与标的进行严格白名单归一化（强制加和 = 100%）。
+ * 剥离 JSON 标签返回纯净 Markdown，并对权重与标的（原持仓 + 候补白名单池）进行严格校验与归一化（强制活跃持仓加和 = 100%）。
  */
 export function extractAndNormalizeTacticalJson(
   rawText: string,
   profile: any,
-  rec: any
+  rec: any,
+  candidatePool: TacticalCandidateFund[] = []
 ): { cleanMarkdown: string; tacticalAdjustment: TacticalAdjustmentPayload } {
   const fallback = buildDeterministicTacticalAdjustment(profile, rec);
   let text = String(rawText || "").trim();
@@ -669,64 +674,210 @@ export function extractAndNormalizeTacticalJson(
       return { cleanMarkdown, tacticalAdjustment: fallback };
     }
 
-    // 严格校验：只接受原始推荐篮子中存在的标的 lab_id，杜绝幻觉代码导致实验室查找失败
-    const parsedByLabId = new Map<string, any>();
+    const parsedByKey = new Map<string, any>();
+    const parsedItemsList: any[] = [];
     if (Array.isArray(parsed.adjusted_holdings)) {
       for (const item of parsed.adjusted_holdings) {
         const key = String(item?.lab_id || "").toUpperCase().trim();
-        if (key) parsedByLabId.set(key, item);
+        if (key && !parsedByKey.has(key)) {
+          parsedByKey.set(key, item);
+          parsedItemsList.push(item);
+        }
       }
     }
 
-    if (parsedByLabId.size === 0) {
+    if (parsedByKey.size === 0) {
       return { cleanMarkdown, tacticalAdjustment: fallback };
     }
+
+    // 构建白名单：1) 原篮子标的；2) 候补基金池标的
+    const baseKeySet = new Set<string>();
+    const baseKeysPerHolding: string[][] = baseHoldings.map((h) => {
+      const keys = [h?.lab_id, h?.slug, h?.code]
+        .filter(Boolean)
+        .map((k) => String(k).toUpperCase().trim());
+      keys.forEach((k) => baseKeySet.add(k));
+      return keys;
+    });
+
+    const candLookup = new Map<string, TacticalCandidateFund>();
+    for (const cand of candidatePool || []) {
+      [cand.lab_id, cand.slug, cand.code]
+        .filter(Boolean)
+        .forEach((k) => candLookup.set(String(k).toUpperCase().trim(), cand));
+    }
+
+    let whitelistParsedWeightSum = 0;
+    for (const item of parsedItemsList) {
+      const k = String(item?.lab_id || "").toUpperCase().trim();
+      const w = Number(item?.adjusted_weight_pct);
+      if ((baseKeySet.has(k) || candLookup.has(k)) && Number.isFinite(w) && w > 0) {
+        whitelistParsedWeightSum += w;
+      }
+    }
+    const treatOmittedBaseAsRemoved = whitelistParsedWeightSum >= 90;
 
     const baseWeights = normalizeIntegerWeights(
       baseHoldings.map((h) => Number(h?.weight_pct ?? h?.weight ?? 0))
     );
-    const rawAdjustedFloats = baseHoldings.map((h, i) => {
-      const key = String(h?.lab_id || h?.slug || "").toUpperCase().trim();
-      const match = parsedByLabId.get(key);
-      if (match && typeof match.adjusted_weight_pct === "number" && Number.isFinite(match.adjusted_weight_pct)) {
-        return Math.max(0, Math.min(100, match.adjusted_weight_pct));
-      }
-      return baseWeights[i];
-    });
 
-    const normalizedAdjusted = normalizeIntegerWeights(rawAdjustedFloats);
+    type CombinedEntry = {
+      isAdded: boolean;
+      lab_id: string;
+      slug?: string;
+      name: string;
+      asset_class?: string;
+      core_role?: "core" | "satellite";
+      fee_pct?: number | null;
+      baseW: number;
+      rawAdjW: number;
+      reason_zh: string;
+      reason_en?: string;
+      fbIdx: number;
+    };
 
-    const adjusted_holdings: TacticalHoldingAdjustment[] = baseHoldings.map((h, i) => {
-      const key = String(h?.lab_id || h?.slug || "").toUpperCase().trim();
-      const match = parsedByLabId.get(key);
+    const combined: CombinedEntry[] = baseHoldings.map((h, i) => {
+      const keys = baseKeysPerHolding[i];
+      const match = keys.map((k) => parsedByKey.get(k)).find(Boolean);
       const fb = fallback.adjusted_holdings[i];
       const baseW = baseWeights[i];
-      const adjW = normalizedAdjusted[i];
-      const delta = adjW - baseW;
-      const fallbackReasonEn =
-        fb && fb.delta_pct === delta && fb.reason_en
-          ? fb.reason_en
-          : delta > 0
-            ? `Increased +${delta}%: Tactical overweight aligned with macro rate & valuation regime.`
-            : delta < 0
-              ? `Reduced ${delta}%: Tactical trim to manage valuation or currency risk.`
-              : h.rationale_en || "Maintain strategic core weight.";
+      let rawAdjW = baseW;
+      if (match && typeof match.adjusted_weight_pct === "number" && Number.isFinite(match.adjusted_weight_pct)) {
+        rawAdjW = Math.max(0, Math.min(100, match.adjusted_weight_pct));
+      } else if (!match && treatOmittedBaseAsRemoved) {
+        rawAdjW = 0;
+      }
       return {
+        isAdded: false,
         lab_id: String(h.lab_id || h.slug || ""),
         slug: h.slug,
         name: String(h.name || h.lab_id || ""),
         asset_class: h.asset_class,
-        base_weight_pct: baseW,
-        adjusted_weight_pct: adjW,
-        delta_pct: delta,
+        core_role: h.core_role,
+        fee_pct: h.fee_pct ?? null,
+        baseW,
+        rawAdjW,
         reason_zh:
           typeof match?.reason_zh === "string" && match.reason_zh.trim()
             ? match.reason_zh.trim()
-            : fb?.reason_zh || h.rationale_zh || "核心配置",
+            : rawAdjW === 0
+              ? "由 AI 战术替换为更具互补性或高性价比的候补标的"
+              : fb?.reason_zh || h.rationale_zh || "核心配置",
         reason_en:
           typeof match?.reason_en === "string" && match.reason_en.trim()
             ? match.reason_en.trim()
-            : fallbackReasonEn,
+            : undefined,
+        fbIdx: i,
+      };
+    });
+
+    const seenAddedSlugs = new Set<string>();
+    for (const item of parsedItemsList) {
+      const key = String(item?.lab_id || "").toUpperCase().trim();
+      if (!key || baseKeySet.has(key)) continue;
+      const cand = candLookup.get(key);
+      if (!cand || seenAddedSlugs.has(cand.slug)) continue;
+      const rawW = Number(item?.adjusted_weight_pct);
+      if (!Number.isFinite(rawW) || rawW <= 0) continue;
+      seenAddedSlugs.add(cand.slug);
+      combined.push({
+        isAdded: true,
+        lab_id: cand.lab_id,
+        slug: cand.slug,
+        name: cand.name,
+        asset_class: cand.asset_class,
+        core_role: cand.core_role,
+        fee_pct: cand.fee_pct,
+        baseW: 0,
+        rawAdjW: Math.max(0, Math.min(100, rawW)),
+        reason_zh:
+          typeof item?.reason_zh === "string" && item.reason_zh.trim()
+            ? item.reason_zh.trim()
+            : `从同平台白名单新增（${cand.core_role === "core" ? "核心" : "卫星"}）`,
+        reason_en:
+          typeof item?.reason_en === "string" && item.reason_en.trim()
+            ? item.reason_en.trim()
+            : `Added from platform whitelist (${cand.core_role})`,
+        fbIdx: -1,
+      });
+    }
+
+    const isIlas =
+      profile?.product_scope === "aia_tmp2" || Boolean(profile?.ilp_planned);
+    const activeEntries = combined.filter((e) => e.rawAdjW > 0);
+    if (activeEntries.length === 0) {
+      return { cleanMarkdown, tacticalAdjustment: fallback };
+    }
+
+    if (isIlas) {
+      for (const e of activeEntries) {
+        if (e.rawAdjW < 5 && activeEntries.filter((x) => x.rawAdjW >= 5).length >= 2) {
+          e.rawAdjW = 0;
+        } else if (e.rawAdjW > 0 && e.rawAdjW < 10) {
+          e.rawAdjW = 10;
+        }
+      }
+    }
+
+    const stillActive = combined.filter((e) => e.rawAdjW > 0);
+    const normActiveWeights = normalizeIntegerWeights(stillActive.map((e) => e.rawAdjW));
+    if (isIlas && stillActive.length <= 10) {
+      for (let i = 0; i < normActiveWeights.length; i++) {
+        if (normActiveWeights[i] > 0 && normActiveWeights[i] < 10) {
+          const need = 10 - normActiveWeights[i];
+          const donorIdx = normActiveWeights
+            .map((w, idx) => ({ w, idx }))
+            .filter((x) => x.idx !== i && x.w - need >= 10)
+            .sort((a, b) => b.w - a.w)[0]?.idx;
+          if (donorIdx != null) {
+            normActiveWeights[i] += need;
+            normActiveWeights[donorIdx] -= need;
+          }
+        }
+      }
+    }
+
+    const activeWeightMap = new Map<CombinedEntry, number>();
+    stillActive.forEach((e, idx) => activeWeightMap.set(e, normActiveWeights[idx]));
+
+    const adjusted_holdings: TacticalHoldingAdjustment[] = combined.map((entry) => {
+      const adjW = activeWeightMap.get(entry) ?? 0;
+      const delta = adjW - entry.baseW;
+      const action: TacticalHoldingAdjustment["action"] = entry.isAdded
+        ? "ADD"
+        : adjW === 0 && entry.baseW > 0
+          ? "REMOVE"
+          : delta > 0
+            ? "INCREASE"
+            : delta < 0
+              ? "DECREASE"
+              : "KEEP";
+      const fb = entry.fbIdx >= 0 ? fallback.adjusted_holdings[entry.fbIdx] : undefined;
+      const fallbackReasonEn =
+        entry.reason_en ||
+        (fb && fb.delta_pct === delta && fb.reason_en
+          ? fb.reason_en
+          : action === "REMOVE"
+            ? "Replaced by higher-conviction or diversifying candidate."
+            : delta > 0
+              ? `Increased +${delta}%: Tactical overweight aligned with macro & client constraints.`
+              : delta < 0
+                ? `Reduced ${delta}%: Tactical trim to manage risk or fund new allocation.`
+                : "Maintain strategic core weight.");
+
+      return {
+        lab_id: entry.lab_id,
+        slug: entry.slug,
+        name: entry.name,
+        asset_class: entry.asset_class,
+        core_role: entry.core_role,
+        fee_pct: entry.fee_pct,
+        action,
+        base_weight_pct: entry.baseW,
+        adjusted_weight_pct: adjW,
+        delta_pct: delta,
+        reason_zh: entry.reason_zh,
+        reason_en: fallbackReasonEn,
       };
     });
 
@@ -803,19 +954,18 @@ export function extractAndNormalizeTacticalJson(
  */
 function generateQuantitativeFallbackAnalysis(_userPrompt: string): string {
   return `### 【宏观利率与估值时钟研判】
-1. **利率高位维持（Higher for Longer）的安全垫效应**：
-   当前美元联邦基金利率处于 4.50%~4.75% 高位区间，短债（如 BIL）与货币型资产静态年化到期收益率可达 4.3%~4.6%。与过去十余年的零利率时期不同，当前持有高质量固收资产不仅能提供稳定的当期票息现金流，更可在未来降息周期开启时捕捉潜在的久期资本利得。
+1. **利率周期与收益率曲线观察**：
+   结合当期美债长短端利差与政策利率水平，固定收益资产的票息收益与久期防御属性需随利率周期动态平衡：利率偏高阶段可借助短久期固收获取稳健票息缓冲，而处于降息周期前夕则可适度延展投资级久期以捕捉潜在资本利得。
 2. **权益估值分位数与股权风险溢价（ERP）约束**：
-   美股核心指数（S&P 500 / Nasdaq 100）市盈率处于历史 80% 以上偏高分位数，股权风险溢价压缩至历史低点，单纯追逐历史高收益面临估值均值回归（Multiple Contraction）的拖累；相形之下，中港通红利低波与全球价值股具有 5%~7% 股息率保护，兼顾防御与再投资复利。
+   核心股票指数估值所处历史分位数与股权风险溢价（ERP）共同决定了权益资产的风险收益比；在高估值区间应严格控制单一高弹性敞口并严守核心—卫星纪律，同时兼顾低估区域与高质量红利资产的防御分散价值。
 
-### 【组合底层资产角色分工与配置逻辑】
-- **现金流与流动性锚**：配置高确定性短期固收标的，锁定当前高票息，作为应对潜在现金提领及市场波动的安全气垫；
-- **核心稳健压舱石**：配置优质红利及投资级债券，平滑净值波动，提供内生派息资金，无需在市场下挫时被迫折价抛售股票资产；
-- **长期成长增益舱**：适度配置全球核心宽基指数资产，确保投资组合具备抵抗通胀并参与全球生产力长期扩张的能力。
+### 【核心—卫星底层资产分工与配置逻辑】
+- **核心压舱（≥ 70% 权重）**：由宽基指数、综合投资级债及低波现金管理工具构成，承担组合长期 β 收益与流动性安全垫；
+- **卫星增强（≤ 30% 权重）**：配置具备持续超额 α、低费率或低相关性对冲属性的品种（如主题精选、高股息或实物黄金/商品），严格防范底层持仓高度重合。
 
 ### 【操作指引与再平衡纪律】
-- **再平衡触发**：建议设定资产权重漂移阈值（±5%）或半年度定期再平衡，在权益上涨时锁利反哺固收，在市场非理性回调时低位补仓；
-- **分红策略**：无短期刚性支取需求时，建议开启分红再投资（DRIP），最大化长周期复利雪球效应。
+- **再平衡触发**：建议设定权重漂移阈值（±5%）或半年度定期检视再平衡，并对任何战术偏离提前设定清晰的退出与复位条件；
+- **分红策略**：无短期刚性支取需求时，建议开启分红再投资（DRIP）以最大化复利滚存效率。
 
-> *(提示：当前分析基于量化规则库自动归因。若需启用 DeepSeek / Gemini 大模型深度定制推理，请在 \`apps/api-worker/.dev.vars\` 中配置 DEEPSEEK_API_KEY 或 OPENROUTER_API_KEY)*`;
+> *(提示：当前分析基于量化规则库自动归因。若需启用 DeepSeek V4 Pro / Gemini 3.8 Flash / Qwen 3.7 Plus 大模型深度推理，请在 Cloudflare Worker Secrets 中配置 DEEPSEEK_API_KEY 或 OPENROUTER_API_KEY)*`;
 }

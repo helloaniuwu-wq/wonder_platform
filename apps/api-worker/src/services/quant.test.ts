@@ -10,10 +10,16 @@ import { StrategyLab, classifyAsset, createPrng } from "./fip/strategyLab";
 import { PortfolioEngine } from "./fip/portfolioEngine";
 import {
   buildCustomFundBaskets,
+  buildTacticalCandidatePool,
+  compareHomogeneousFunds,
+  computeHoldingsOverlap,
+  getHorizonEquityHardCap,
   getRiskEnvelope,
+  inferFundRole,
   matchClassicTemplates,
   normalizeProfile,
 } from "./advisoryEngine";
+import { DEFAULT_MACRO_SNAPSHOT, formatMacroPromptBlock } from "./macroStore";
 import {
   buildDeterministicTacticalAdjustment,
   callLlmChat,
@@ -462,7 +468,8 @@ describe("advisoryEngine & PortfolioEngine regression", () => {
     const res = await callLlmChat(mockEnv, "测试提示词", { modelPreference: "auto" });
     expect(res.provider).toBe("fallback_rule");
     expect(res.text).toContain("宏观利率与估值时钟研判");
-    expect(res.text).toContain("Higher for Longer");
+    expect(res.text).toContain("利率周期与收益率曲线观察");
+    expect(res.text).toContain("核心—卫星底层资产分工");
     expect(res.text).toContain("股权风险溢价（ERP）");
   });
 
@@ -929,5 +936,281 @@ describe("callLlmChat deep-analysis model routing", () => {
     } finally {
       spy.mockRestore();
     }
+  });
+});
+
+describe("Core-Satellite, Homogeneous Deduplication, Hard Caps & AI Fund Swapping", () => {
+  const mkFund = (over: Partial<any>) => ({
+    slug: over.slug,
+    code: over.code || over.slug,
+    aia_code: over.aia_code || null,
+    isin: over.isin || null,
+    yahoo_ticker: over.yahoo_ticker || null,
+    cn_code: null,
+    name: over.name || over.slug,
+    name_en: over.name_en || null,
+    manager: over.manager || "DefaultMgr",
+    asset_class: over.asset_class || "股票",
+    ilas_platform: over.ilas_platform ?? "AIA 卓达智悦2",
+    currency: over.currency || "USD",
+    risk_class: null,
+    morningstar_stars: over.morningstar_stars ?? 4,
+    fee_pct: over.fee_pct ?? 0.5,
+    role: over.role ?? null,
+    fit_plans: [],
+    tags: over.tags || ["推荐选择"],
+    commentary: null,
+    twin_code: over.twin_code || null,
+    is_distributing: Boolean(over.is_distributing),
+    benchmark_code: over.benchmark_code || "SPY",
+    primary_source: "yfinance",
+    data_tier: over.data_tier || "A",
+    is_trackable: true,
+    status: "active",
+    top_holding_keys: over.top_holding_keys || [],
+    as_of_date: "2026-11-24",
+    valuation_date: "2026-11-24",
+    latest_nav: 10,
+    ret_1m: 0.01,
+    ret_3m: 0.03,
+    ret_6m: 0.05,
+    ret_ytd: 0.08,
+    ret_1y: 0.1,
+    ret_3y_ann: over.ret_3y_ann ?? 0.08,
+    ret_5y_ann: 0.08,
+    vol_1y: 0.11,
+    vol_3y: over.vol_3y ?? 0.12,
+    max_dd_1y: -0.05,
+    max_dd_3y: -0.1,
+    max_dd_5y: -0.15,
+    dd_recovery_days: 30,
+    sharpe_3y: over.sharpe_3y ?? 0.7,
+    sortino_3y: 0.85,
+    calmar_3y: 0.8,
+    beta_3y: over.beta_3y ?? 1.0,
+    alpha_3y: over.alpha_3y ?? 0.0,
+    r2_3y: over.r2_3y ?? 0.9,
+    ir_3y: 0.2,
+    div_yield_ttm: over.div_yield_ttm ?? 0.02,
+    peer_rank_pct: 20,
+    quant_score: over.quant_score ?? 75,
+    quant_grade: over.quant_grade || "A",
+    obs_days: 750,
+    anomalies: [],
+  });
+
+  it("ranks homogeneous funds by lowest-fee + highest-alpha, or closest index fit + lowest-fee when alpha is absent", () => {
+    const activeHighAlphaLowFee = mkFund({
+      slug: "ACT_BEST",
+      name: "Global Active Leaders A",
+      alpha_3y: 0.04,
+      fee_pct: 0.8,
+      r2_3y: 0.78,
+    });
+    const activeLowAlphaHighFee = mkFund({
+      slug: "ACT_EXP",
+      name: "Global Active Leaders B",
+      alpha_3y: 0.015,
+      fee_pct: 1.6,
+      r2_3y: 0.85,
+    });
+    expect(compareHomogeneousFunds(activeHighAlphaLowFee as any, activeLowAlphaHighFee as any)).toBeLessThan(0);
+
+    const passiveLowFeeTightFit = mkFund({
+      slug: "IDX_VOO",
+      name: "S&P 500 Low Cost ETF",
+      alpha_3y: -0.0005,
+      fee_pct: 0.03,
+      r2_3y: 0.99,
+      beta_3y: 1.0,
+    });
+    const passiveHighFeeLooseFit = mkFund({
+      slug: "IDX_EXP",
+      name: "US Large Cap Feeder",
+      alpha_3y: -0.008,
+      fee_pct: 1.25,
+      r2_3y: 0.86,
+      beta_3y: 0.85,
+    });
+    expect(compareHomogeneousFunds(passiveLowFeeTightFit as any, passiveHighFeeLooseFit as any)).toBeLessThan(0);
+  });
+
+  it("prevents selecting funds with >=35% Top-10 holdings overlap and enforces Core >=70%, Satellite <=30%, Horizon Hard Cap & ILAS >=10%", () => {
+    const sharedTechHoldings = ["aapl", "msft", "nvda", "amzn", "googl", "meta", "tsla", "avgo"];
+    const catalog = [
+      // Two overlapping US Broad Equity funds: VOO (cheap & tight fit) vs SPY_FEEDER (expensive, overlapping holdings)
+      mkFund({
+        slug: "US_VOO",
+        code: "VOO",
+        name: "Vanguard S&P 500 Core ETF",
+        manager: "Vanguard",
+        asset_class: "股票",
+        ilas_platform: "AIA 卓达智悦2",
+        role: "核心",
+        fee_pct: 0.03,
+        alpha_3y: 0.0,
+        r2_3y: 0.99,
+        beta_3y: 1.0,
+        top_holding_keys: sharedTechHoldings,
+      }),
+      mkFund({
+        slug: "US_SPY_HI",
+        code: "SPY_HI",
+        name: "Expensive US Equity Fund",
+        manager: "OtherMgr",
+        asset_class: "股票",
+        ilas_platform: "AIA 卓达智悦2",
+        role: "核心",
+        fee_pct: 1.65,
+        alpha_3y: -0.01,
+        r2_3y: 0.88,
+        beta_3y: 0.92,
+        top_holding_keys: [...sharedTechHoldings.slice(0, 6), "brk.b", "lly"],
+      }),
+      mkFund({
+        slug: "GL_CORE",
+        code: "VT",
+        name: "Global All-World Core Equity",
+        manager: "Vanguard",
+        asset_class: "股票",
+        ilas_platform: "AIA 卓达智悦2",
+        role: "核心",
+        fee_pct: 0.07,
+        r2_3y: 0.98,
+        beta_3y: 1.0,
+        benchmark_code: "VT",
+        top_holding_keys: ["nesn", "novn", "tsm", "asml", "sap", "mc", "sony", "toyota"],
+      }),
+      mkFund({
+        slug: "BD_CORE1",
+        code: "B01",
+        name: "AB Short Duration Bond",
+        manager: "AB",
+        asset_class: "固定收益",
+        ilas_platform: "AIA 卓达智悦2",
+        role: "核心",
+        fee_pct: 0.55,
+        benchmark_code: "BIL",
+      }),
+      mkFund({
+        slug: "BD_CORE2",
+        code: "M11",
+        name: "Fidelity Global Aggregate Bond",
+        manager: "Fidelity",
+        asset_class: "固定收益",
+        ilas_platform: "AIA 卓达智悦2",
+        role: "核心",
+        fee_pct: 0.71,
+        benchmark_code: "AGG",
+      }),
+      mkFund({
+        slug: "SAT_HK",
+        code: "Z01",
+        name: "Value Partners High-Dividend HK Equity",
+        manager: "ValuePartners",
+        asset_class: "股票",
+        ilas_platform: "AIA 卓达智悦2",
+        role: "卫星",
+        fee_pct: 1.25,
+        alpha_3y: 0.032,
+        is_distributing: true,
+        benchmark_code: "2800.HK",
+      }),
+      mkFund({
+        slug: "SAT_GOLD",
+        code: "GLD",
+        name: "SPDR Gold Trust",
+        manager: "StateStreet",
+        asset_class: "多元资产",
+        ilas_platform: "AIA 卓达智悦2",
+        role: "卫星",
+        fee_pct: 0.4,
+        benchmark_code: "GLD",
+      }),
+    ];
+
+    expect(computeHoldingsOverlap(catalog[0] as any, catalog[1] as any).isHighOverlap).toBe(true);
+    expect(inferFundRole(catalog[0] as any)).toBe("core");
+    expect(inferFundRole(catalog[5] as any)).toBe("satellite");
+
+    // 1. Short horizon < 3 years MUST clamp equity <= 20%
+    expect(getHorizonEquityHardCap(2)).toBe(20);
+    const shortProf = normalizeProfile({ horizon_years: 2, risk_level: "aggressive", product_scope: "aia_tmp2" });
+    const shortEnv = getRiskEnvelope(shortProf);
+    expect(shortEnv.equity_hard_cap_pct).toBe(20);
+    expect(shortEnv.target_equity_pct).toBeLessThanOrEqual(20);
+
+    // 2. Balanced ILAS portfolio: Core >= 70%, Satellite <= 30%, each holding >= 10%, no overlapping US_SPY_HI
+    const balProf = normalizeProfile({ horizon_years: 10, risk_level: "balanced", product_scope: "aia_tmp2" });
+    const res = buildCustomFundBaskets(catalog as any, balProf, getRiskEnvelope(balProf));
+    const coreBasket = res.baskets[0];
+    expect(coreBasket.metrics.core_pct).toBeGreaterThanOrEqual(70);
+    expect(coreBasket.metrics.satellite_pct).toBeLessThanOrEqual(30);
+    expect(coreBasket.holdings.reduce((s, h) => s + h.weight_pct, 0)).toBe(100);
+    expect(coreBasket.holdings.every((h) => h.weight_pct >= 10)).toBe(true);
+    expect(coreBasket.holdings.some((h) => h.slug === "US_SPY_HI")).toBe(false);
+  });
+
+  it("allows AI advisor to swap/add whitelist candidate funds while blocking hallucinated tickers, and keeps macro prompt neutral", () => {
+    const catalog = [
+      mkFund({ slug: "US_VOO", code: "VOO", name: "Vanguard S&P 500", asset_class: "股票", ilas_platform: "非投连险-国际股票", role: "核心", fee_pct: 0.03 }),
+      mkFund({ slug: "US_AGG", code: "AGG", name: "iShares Core US Aggregate Bond", asset_class: "固定收益", ilas_platform: "非投连险-债券基金比较", role: "核心", fee_pct: 0.03, benchmark_code: "AGG" }),
+      mkFund({ slug: "SAT_GLD", code: "GLD", name: "SPDR Gold Shares", asset_class: "多元资产", ilas_platform: "非投连险-国际股票", role: "卫星", fee_pct: 0.4, benchmark_code: "GLD" }),
+      mkFund({ slug: "SAT_2800", code: "2800.HK", name: "Tracker Fund of Hong Kong", asset_class: "股票", ilas_platform: "非投连险-港股通ETF", role: "卫星", fee_pct: 0.09, benchmark_code: "2800.HK" }),
+    ];
+
+    const baseRec = {
+      holdings: [
+        { lab_id: "VOO", slug: "US_VOO", name: "Vanguard S&P 500", weight_pct: 60, asset_class: "股票", core_role: "core" },
+        { lab_id: "AGG", slug: "US_AGG", name: "iShares Core US Aggregate Bond", weight_pct: 40, asset_class: "固定收益", core_role: "core" },
+      ],
+    };
+
+    const candidates = buildTacticalCandidatePool(catalog as any, { product_scope: "all" }, baseRec.holdings, 10);
+    expect(candidates.some((c) => c.lab_id === "GLD")).toBe(true);
+    expect(candidates.some((c) => c.lab_id === "VOO")).toBe(false);
+
+    const llmRaw = `### 一、客观研判
+建议新增黄金作为卫星对冲。
+
+<tactical_json>
+{
+  "tactical_summary_zh": "保留核心股债并从白名单新增黄金卫星，退出条件：实际利率转正且地缘溢价消退",
+  "adjusted_holdings": [
+    { "lab_id": "VOO", "adjusted_weight_pct": 0, "reason_zh": "替换为黄金对冲" },
+    { "lab_id": "AGG", "adjusted_weight_pct": 80, "reason_zh": "增厚核心固收" },
+    { "lab_id": "GLD", "adjusted_weight_pct": 20, "reason_zh": "从白名单增配黄金卫星" },
+    { "lab_id": "FAKE_999", "adjusted_weight_pct": 15, "reason_zh": "幻觉代码必须被过滤" }
+  ],
+  "lab_directives": { "cma_mode": "forward_looking", "capital": 500000, "years": 10 }
+}
+</tactical_json>`;
+
+    const { tacticalAdjustment } = extractAndNormalizeTacticalJson(
+      llmRaw,
+      { initial_capital: 500000, horizon_years: 10 },
+      baseRec,
+      candidates
+    );
+
+    const ids = tacticalAdjustment.adjusted_holdings.map((h) => h.lab_id);
+    expect(ids).not.toContain("FAKE_999");
+    expect(ids).toContain("GLD");
+
+    const voo = tacticalAdjustment.adjusted_holdings.find((h) => h.lab_id === "VOO")!;
+    const agg = tacticalAdjustment.adjusted_holdings.find((h) => h.lab_id === "AGG")!;
+    const gld = tacticalAdjustment.adjusted_holdings.find((h) => h.lab_id === "GLD")!;
+
+    expect(voo.action).toBe("REMOVE");
+    expect(voo.adjusted_weight_pct).toBe(0);
+    expect(agg.action).toBe("INCREASE");
+    expect(gld.action).toBe("ADD");
+    expect(gld.adjusted_weight_pct).toBe(20);
+    expect(tacticalAdjustment.adjusted_holdings.reduce((s, h) => s + h.adjusted_weight_pct, 0)).toBe(100);
+
+    // Macro prompt block should be purely factual & neutral
+    const macroText = formatMacroPromptBlock(DEFAULT_MACRO_SNAPSHOT);
+    expect(macroText).not.toContain("短久期美元固收具备确定性票息保护");
+    expect(macroText).not.toContain("高债务与地缘周期中黄金作为尾部避险");
   });
 });
