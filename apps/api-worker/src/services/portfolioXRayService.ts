@@ -1,5 +1,6 @@
 import {
   buildBenchmarkProxySeries,
+  catalogRichnessScore,
   clearQuantStoreCaches,
   convertSeriesCurrency,
   getQuantFundSeries,
@@ -126,8 +127,15 @@ function normalizeAssetBucket(rawClass = "", isin = "", xraySplit?: any): "equit
     if (ca >= eq && ca >= bd && ca > 0) return "cash";
   }
   const s = String(rawClass).toLowerCase();
-  if (/cash|money|货币/.test(s)) return "cash";
-  if (/bond|fixed|income|debt|treasury|govt|corp|债|固收/.test(s)) return "bond";
+  if (/cash|money|货币|貨幣/.test(s)) return "cash";
+  if (/mixed|multi|balanced|allocation|混合|多元|平衡/.test(s)) return "other";
+  if (/bond|fixed|income|debt|treasury|govt|corp|债|債|固收|固定收益/.test(s)) {
+    // 避免把「高股息 / Equity Income」误判为债券
+    if (/equity|stock|股票|股息|高息/.test(s) && !/bond|fixed|债|債|固收|固定收益/.test(s)) {
+      return "equity";
+    }
+    return "bond";
+  }
   if (/equity|stock|股票|股息|高息/.test(s)) return "equity";
   return "other";
 }
@@ -138,10 +146,10 @@ function normalizeRatingBucket(raw?: string | null): typeof RATING_KEYS[number] 
   if (s.includes("AAA") || s.includes("GOVT") || s.includes("US_GOVERNMENT")) return "aaa";
   if (s.startsWith("AA")) return "aa";
   if (s.startsWith("A")) return "a";
-  if (s.startsWith("BBB")) return "bbb";
-  if (s.startsWith("BB")) return "bb";
+  if (s.startsWith("BBB") || s.startsWith("BAA")) return "bbb";
+  if (s.startsWith("BB") || s.startsWith("BA")) return "bb";
   if (s.startsWith("B")) return "b";
-  if (/^(CCC|CC|C|D|BELOW)/.test(s)) return "below_b";
+  if (/^(CCC|CC|C|D|CAA|BELOW)/.test(s)) return "below_b";
   return "other";
 }
 
@@ -151,14 +159,250 @@ function mapBondStyleSensitivity(duration: number): "limited" | "moderate" | "ex
   return "extensive";
 }
 
-function mapBondStyleCredit(avgRating?: string | null, creditQuality?: string | null): "high" | "medium" | "low" {
+function normalizeBondStyle(
+  raw?: { credit?: string | null; sensitivity?: string | null } | null
+): { credit: "high" | "medium" | "low"; sensitivity: "limited" | "moderate" | "extensive" } | null {
+  if (!raw || typeof raw !== "object") return null;
+  const cRaw = String(raw.credit || "").trim().toLowerCase();
+  const sRaw = String(raw.sensitivity || "").trim().toLowerCase();
+  const credit: "high" | "medium" | "low" | null =
+    cRaw === "high" || cRaw === "ig"
+      ? "high"
+      : cRaw === "medium" || cRaw === "mid" || cRaw === "bbb"
+      ? "medium"
+      : cRaw === "low" || cRaw === "hy" || cRaw === "high_yield"
+      ? "low"
+      : null;
+  const sensitivity: "limited" | "moderate" | "extensive" | null =
+    sRaw === "limited" || sRaw === "low" || sRaw === "short" || sRaw === "ultra_short"
+      ? "limited"
+      : sRaw === "moderate" || sRaw === "medium" || sRaw === "mid" || sRaw === "intermediate"
+      ? "moderate"
+      : sRaw === "extensive" || sRaw === "high" || sRaw === "long"
+      ? "extensive"
+      : null;
+  if (!credit || !sensitivity) return null;
+  return { credit, sensitivity };
+}
+
+function mapBondStyleCredit(
+  avgRating?: string | null,
+  creditQuality?: string | null,
+  bondRatings?: Record<string, number> | null
+): "high" | "medium" | "low" {
+  // 1. 优先依据数值分布计算（若存在）
+  if (bondRatings && typeof bondRatings === "object") {
+    let highW = 0;
+    let midW = 0;
+    let lowW = 0;
+    let tot = 0;
+    for (const [k, v] of Object.entries(bondRatings)) {
+      const val = Number(v || 0);
+      if (!(val > 0)) continue;
+      tot += val;
+      const b = normalizeRatingBucket(k);
+      if (b === "aaa" || b === "aa" || b === "a") highW += val;
+      else if (b === "bbb") midW += val;
+      else if (b === "bb" || b === "b" || b === "below_b") lowW += val;
+      else if (/high_yield/i.test(k)) lowW += val;
+      else if (/treasury|govt/i.test(k)) highW += val;
+      else if (/corp/i.test(k)) midW += val;
+    }
+    if (tot > 0) {
+      if (lowW / tot > 0.3) return "low";
+      if (highW / tot >= 0.5) return "high";
+      if (midW > 0 || highW > 0) return "medium";
+    }
+  }
+
+  // 2. 检查显式信用文字描述（兼容双峰分布与中英文评级标签）
+  const combined = `${avgRating || ""} ${creditQuality || ""}`;
+  if (/high[\s-]?yield|非投资级|非投資級|高收益债|高收益債|垃圾债|低于\s*bbb|bbb以下/i.test(combined)) {
+    // 双峰混合债（例如 AAA 43.4% + BBB以下 37.0%）归入 medium
+    if (/aaa|aa/i.test(combined) && !/纯高收益|以高收益|bb\s*\/\s*b/i.test(combined)) {
+      return "medium";
+    }
+    return "low";
+  }
+
+  // 3. 解析 S&P / 穆迪首评级（如 Baa2 / A3 / AA / BBB）
+  const ratingMatch = /\b(AAA|AA[+-]?|A[123+-]?|BBB[+-]?|BAA[123]?|BB[+-]?|BA[123]?|B[123+-]?|CCC|CAA)\b/i.exec(
+    avgRating || ""
+  );
+  if (ratingMatch) {
+    const b = normalizeRatingBucket(ratingMatch[1]);
+    if (b === "aaa" || b === "aa" || b === "a") return "high";
+    if (b === "bbb") return "medium";
+    if (b === "bb" || b === "b" || b === "below_b") return "low";
+  }
+
   const q = String(creditQuality || "").toLowerCase();
   if (q === "high" || q === "medium" || q === "low") return q;
+  if (/投资级|投資級|investment\s*grade|\big\b|国债|美债|主权|treasury/i.test(combined)) {
+    if (/全投资级|几乎全投资级|平均\s*a|zero\s*hy|零高收益/i.test(combined)) return "high";
+    return "high";
+  }
+
   const b = normalizeRatingBucket(avgRating);
   if (b === "aaa" || b === "aa" || b === "a") return "high";
   if (b === "bbb") return "medium";
   if (b === "bb" || b === "b" || b === "below_b") return "low";
   return "medium";
+}
+
+function mergeUnderlyingTwinProfile(
+  cat: QuantFundCatalogRow | null,
+  allRows: QuantFundCatalogRow[]
+): QuantFundCatalogRow | null {
+  if (!cat) return null;
+  const hasComplete =
+    Boolean(cat.xray_profile) &&
+    cat.duration != null &&
+    Boolean(cat.avg_rating || cat.credit_quality) &&
+    Array.isArray(cat.top_holdings) &&
+    cat.top_holdings.length > 0;
+  if (hasComplete) return cat;
+
+  const twinSlugs = new Set((cat.twin_funds || []).map((t) => t.slug));
+  const siblings = allRows
+    .filter(
+      (r) =>
+        r.slug !== cat.slug &&
+        ((cat.isin && r.isin && r.isin.toUpperCase() === cat.isin.toUpperCase()) ||
+          twinSlugs.has(r.slug) ||
+          (cat.twin_code && (r.aia_code === cat.twin_code || r.code === cat.twin_code)))
+    )
+    .sort((a, b) => catalogRichnessScore(b) - catalogRichnessScore(a));
+
+  if (siblings.length === 0) return cat;
+  const best = siblings[0];
+  return {
+    ...cat,
+    xray_profile: cat.xray_profile || best.xray_profile || null,
+    duration: cat.duration ?? best.duration ?? null,
+    yield_pct: cat.yield_pct ?? best.yield_pct ?? null,
+    avg_rating: cat.avg_rating || best.avg_rating || null,
+    credit_quality: cat.credit_quality || best.credit_quality || null,
+    top_holdings: cat.top_holdings && cat.top_holdings.length > 0 ? cat.top_holdings : best.top_holdings,
+    top_holding_keys:
+      cat.top_holding_keys && cat.top_holding_keys.length > 0 ? cat.top_holding_keys : best.top_holding_keys,
+  };
+}
+
+export function inferEquityStyle(
+  h: XRayHoldingInput,
+  cat: QuantFundCatalogRow | null,
+  xray: any
+): { size: "large" | "mid" | "small"; style: "value" | "blend" | "growth"; verified: boolean } {
+  const raw = xray?.equity_style;
+  if (raw && ["large", "mid", "small"].includes(raw.size) && ["value", "blend", "growth"].includes(raw.style)) {
+    return { size: raw.size, style: raw.style, verified: true };
+  }
+
+  const text = [
+    h.isin,
+    h.name,
+    cat?.code,
+    cat?.name,
+    cat?.name_en,
+    cat?.benchmark_code,
+    ...(cat?.tags || []),
+    cat?.commentary,
+  ]
+    .filter(Boolean)
+    .join(" ");
+
+  let size: "large" | "mid" | "small" = "large";
+  if (/\bsmall[\s-]?cap|\bsmall\b|小盘|小型股|russell\s*2000|\b(iwm|vb|ijr|vbr|vbk|avuv|dfsv)\b/i.test(text)) {
+    size = "small";
+  } else if (/\bmid[\s-]?cap|\bmid\b|中盘|中型股|s&p\s*400|中证\s*500|\b(vo|ijh|mdy|voe|vot|510500)\b/i.test(text)) {
+    size = "mid";
+  }
+
+  let style: "value" | "blend" | "growth" = "blend";
+  const isGrowth =
+    /\bgrowth\b|成长|成長|nasdaq|纳斯达克|納斯達克|tech(nology)?|科技|semiconductor|半导体|半導體|\bai\b|innovation|创新|創新|momentum|动量|\b(qqq|qqqm|vug|schg|iwf|vgt|xlk|eqqq|smh|soxx)\b/i.test(
+      text
+    );
+  const isValue =
+    /\bvalue\b|价值|價值|dividend|股息|高息|红利|紅利|equity\s*income|high\s*income|low\s*vol|低波|\b(schd|hdv|vym|vymi|dgro|jepi|jepq|vhyd|vhyl|512890|515080|159545|3110|i17)\b/i.test(
+      text
+    );
+
+  if (isGrowth && !isValue) {
+    style = "growth";
+  } else if (isValue && !isGrowth) {
+    style = "value";
+  } else {
+    const pe = Number(h.pe ?? xray?.valuation?.pe ?? 0);
+    if (pe > 0 && pe <= 15) style = "value";
+    else if (pe >= 25) style = "growth";
+  }
+
+  return { size, style, verified: false };
+}
+
+export function inferBondStyle(
+  h: XRayHoldingInput,
+  cat: QuantFundCatalogRow | null,
+  xray: any,
+  effDur: number | null
+): { credit: "high" | "medium" | "low"; sensitivity: "limited" | "moderate" | "extensive"; verified: boolean } {
+  const normExplicit = normalizeBondStyle(xray?.bond_style);
+  if (normExplicit) {
+    return { ...normExplicit, verified: true };
+  }
+
+  const text = [
+    h.isin,
+    h.name,
+    cat?.code,
+    cat?.name,
+    cat?.name_en,
+    cat?.benchmark_code,
+    ...(cat?.tags || []),
+    cat?.commentary,
+  ]
+    .filter(Boolean)
+    .join(" ");
+
+  let sensitivity: "limited" | "moderate" | "extensive" = "moderate";
+  if (effDur != null && Number.isFinite(effDur)) {
+    sensitivity = mapBondStyleSensitivity(effDur);
+  } else if (
+    /ultra[\s-]?short|short[\s-]?(term|duration|maturity)|s\/t\s*bond|1-3\s*(m|mth|month|yr|year)|0-3|0-1|t-?bill|floating|短债|短債|短期|超短|\b(bil|sgov|shv|shy|bsv|vgsh|igsb|mint|jpst|boxx|csh2|ib0d|ibts|ib01|emnt|bubix|bsbsx|w06|z36|b01)\b/i.test(
+      text
+    )
+  ) {
+    sensitivity = "limited";
+  } else if (
+    /long[\s-]?(term|duration)|10\+?\s*yr|15\+?\s*yr|20\+?\s*yr|25\+?\s*yr|30\s*yr|长债|長債|长期|長期|超长|\b(tlt|edv|vglt|blv|zroz|sptl|vblt|dtla|idtl)\b/i.test(
+      text
+    )
+  ) {
+    sensitivity = "extensive";
+  }
+
+  const hasExplicitCredit = Boolean(h.credit_rating || cat?.avg_rating || cat?.credit_quality || xray?.bond_ratings);
+  let credit: "high" | "medium" | "low" = "medium";
+  if (hasExplicitCredit) {
+    credit = mapBondStyleCredit(h.credit_rating || cat?.avg_rating, cat?.credit_quality, xray?.bond_ratings);
+  } else if (
+    /high[\s-]?yield|junk|non-?investment|below\s*ig|高收益|垃圾债|高息债|可转债|可換股|convertible|coco|emerging.*debt|新兴.*债|\b(hyg|jnk|ushy|shyg|faln|hyxu|emb|vwob)\b/i.test(
+      text
+    )
+  ) {
+    credit = "low";
+  } else if (
+    /treasury|t-?bill|govt|government|sovereign|agency|mbs|gilt|aggregate|total\s*bond|short[\s-]*term\s*bond|s\/t\s*bond|国债|國債|美债|美債|主权|利率债|短债|短債|\b(bil|sgov|shv|shy|ief|tlt|edv|vglt|agg|bnd|bsv|cbu7|csh2|ib0d|ibts|w06|z36)\b/i.test(
+      text
+    )
+  ) {
+    credit = "high";
+  }
+
+  const verified = Boolean(effDur != null && hasExplicitCredit);
+  return { credit, sensitivity, verified };
 }
 
 export function classifyHoldingInstrument(
@@ -432,7 +676,7 @@ export async function computeFullPortfolioXRay(
       ? 1.6
       : 4.2;
 
-  const { lookup } = await loadQuantCatalog(db);
+  const { rows: allCatalogRows, lookup } = await loadQuantCatalog(db);
 
   // Aggregation accumulators
   const instrumentMix = { funds: 0, direct_stocks: 0, direct_bonds: 0, cash: 0 };
@@ -449,6 +693,8 @@ export async function computeFullPortfolioXRay(
     small_value: 0, small_blend: 0, small_growth: 0,
   };
   let eqStyleCoveredW = 0;
+  let eqStyleVerifiedW = 0;
+  let eqStyleInferredW = 0;
 
   const bondGrid: Record<string, number> = {
     high_limited: 0, high_moderate: 0, high_extensive: 0,
@@ -456,6 +702,8 @@ export async function computeFullPortfolioXRay(
     low_limited: 0, low_moderate: 0, low_extensive: 0,
   };
   let bondStyleCoveredW = 0;
+  let bondStyleVerifiedW = 0;
+  let bondStyleInferredW = 0;
   const ratingWeights: Record<string, number> = {};
   let ratingCoveredW = 0;
 
@@ -519,7 +767,8 @@ export async function computeFullPortfolioXRay(
   for (const h of validInputs) {
     const w = Number(h.weight) / totalWeight;
     normWeights[h.isin] = w;
-    const cat = lookup.get(String(h.isin).trim().toUpperCase()) || (await resolveQuantFund(db, h.isin));
+    const rawCat = lookup.get(String(h.isin).trim().toUpperCase()) || (await resolveQuantFund(db, h.isin));
+    const cat = mergeUnderlyingTwinProfile(rawCat, allCatalogRows);
     const instType = classifyHoldingInstrument(h, cat);
 
     if (instType === "cash") instrumentMix.cash += w;
@@ -613,13 +862,46 @@ export async function computeFullPortfolioXRay(
       }
 
       // Style Box (Equity & Bond)
-      if (instType === "direct_stock") {
-        // Direct stock sits in equity style only if size/style metadata unavailable -> keep style uncovered instead of guessing
-      } else if (xray?.equity_style?.size && xray?.equity_style?.style) {
-        const key = `${xray.equity_style.size}_${xray.equity_style.style}`;
+      let eqSleeveW = 0;
+      let bdSleeveW = 0;
+      if (instType === "direct_bond") {
+        bdSleeveW = w;
+      } else if (instType === "fund") {
+        if (xray?.asset_split) {
+          const sp = xray.asset_split;
+          const eqPct = Number(sp.equity || 0);
+          const bdPct = Number(sp.bond || 0);
+          const tot = eqPct + bdPct + Number(sp.cash || 0) + Number(sp.other || 0);
+          if (eqPct > 0 && bdPct > 0 && tot > 0) {
+            eqSleeveW = w * (eqPct / tot);
+            bdSleeveW = w * (bdPct / tot);
+          } else if (eqPct > 0 && bdPct <= 0) {
+            eqSleeveW = w;
+          } else if (bdPct > 0 && eqPct <= 0) {
+            bdSleeveW = w;
+          }
+        }
+        if (eqSleeveW === 0 && bdSleeveW === 0) {
+          const bk = normalizeAssetBucket(cat?.asset_class || (typeof h.sector === "string" ? h.sector : ""), h.isin);
+          if (bk === "equity") {
+            eqSleeveW = w;
+          } else if (bk === "bond") {
+            bdSleeveW = w;
+          } else if (bk === "other" && /mixed|multi|balanced|allocation|混合|多元|平衡/i.test(String(cat?.asset_class || ""))) {
+            eqSleeveW = w * 0.5;
+            bdSleeveW = w * 0.5;
+          }
+        }
+      }
+
+      if (eqSleeveW > 0 && instType === "fund") {
+        const eqStyle = inferEquityStyle(h, cat, xray);
+        const key = `${eqStyle.size}_${eqStyle.style}`;
         if (key in equityGrid) {
-          equityGrid[key] += w;
-          eqStyleCoveredW += w;
+          equityGrid[key] += eqSleeveW;
+          eqStyleCoveredW += eqSleeveW;
+          if (eqStyle.verified) eqStyleVerifiedW += eqSleeveW;
+          else eqStyleInferredW += eqSleeveW;
         }
       }
 
@@ -649,21 +931,14 @@ export async function computeFullPortfolioXRay(
         ytmWeighted += w * effYtm;
       }
 
-      const bStyle =
-        xray?.bond_style ||
-        (instType === "direct_bond" || (cat && normalizeAssetBucket(cat.asset_class, h.isin, xray?.asset_split) === "bond")
-          ? effDur != null || h.credit_rating || cat?.avg_rating
-            ? {
-                credit: mapBondStyleCredit(h.credit_rating || cat?.avg_rating, cat?.credit_quality),
-                sensitivity: mapBondStyleSensitivity(effDur ?? 5.0),
-              }
-            : null
-          : null);
-      if (bStyle?.credit && bStyle?.sensitivity) {
+      if (bdSleeveW > 0) {
+        const bStyle = inferBondStyle(h, cat, xray, effDur);
         const bKey = `${bStyle.credit}_${bStyle.sensitivity}`;
         if (bKey in bondGrid) {
-          bondGrid[bKey] += w;
-          bondStyleCoveredW += w;
+          bondGrid[bKey] += bdSleeveW;
+          bondStyleCoveredW += bdSleeveW;
+          if (bStyle.verified) bondStyleVerifiedW += bdSleeveW;
+          else bondStyleInferredW += bdSleeveW;
         }
       }
 
@@ -1065,10 +1340,16 @@ export async function computeFullPortfolioXRay(
     style_boxes: {
       equity: {
         coverage_pct: round1(eqStyleCoveredW * 100),
+        verified_pct: round1(eqStyleVerifiedW * 100),
+        inferred_pct: round1(eqStyleInferredW * 100),
+        sleeve_weight_pct: round1(assetClassWeights.equity * 100),
         grid: normGrid(equityGrid, eqStyleCoveredW),
       },
       fixed_income: {
         coverage_pct: round1(bondStyleCoveredW * 100),
+        verified_pct: round1(bondStyleVerifiedW * 100),
+        inferred_pct: round1(bondStyleInferredW * 100),
+        sleeve_weight_pct: round1(assetClassWeights.bond * 100),
         grid: normGrid(bondGrid, bondStyleCoveredW),
         weighted_duration: weightedDuration,
         duration_coverage_pct: round1(durationW * 100),

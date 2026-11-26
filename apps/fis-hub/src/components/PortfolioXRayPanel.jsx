@@ -189,8 +189,8 @@ export default function PortfolioXRayPanel({
   const maxSingle = sSum.max_single_holding || localXRay.maxSingleHolding;
 
   const risk = serverXRay?.risk_analytics || {};
-  const fiStyle = serverXRay?.style_boxes?.fixed_income || {};
-  const eqStyle = serverXRay?.style_boxes?.equity || {};
+  const fiStyle = serverXRay?.style_boxes?.fixed_income || localXRay?.style_boxes?.fixed_income || {};
+  const eqStyle = serverXRay?.style_boxes?.equity || localXRay?.style_boxes?.equity || {};
   const valSop = serverXRay?.valuation_cashflow_sop || {};
   const underlying = serverXRay?.underlying_holdings || { coverage_pct: 0, items: [] };
   const overlap = serverXRay?.overlap || { pairs: [], high_overlap_count: 0 };
@@ -453,8 +453,11 @@ export default function PortfolioXRayPanel({
               </div>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
                 <div>
-                  <div style={{ fontSize: '0.71rem', color: 'var(--text-muted)', marginBottom: '5px' }}>
-                    权益九宫格（已穿透 {eqStyle.coverage_pct ?? 0}%）
+                  <div
+                    style={{ fontSize: '0.71rem', color: 'var(--text-muted)', marginBottom: '5px' }}
+                    title={eqStyle.inferred_pct > 0 ? `实测风格 ${eqStyle.verified_pct || 0}% + 类别映射 ${eqStyle.inferred_pct}%` : undefined}
+                  >
+                    权益九宫格（{(eqStyle.coverage_pct ?? 0) === 0 && (eqStyle.sleeve_weight_pct ?? 0) === 0 ? '无权益持仓' : `已穿透 ${eqStyle.coverage_pct ?? 0}%`}）
                   </div>
                   <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '3px' }}>
                     {EQUITY_GRID.map(([k, lbl]) => {
@@ -481,8 +484,11 @@ export default function PortfolioXRayPanel({
                 </div>
 
                 <div>
-                  <div style={{ fontSize: '0.71rem', color: 'var(--text-muted)', marginBottom: '5px' }}>
-                    固收九宫格（已穿透 {fiStyle.coverage_pct ?? 0}%）
+                  <div
+                    style={{ fontSize: '0.71rem', color: 'var(--text-muted)', marginBottom: '5px' }}
+                    title={fiStyle.inferred_pct > 0 ? `实测久期/评级 ${fiStyle.verified_pct || 0}% + 类别映射 ${fiStyle.inferred_pct}%` : undefined}
+                  >
+                    固收九宫格（{(fiStyle.coverage_pct ?? 0) === 0 && (fiStyle.sleeve_weight_pct ?? 0) === 0 ? '无固收持仓' : `已穿透 ${fiStyle.coverage_pct ?? 0}%`}）
                   </div>
                   <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '3px' }}>
                     {BOND_GRID.map(([k, lbl]) => {

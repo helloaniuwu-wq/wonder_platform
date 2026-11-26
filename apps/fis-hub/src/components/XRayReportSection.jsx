@@ -45,8 +45,9 @@ export default function XRayReportSection({ xrayData, localXRay = null, currency
   const underlying = server?.underlying_holdings?.items || [];
   const sectors = server?.sectors?.items || [];
   const regions = server?.regions?.items || [];
-  const eqGrid = server?.style_boxes?.equity?.grid || {};
-  const fiStyle = server?.style_boxes?.fixed_income || {};
+  const eqStyleObj = server?.style_boxes?.equity || fallback?.style_boxes?.equity || {};
+  const eqGrid = eqStyleObj.grid || {};
+  const fiStyle = server?.style_boxes?.fixed_income || fallback?.style_boxes?.fixed_income || {};
   const risk = server?.risk_analytics || {};
   const valSop = server?.valuation_cashflow_sop || {};
   const diagnostics = server?.diagnostics || fallback?.diagnostics || [];
@@ -163,7 +164,7 @@ export default function XRayReportSection({ xrayData, localXRay = null, currency
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
             <div>
               <div style={{ fontSize: '0.68rem', color: '#5F6662', marginBottom: '4px' }}>
-                权益风格（覆盖 {server?.style_boxes?.equity?.coverage_pct ?? 0}%）
+                权益风格（{(eqStyleObj.coverage_pct ?? 0) === 0 && (eqStyleObj.sleeve_weight_pct ?? 0) === 0 ? '无权益持仓' : `覆盖 ${eqStyleObj.coverage_pct ?? 0}%`}）
               </div>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '2px' }}>
                 {EQUITY_CELLS.map(([k, lbl]) => {
@@ -190,7 +191,7 @@ export default function XRayReportSection({ xrayData, localXRay = null, currency
 
             <div>
               <div style={{ fontSize: '0.68rem', color: '#5F6662', marginBottom: '4px' }}>
-                固收风格（覆盖 {fiStyle.coverage_pct ?? 0}%）
+                固收风格（{(fiStyle.coverage_pct ?? 0) === 0 && (fiStyle.sleeve_weight_pct ?? 0) === 0 ? '无固收持仓' : `覆盖 ${fiStyle.coverage_pct ?? 0}%`}）
               </div>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '2px' }}>
                 {BOND_CELLS.map(([k, lbl]) => {

@@ -278,6 +278,18 @@ export function extractHoldingKeys(rawJson: string | null | undefined): string[]
   }
 }
 
+export function catalogRichnessScore(row: QuantFundCatalogRow): number {
+  let score = 0;
+  if (row.has_sop_report) score += 100;
+  if (row.xray_profile && Object.keys(row.xray_profile).length > 0) score += 40;
+  if (Array.isArray(row.top_holdings) && row.top_holdings.length > 0) score += 15;
+  if (row.duration != null) score += 10;
+  if (row.avg_rating || row.credit_quality) score += 5;
+  if (row.fee_pct != null) score += 5;
+  if (row.morningstar_stars != null) score += 3;
+  return score;
+}
+
 export async function loadQuantCatalog(db: D1Database): Promise<{
   rows: QuantFundCatalogRow[];
   lookup: Map<string, QuantFundCatalogRow>;
@@ -465,16 +477,28 @@ export async function loadQuantCatalog(db: D1Database): Promise<{
     }));
 
     const lookup = new Map<string, QuantFundCatalogRow>();
+    // 1. 共享别名键（isin / yahoo_ticker / cn_code / code）：信息丰富度更高的份额优先胜出
     for (const row of rows) {
-      const keys = [row.slug, row.aia_code, row.isin, row.yahoo_ticker, row.cn_code, row.code];
-      for (const k of keys) {
+      const sharedKeys = [row.isin, row.yahoo_ticker, row.cn_code, row.code];
+      const rowScore = catalogRichnessScore(row);
+      for (const k of sharedKeys) {
         if (!k) continue;
         const up = k.trim().toUpperCase();
-        if (!lookup.has(up)) {
+        const existing = lookup.get(up);
+        if (!existing || rowScore > catalogRichnessScore(existing)) {
           lookup.set(up, row);
         }
       }
-      // Always let exact slug win
+    }
+    // 2. 精确主键：aia_code（如无冲突或同 code）与 slug（始终精确绑定）
+    for (const row of rows) {
+      if (row.aia_code) {
+        const up = row.aia_code.trim().toUpperCase();
+        const existing = lookup.get(up);
+        if (!existing || existing.code === row.code || catalogRichnessScore(row) >= catalogRichnessScore(existing)) {
+          lookup.set(up, row);
+        }
+      }
       lookup.set(row.slug.toUpperCase(), row);
     }
 

@@ -95,4 +95,38 @@ describe('computePortfolioXRay', () => {
     expect(findCatalogFund(richCatalog, 'SCHD')?.slug).toBe('US_SCHD');
     expect(findCatalogFund(richCatalog, 'CASH_USD')).toBeNull();
   });
+
+  it('findCatalogFund prefers richer/SOP twin share class and computePortfolioXRay computes fallback style_boxes', () => {
+    const twinCatalog = [
+      { code: 'CG9', aia_code: 'CG9', isin: 'LU1746179297', slug: 'CG9_F', name: 'CG9 Accum', asset_class: '固定收益', currency: 'USD' },
+      {
+        code: 'Z29',
+        aia_code: 'Z29',
+        isin: 'LU1746179297',
+        slug: 'Z29_F',
+        name: 'Z29 Dist',
+        asset_class: '固定收益',
+        currency: 'USD',
+        duration: 5.6,
+        avg_rating: 'A',
+        has_sop_report: true,
+        xray_profile: { asset_split: { equity: 0, bond: 98, cash: 2, other: 0 }, bond_style: { credit: 'high', sensitivity: 'moderate' } },
+      },
+      { code: 'I17', aia_code: 'I17', isin: 'LU0265550359', slug: 'I17_F', name: 'BGF High Income', asset_class: '股票', currency: 'USD' },
+    ];
+    expect(findCatalogFund(twinCatalog, 'LU1746179297')?.slug).toBe('Z29_F');
+
+    const xray = computePortfolioXRay({
+      holdings: [
+        { isin: 'LU1746179297', weight: 0.6 },
+        { isin: 'LU0265550359', weight: 0.4 },
+      ],
+      quantFunds: twinCatalog,
+      totalNav: 100000,
+    });
+    expect(xray.style_boxes.equity.coverage_pct).toBeCloseTo(40, 1);
+    expect(xray.style_boxes.equity.grid.large_value).toBeCloseTo(100, 1);
+    expect(xray.style_boxes.fixed_income.coverage_pct).toBeGreaterThan(55);
+    expect(xray.style_boxes.fixed_income.grid.high_moderate).toBeCloseTo(100, 1);
+  });
 });

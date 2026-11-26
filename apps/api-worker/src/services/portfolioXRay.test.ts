@@ -229,4 +229,129 @@ describe("computeFullPortfolioXRay", () => {
     const totalRc = risk.risk_contributions.reduce((s, r) => s + r.risk_contrib_pct, 0);
     expect(totalRc).toBeCloseTo(100, 0);
   });
+
+  it("populates equity & fixed income style boxes for 固定收益 funds, twin share classes, sensitivity:'low', and standard equity/bond ETFs", async () => {
+    const db = createXRayMockDb({
+      funds: [
+        // Empty shell twin listed BEFORE rich SOP twin (simulates CG9_F before Z29_F)
+        {
+          slug: "CG9_F",
+          code: "CG9",
+          aia_code: "CG9",
+          isin: "LU1746179297",
+          name: "Capital Group Global Corp Bond (Accum)",
+          asset_class: "固定收益",
+          currency: "USD",
+          duration: 5.4,
+          avg_rating: "A",
+          is_trackable: 1,
+        },
+        {
+          slug: "Z29_F",
+          code: "Z29",
+          aia_code: "Z29",
+          isin: "LU1746179297",
+          name: "资本集团全球公司债基金",
+          asset_class: "固定收益",
+          currency: "USD",
+          fee_pct: 1.1,
+          duration: 5.6,
+          yield_pct: 5.4,
+          avg_rating: "A",
+          is_trackable: 1,
+          xray_profile_json: JSON.stringify({
+            asset_split: { equity: 0, bond: 98, cash: 2, other: 0 },
+            bond_style: { credit: "high", sensitivity: "moderate" },
+          }),
+        },
+        // Fund with asset_class "固定收益" and no xray_profile (simulates W06_F)
+        {
+          slug: "W06_F",
+          code: "W06",
+          aia_code: "W06",
+          isin: "LU1882441907",
+          name: "Amundi Fds US S/T Bond A2 USD C",
+          asset_class: "固定收益",
+          currency: "USD",
+          avg_rating: "投資級",
+          is_trackable: 1,
+        },
+        // Mixed fund with sensitivity: "low"
+        {
+          slug: "Z07_F",
+          code: "Z07",
+          aia_code: "Z07",
+          isin: "LU0820561818",
+          name: "Allianz Income and Growth",
+          asset_class: "混合",
+          currency: "USD",
+          duration: 3.4,
+          is_trackable: 1,
+          xray_profile_json: JSON.stringify({
+            asset_split: { equity: 33, bond: 62, cash: 5, other: 0 },
+            bond_style: { credit: "low", sensitivity: "low" },
+          }),
+        },
+        // Equity fund without explicit equity_style (simulates I17_F)
+        {
+          slug: "I17_F",
+          code: "I17",
+          aia_code: "I17",
+          isin: "LU0265550359",
+          name: "贝莱德系统分析环球股票高息基金",
+          asset_class: "股票",
+          currency: "USD",
+          is_trackable: 1,
+          xray_profile_json: JSON.stringify({
+            asset_split: { equity: 97.5, bond: 0, cash: 2.5, other: 0 },
+            valuation: { pe: 20.12 },
+          }),
+        },
+        // Standard broad ETFs without xray_profile
+        {
+          slug: "US_VOO",
+          code: "VOO",
+          name: "Vanguard S&P 500 ETF",
+          asset_class: "股票",
+          currency: "USD",
+          is_trackable: 1,
+        },
+        {
+          slug: "US_QQQ",
+          code: "QQQ",
+          name: "Invesco QQQ Trust",
+          asset_class: "股票",
+          currency: "USD",
+          is_trackable: 1,
+        },
+      ],
+      sopReports: {
+        Z29_F: { slug: "Z29_F", medal_rating: "Neutral", pillar_score: 0.35, valuation_zone: "合理中性" },
+      },
+    });
+
+    const res = await computeFullPortfolioXRay(db, {
+      holdings: [
+        { isin: "LU1746179297", weight: 0.3 }, // should resolve to Z29_F (SOP + high_moderate)
+        { isin: "LU1882441907", weight: 0.1 }, // W06_F -> high_limited (S/T Bond)
+        { isin: "LU0820561818", weight: 0.2 }, // Z07_F -> 33% large_blend + 62% low_limited
+        { isin: "LU0265550359", weight: 0.2 }, // I17_F -> 97.5% large_value
+        { isin: "VOO", weight: 0.1 },          // 100% large_blend
+        { isin: "QQQ", weight: 0.1 },          // 100% large_growth
+      ],
+      total_nav: 100000,
+      include_stress: false,
+    });
+
+    expect(res.holdings.find((h) => h.isin === "LU1746179297")?.slug).toBe("Z29_F");
+    expect(res.style_boxes.equity.coverage_pct).toBeGreaterThan(45);
+    expect(res.style_boxes.equity.grid.large_value).toBeGreaterThan(0);
+    expect(res.style_boxes.equity.grid.large_blend).toBeGreaterThan(0);
+    expect(res.style_boxes.equity.grid.large_growth).toBeGreaterThan(0);
+
+    expect(res.style_boxes.fixed_income.coverage_pct).toBeGreaterThan(50);
+    expect(res.style_boxes.fixed_income.grid.high_moderate).toBeGreaterThan(0);
+    expect(res.style_boxes.fixed_income.grid.high_limited).toBeGreaterThan(0);
+    expect(res.style_boxes.fixed_income.grid.low_limited).toBeGreaterThan(0);
+  });
 });
