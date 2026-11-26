@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { 
   Users, UserCheck, Shield, Award, User, RefreshCw, 
   Search, CheckCircle2, Ban, SlidersHorizontal, Briefcase,
-  BookOpen, Copy, ExternalLink, Sparkles
+  BookOpen, Copy, ExternalLink, Sparkles, Edit, Send, MailCheck, AlertCircle, X
 } from 'lucide-react';
 import { authHeaders } from '../utils/auth';
 import {
@@ -40,6 +40,14 @@ export default function AdminPanel({ currentUser, onOpenFundDetail }) {
   const [savingId, setSavingId] = useState(null);
   const [filterRole, setFilterRole] = useState('all');
   const [search, setSearch] = useState('');
+
+  // 正在编辑用户联系信息的弹窗状态
+  const [editingUser, setEditingUser] = useState(null);
+  const [editName, setEditName] = useState('');
+  const [editEmail, setEditEmail] = useState('');
+  const [editVerified, setEditVerified] = useState(false);
+  const [editSubmitting, setEditSubmitting] = useState(false);
+  const [resendingEmailId, setResendingEmailId] = useState(null);
 
   // Fund Research Queue state
   const [queueItems, setQueueItems] = useState([]);
@@ -234,6 +242,76 @@ export default function AdminPanel({ currentUser, onOpenFundDetail }) {
       alert('分配顾问失败：' + e.message);
     } finally {
       setSavingId(null);
+    }
+  };
+
+  // 打开编辑用户联系信息弹窗
+  const handleOpenEditUser = (user) => {
+    setEditingUser(user);
+    setEditName(user.name || '');
+    setEditEmail(user.email || '');
+    setEditVerified(Boolean(user.is_verified));
+  };
+
+  // 提交修改用户联系信息
+  const handleSaveUserContact = async (e) => {
+    e.preventDefault();
+    if (!editingUser) return;
+    if (!editName.trim()) {
+      alert('姓名不能为空');
+      return;
+    }
+    if (!editEmail.trim() || !/\S+@\S+\.\S+/.test(editEmail.trim())) {
+      alert('请输入有效的电子邮箱地址');
+      return;
+    }
+
+    setEditSubmitting(true);
+    try {
+      const res = await fetch(`${API}/admin/users/${editingUser.id}/profile`, {
+        method: 'PUT',
+        headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: editName.trim(),
+          email: editEmail.trim(),
+          is_verified: editVerified,
+        }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.detail || '修改联系信息失败');
+      }
+
+      showSuccessFeedback(`已成功更新用户 ${data.user?.name || editingUser.name} 的联系信息`);
+      setEditingUser(null);
+      await fetchUsers();
+    } catch (err) {
+      alert('保存失败：' + err.message);
+    } finally {
+      setEditSubmitting(false);
+    }
+  };
+
+  // 管理员为用户补发/触发验证邮件
+  const handleAdminResendVerification = async (user) => {
+    if (!confirm(`确认向 ${user.email} 补发验证邮件吗？`)) return;
+    setResendingEmailId(user.id);
+    try {
+      const res = await fetch(`${API}/admin/users/${user.id}/resend-verification`, {
+        method: 'POST',
+        headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ redirect_url: window.location.origin }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.detail || '补发邮件失败');
+      }
+      showSuccessFeedback(data.message || `验证邮件已发送至 ${user.email}`);
+    } catch (err) {
+      alert('发送失败：' + err.message);
+    } finally {
+      setResendingEmailId(null);
     }
   };
 
@@ -734,7 +812,7 @@ export default function AdminPanel({ currentUser, onOpenFundDetail }) {
                   borderBottom: '1px solid var(--border-subtle)',
                   background: 'var(--surface-subtle)'
                 }}>
-                  {['用户 ID', '用户信息', '电子邮箱', '角色权限', '所属顾问', '状态', '管理操作'].map(h => (
+                  {['用户 ID', '用户信息', '电子邮箱', '角色权限', '所属顾问', '邮箱验证', '账号状态', '管理操作'].map(h => (
                     <th
                       key={h}
                       style={{
@@ -754,7 +832,7 @@ export default function AdminPanel({ currentUser, onOpenFundDetail }) {
               <tbody>
                 {filteredUsers.length === 0 ? (
                   <tr>
-                    <td colSpan={7} style={{ textAlign: 'center', padding: '48px', color: 'var(--text-muted)', fontSize: 13 }}>
+                    <td colSpan={8} style={{ textAlign: 'center', padding: '48px', color: 'var(--text-muted)', fontSize: 13 }}>
                       暂无符合条件的用户记录
                     </td>
                   </tr>
@@ -875,7 +953,42 @@ export default function AdminPanel({ currentUser, onOpenFundDetail }) {
                         )}
                       </td>
 
-                      {/* 状态徽章 */}
+                      {/* 邮箱验证状态 */}
+                      <td style={tdStyle}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                          <span style={{
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: 4,
+                            padding: '2px 7px',
+                            borderRadius: 4,
+                            fontSize: 11,
+                            fontWeight: 600,
+                            background: u.is_verified ? 'var(--success-bg)' : 'var(--warning-bg)',
+                            color: u.is_verified ? 'var(--success)' : 'var(--warning)',
+                            border: `1px solid ${u.is_verified ? 'var(--success)' : 'var(--warning)'}`
+                          }}>
+                            {u.is_verified ? <CheckCircle2 size={11} /> : <AlertCircle size={11} />}
+                            {u.is_verified ? '已验证' : '未验证'}
+                          </span>
+
+                          {!u.is_verified && (
+                            <button
+                              type="button"
+                              onClick={() => handleAdminResendVerification(u)}
+                              disabled={resendingEmailId === u.id}
+                              title="向该用户发送/补发验证邮件"
+                              className="action-btn-secondary"
+                              style={{ padding: '2px 6px', fontSize: 10, display: 'inline-flex', alignItems: 'center', gap: 3 }}
+                            >
+                              <Send size={10} className={resendingEmailId === u.id ? 'animate-spin' : ''} />
+                              <span>{resendingEmailId === u.id ? '发送中' : '补发'}</span>
+                            </button>
+                          )}
+                        </div>
+                      </td>
+
+                      {/* 账号状态徽章 */}
                       <td style={tdStyle}>
                         <span style={{
                           display: 'inline-flex',
@@ -896,27 +1009,47 @@ export default function AdminPanel({ currentUser, onOpenFundDetail }) {
 
                       {/* 操作 */}
                       <td style={tdStyle}>
-                        {!isCurrent ? (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                          {/* 修改联系信息按钮 */}
                           <button
-                            onClick={() => handleStatusToggle(u.id, u.is_active)}
-                            disabled={isBusy}
+                            type="button"
+                            onClick={() => handleOpenEditUser(u)}
+                            className="action-btn-secondary"
                             style={{
-                              padding: '4px 10px',
-                              borderRadius: 4,
+                              padding: '4px 8px',
                               fontSize: 11,
-                              fontWeight: 600,
-                              background: u.is_active ? 'var(--danger-bg)' : 'var(--success-bg)',
-                              border: `1px solid ${u.is_active ? 'var(--danger)' : 'var(--success)'}`,
-                              color: u.is_active ? 'var(--danger)' : 'var(--success)',
-                              cursor: isBusy ? 'not-allowed' : 'pointer',
-                              transition: 'all 0.15s'
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              gap: 4,
                             }}
+                            title="修改该用户的姓名、邮箱与验证状态"
                           >
-                            {u.is_active ? '封禁账号' : '解封激活'}
+                            <Edit size={11} />
+                            <span>改联系信息</span>
                           </button>
-                        ) : (
-                          <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>保护</span>
-                        )}
+
+                          {!isCurrent ? (
+                            <button
+                              onClick={() => handleStatusToggle(u.id, u.is_active)}
+                              disabled={isBusy}
+                              style={{
+                                padding: '4px 8px',
+                                borderRadius: 4,
+                                fontSize: 11,
+                                fontWeight: 600,
+                                background: u.is_active ? 'var(--danger-bg)' : 'var(--success-bg)',
+                                border: `1px solid ${u.is_active ? 'var(--danger)' : 'var(--success)'}`,
+                                color: u.is_active ? 'var(--danger)' : 'var(--success)',
+                                cursor: isBusy ? 'not-allowed' : 'pointer',
+                                transition: 'all 0.15s'
+                              }}
+                            >
+                              {u.is_active ? '封禁' : '解封'}
+                            </button>
+                          ) : (
+                            <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>保护</span>
+                          )}
+                        </div>
                       </td>
                     </tr>
                   );
@@ -940,6 +1073,103 @@ export default function AdminPanel({ currentUser, onOpenFundDetail }) {
       </div>
         </>
       )}
+
+      {/* ── 管理员修改用户联系信息 Modal ── */}
+      {editingUser && (
+        <div style={overlayStyle} onClick={() => setEditingUser(null)}>
+          <div style={modalStyle} onClick={(e) => e.stopPropagation()}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span style={{
+                  display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                  width: 28, height: 28, borderRadius: 6,
+                  background: 'var(--accent-secondary, #9A6F38)', color: '#fff'
+                }}>
+                  <Edit size={15} />
+                </span>
+                <h3 style={{ margin: 0, fontSize: 16, fontFamily: 'var(--font-display)', color: 'var(--text-primary)' }}>
+                  修改用户联系信息
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setEditingUser(null)}
+                style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', padding: 4 }}
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            <p style={{ margin: '0 0 16px', fontSize: 12, color: 'var(--text-secondary)' }}>
+              管理员可直接更正或更新该用户的真实姓名、注册邮箱以及邮箱验证状态。
+            </p>
+
+            <form onSubmit={handleSaveUserContact}>
+              <div style={{ marginBottom: 14 }}>
+                <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: 'var(--text-primary)', marginBottom: 6 }}>
+                  用户显示姓名
+                </label>
+                <input
+                  type="text"
+                  value={editName}
+                  onChange={(e) => setEditName(e.target.value)}
+                  placeholder="请输入姓名"
+                  className="atelier-input"
+                  style={{ width: '100%', boxSizing: 'border-box' }}
+                  disabled={editSubmitting}
+                />
+              </div>
+
+              <div style={{ marginBottom: 14 }}>
+                <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: 'var(--text-primary)', marginBottom: 6 }}>
+                  电子邮箱地址
+                </label>
+                <input
+                  type="email"
+                  value={editEmail}
+                  onChange={(e) => setEditEmail(e.target.value)}
+                  placeholder="请输入有效电子邮箱"
+                  className="atelier-input"
+                  style={{ width: '100%', boxSizing: 'border-box' }}
+                  disabled={editSubmitting}
+                />
+              </div>
+
+              <div style={{ marginBottom: 20 }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, fontWeight: 600, color: 'var(--text-primary)', cursor: 'pointer' }}>
+                  <input
+                    type="checkbox"
+                    checked={editVerified}
+                    onChange={(e) => setEditVerified(e.target.checked)}
+                    disabled={editSubmitting}
+                  />
+                  <span>将此邮箱标记为「已验证」状态（跳过用户点击邮件激活）</span>
+                </label>
+              </div>
+
+              <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+                <button
+                  type="button"
+                  onClick={() => setEditingUser(null)}
+                  className="action-btn-secondary"
+                  style={{ padding: '7px 14px', fontSize: 12 }}
+                >
+                  取消
+                </button>
+                <button
+                  type="submit"
+                  disabled={editSubmitting}
+                  className="create-btn"
+                  style={{ padding: '7px 16px', fontSize: 12, display: 'inline-flex', alignItems: 'center', gap: 5 }}
+                >
+                  {editSubmitting ? <RefreshCw size={12} className="animate-spin" /> : <CheckCircle2 size={12} />}
+                  <span>{editSubmitting ? '正在保存…' : '保存联系信息'}</span>
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -950,4 +1180,28 @@ const tdStyle = {
   color: 'var(--text-primary)',
   fontSize: 13,
   verticalAlign: 'middle',
+};
+
+const overlayStyle = {
+  position: 'fixed',
+  inset: 0,
+  background: 'rgba(10, 25, 47, 0.65)',
+  backdropFilter: 'blur(6px)',
+  zIndex: 1000,
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  padding: 16,
+};
+
+const modalStyle = {
+  position: 'relative',
+  background: 'var(--surface-elevated, #fff)',
+  border: '1px solid var(--border-strong, #e2e8f0)',
+  borderTop: '3px solid var(--accent-color, #1B4D3E)',
+  borderRadius: 'var(--card-radius, 8px)',
+  padding: '24px 22px 20px',
+  width: '100%',
+  maxWidth: 420,
+  boxShadow: 'var(--card-shadow, 0 20px 40px rgba(0,0,0,0.18))',
 };

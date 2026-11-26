@@ -189,6 +189,113 @@ authRouter.get("/verify-email", async (c) => {
   return c.json({ message: "電郵驗證成功！您的帳戶已激活。" });
 });
 
+/** 重发邮箱验证邮件 */
+authRouter.post("/resend-verification", async (c) => {
+  const currentUser = await requireUser(c);
+  if (currentUser.is_verified) {
+    return c.json({ message: "您的電郵已驗證，無需重複發送。" });
+  }
+
+  const body = await c.req.json<{ redirect_url?: string }>().catch(() => ({}));
+  const userId = String(currentUser.id);
+  const now = new Date().toISOString();
+  const expiresAt = new Date(Date.now() + 24 * 3600 * 1000).toISOString();
+  const tokenStr = generateUuid().replace(/-/g, "") + generateUuid().replace(/-/g, "");
+
+  // 删除该用户已有的 verification tokens
+  await c.env.DB.prepare("DELETE FROM user_tokens WHERE user_id = ? AND type = 'verification'")
+    .bind(userId)
+    .run();
+
+  await c.env.DB.prepare(
+    "INSERT INTO user_tokens (id, user_id, token, type, expires_at, created_at) VALUES (?, ?, ?, 'verification', ?, ?)"
+  )
+    .bind(generateUuid(), userId, tokenStr, expiresAt, now)
+    .run();
+
+  const frontendUrl = (body as any)?.redirect_url || "https://fis.wonderwisdom.online";
+  await sendResendEmail(
+    c.env,
+    String(currentUser.email),
+    "【WONDER】請驗證您的電郵地址",
+    `<p>您好 ${currentUser.name}，請點擊以下連結完成電郵驗證：</p><p><a href="${frontendUrl}/verify-email?token=${tokenStr}">${frontendUrl}/verify-email?token=${tokenStr}</a></p>`
+  );
+
+  return c.json({ message: "驗證郵件已發送，請檢查您的電子郵箱（含垃圾郵件箱）。" });
+});
+
+/** 用户修改自身联系信息（姓名、邮箱） */
+authRouter.put("/profile", async (c) => {
+  const currentUser = await requireUser(c);
+  const body = await c.req.json<{ name?: string; email?: string; redirect_url?: string }>();
+  const userId = String(currentUser.id);
+
+  const newName = (body.name !== undefined ? String(body.name).trim() : String(currentUser.name)).trim();
+  const rawEmail = body.email !== undefined ? String(body.email).trim().toLowerCase() : String(currentUser.email).toLowerCase();
+
+  if (!newName) {
+    throw new HttpError(400, "姓名不能為空");
+  }
+  if (!rawEmail || !/\S+@\S+\.\S+/.test(rawEmail)) {
+    throw new HttpError(400, "請輸入有效的電子郵箱地址");
+  }
+
+  const emailChanged = rawEmail !== String(currentUser.email).toLowerCase();
+
+  if (emailChanged) {
+    // 检查新邮箱是否已被其他人占用
+    const existing = await c.env.DB.prepare("SELECT id FROM users WHERE LOWER(email) = ? AND id != ?")
+      .bind(rawEmail, userId)
+      .first();
+    if (existing) {
+      throw new HttpError(400, "該電子郵箱已被其他用戶使用");
+    }
+  }
+
+  // 若邮箱更改，将 is_verified 重置为 0，并自动生成并发送新的验证邮件
+  const newVerified = emailChanged ? 0 : (currentUser.is_verified ? 1 : 0);
+
+  await c.env.DB.prepare("UPDATE users SET name = ?, email = ?, is_verified = ? WHERE id = ?")
+    .bind(newName, rawEmail, newVerified, userId)
+    .run();
+
+  if (emailChanged) {
+    const tokenStr = generateUuid().replace(/-/g, "") + generateUuid().replace(/-/g, "");
+    const now = new Date().toISOString();
+    const expiresAt = new Date(Date.now() + 24 * 3600 * 1000).toISOString();
+
+    await c.env.DB.prepare("DELETE FROM user_tokens WHERE user_id = ? AND type = 'verification'")
+      .bind(userId)
+      .run();
+
+    await c.env.DB.prepare(
+      "INSERT INTO user_tokens (id, user_id, token, type, expires_at, created_at) VALUES (?, ?, ?, 'verification', ?, ?)"
+    )
+      .bind(generateUuid(), userId, tokenStr, expiresAt, now)
+      .run();
+
+    const frontendUrl = body.redirect_url || "https://fis.wonderwisdom.online";
+    await sendResendEmail(
+      c.env,
+      rawEmail,
+      "【WONDER】請驗證您的新電郵地址",
+      `<p>您好 ${newName}，您已更新電子郵箱，請點擊以下連結完成新電郵驗證：</p><p><a href="${frontendUrl}/verify-email?token=${tokenStr}">${frontendUrl}/verify-email?token=${tokenStr}</a></p>`
+    );
+  }
+
+  const updatedUser = await c.env.DB.prepare(
+    "SELECT id, email, name, password_hash, is_active, created_at, role, is_verified FROM users WHERE id = ?"
+  )
+    .bind(userId)
+    .first<any>();
+
+  return c.json({
+    message: emailChanged ? "個人資料已更新，驗證郵件已發送至新郵箱，請完成驗證。" : "個人資料已成功更新。",
+    user: formatUserOut(updatedUser),
+    email_changed: emailChanged,
+  });
+});
+
 authRouter.get("/me", async (c) => {
   const user = await requireUser(c);
   return c.json(formatUserOut(user as unknown as Record<string, unknown>));

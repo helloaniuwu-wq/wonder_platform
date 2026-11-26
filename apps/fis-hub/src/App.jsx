@@ -47,6 +47,7 @@ const ROLE_META = {
 };
 
 import { VerifyEmailOverlay, ResetPasswordOverlay } from './components/AuthOverlays';
+import UserProfileModal from './components/UserProfileModal';
 
 function App() {
   const { lang, toggleLang, t } = useLang();
@@ -147,6 +148,7 @@ function App() {
   // ── Auth State ──────────────────────────────────────────────────────────────
   const [currentUser, setCurrentUser] = useState(() => authStorage.getUser());
   const [authModalOpen, setAuthModalOpen] = useState(false);
+  const [profileModalOpen, setProfileModalOpen] = useState(false);
 
   // 策略实验室（含 ILP / 储蓄险 / 方案）
   const {
@@ -836,10 +838,35 @@ function App() {
               }}>
                 {t('role.' + currentUser.role) || currentUser.role}
               </span>
-              {/* 用户名 */}
-              <span style={{ color: 'var(--text-primary)', fontSize: 13, fontWeight: 600 }}>
-                {currentUser.name || currentUser.email?.split('@')[0]}
-              </span>
+              {/* 用户名/联系信息按钮（点击打开修改资料与邮箱验证弹窗） */}
+              <button
+                type="button"
+                onClick={() => setProfileModalOpen(true)}
+                title="查看与修改个人资料 / 邮箱验证"
+                className="action-btn-secondary"
+                style={{
+                  padding: '4px 10px',
+                  fontSize: 13,
+                  fontWeight: 600,
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 6,
+                }}
+              >
+                <span>{currentUser.name || currentUser.email?.split('@')[0]}</span>
+                {!currentUser.is_verified && (
+                  <span
+                    style={{
+                      width: 7,
+                      height: 7,
+                      borderRadius: '50%',
+                      background: 'var(--warning)',
+                      boxShadow: '0 0 0 2px var(--surface-card)',
+                    }}
+                    title="邮箱未验证"
+                  />
+                )}
+              </button>
               {/* 登出按钮 */}
               <button
                 type="button"
@@ -1285,6 +1312,13 @@ function App() {
       )}
       {authAction === 'reset' && (
         <ResetPasswordOverlay token={token} onClose={closeAuthAction} />
+      )}
+      {profileModalOpen && currentUser && (
+        <UserProfileModal
+          currentUser={currentUser}
+          onUpdateUser={(updated) => setCurrentUser(updated)}
+          onClose={() => setProfileModalOpen(false)}
+        />
       )}
 
       {/* ── 极简合规页脚 ── */}

@@ -178,6 +178,97 @@ adminRouter.put("/users/:user_id/status", async (c) => {
 });
 
 /**
+ * PUT /admin/users/:user_id/profile
+ * 管理员修改任意用户的联系信息（姓名、邮箱、验证状态）
+ */
+adminRouter.put("/users/:user_id/profile", async (c) => {
+  await requireAdmin(c);
+  const userId = c.req.param("user_id");
+
+  const target = await c.env.DB.prepare("SELECT * FROM users WHERE id = ?").bind(userId).first<any>();
+  if (!target) throw new HttpError(404, "用戶不存在");
+
+  const body = await c.req.json<{ name?: string; email?: string; is_verified?: boolean }>();
+  const newName = (body.name !== undefined ? String(body.name).trim() : String(target.name)).trim();
+  const rawEmail = body.email !== undefined ? String(body.email).trim().toLowerCase() : String(target.email).toLowerCase();
+
+  if (!newName) {
+    throw new HttpError(400, "姓名不能為空");
+  }
+  if (!rawEmail || !/\S+@\S+\.\S+/.test(rawEmail)) {
+    throw new HttpError(400, "請輸入有效的電子郵箱地址");
+  }
+
+  if (rawEmail !== String(target.email).toLowerCase()) {
+    const existing = await c.env.DB.prepare("SELECT id FROM users WHERE LOWER(email) = ? AND id != ?")
+      .bind(rawEmail, userId)
+      .first();
+    if (existing) {
+      throw new HttpError(400, "該電子郵箱已被其他用戶使用");
+    }
+  }
+
+  const newVerified = body.is_verified !== undefined ? (body.is_verified ? 1 : 0) : Number(target.is_verified || 0);
+
+  await c.env.DB.prepare("UPDATE users SET name = ?, email = ?, is_verified = ? WHERE id = ?")
+    .bind(newName, rawEmail, newVerified, userId)
+    .run();
+
+  const updated = await c.env.DB.prepare(
+    "SELECT id, email, name, role, is_active, is_verified, created_at FROM users WHERE id = ?"
+  )
+    .bind(userId)
+    .first<any>();
+
+  return c.json({
+    success: true,
+    user: {
+      ...updated,
+      is_active: Boolean(updated.is_active),
+      is_verified: Boolean(updated.is_verified),
+    },
+  });
+});
+
+/**
+ * POST /admin/users/:user_id/resend-verification
+ * 管理员为指定用户触发/补发验证邮件
+ */
+adminRouter.post("/users/:user_id/resend-verification", async (c) => {
+  await requireAdmin(c);
+  const userId = c.req.param("user_id");
+
+  const target = await c.env.DB.prepare("SELECT * FROM users WHERE id = ?").bind(userId).first<any>();
+  if (!target) throw new HttpError(404, "用戶不存在");
+
+  const body = await c.req.json<{ redirect_url?: string }>().catch(() => ({}));
+  const now = new Date().toISOString();
+  const expiresAt = new Date(Date.now() + 24 * 3600 * 1000).toISOString();
+  const tokenStr = crypto.randomUUID().replace(/-/g, "") + crypto.randomUUID().replace(/-/g, "");
+
+  await c.env.DB.prepare("DELETE FROM user_tokens WHERE user_id = ? AND type = 'verification'")
+    .bind(userId)
+    .run();
+
+  await c.env.DB.prepare(
+    "INSERT INTO user_tokens (id, user_id, token, type, expires_at, created_at) VALUES (?, ?, ?, 'verification', ?, ?)"
+  )
+    .bind(crypto.randomUUID(), userId, tokenStr, expiresAt, now)
+    .run();
+
+  const { sendResendEmail } = await import("../utils/auth");
+  const frontendUrl = (body as any)?.redirect_url || "https://fis.wonderwisdom.online";
+  await sendResendEmail(
+    c.env,
+    String(target.email),
+    "【WONDER】請驗證您的電郵地址",
+    `<p>您好 ${target.name}，管理員已為您重新發送驗證郵件，請點擊以下連結完成電郵驗證：</p><p><a href="${frontendUrl}/verify-email?token=${tokenStr}">${frontendUrl}/verify-email?token=${tokenStr}</a></p>`
+  );
+
+  return c.json({ success: true, message: `已成功向 ${target.email} 發送驗證郵件。` });
+});
+
+/**
  * 历史端点兼容：toggle-premium
  */
 adminRouter.post("/users/:user_id/toggle-premium", async (c) => {
