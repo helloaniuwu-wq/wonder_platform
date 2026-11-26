@@ -18,6 +18,7 @@ from wonder_quant.pipeline import (
     run_push_d1,
     run_writeback,
 )
+from wonder_quant.sop_bridge import publish_sop_to_d1, pull_research_queue_to_vault
 from wonder_quant.storage import FetchLedger
 
 app = typer.Typer(name="wq", help="Wonder Quant — Windows PC fund ingestion, quant analytics & D1 sync CLI.")
@@ -65,10 +66,11 @@ def fetch(
     force: bool = typer.Option(False, "--force", help="Bypass R6 same-day fetch ledger check"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Plan only, make 0 external requests"),
     limit_yahoo: int | None = typer.Option(None, "--limit-yahoo", help="Limit Yahoo tickers for quick testing"),
+    full_backfill: bool = typer.Option(False, "--full-backfill", help="Re-fetch full 15Y history instead of 40d incremental"),
 ) -> None:
     """Fetch fund NAVs, dividends, FX rates, and benchmarks into local Parquet cache."""
     settings = load_settings()
-    summary = run_fetch(settings, force=force, dry_run=dry_run, limit_yahoo=limit_yahoo)
+    summary = run_fetch(settings, force=force, dry_run=dry_run, limit_yahoo=limit_yahoo, full_backfill=full_backfill)
     typer.echo(json.dumps(summary.model_dump(), ensure_ascii=False, indent=2))
     if summary.status in ("failed", "circuit_open"):
         raise typer.Exit(code=2)
@@ -126,10 +128,11 @@ def import_csv(
 def run_daily(
     force: bool = typer.Option(False, "--force"),
     skip_d1: bool = typer.Option(False, "--skip-d1", help="Skip D1 push (useful before CF Token setup)"),
+    full_backfill: bool = typer.Option(False, "--full-backfill", help="Re-fetch full 15Y history instead of 40d incremental"),
 ) -> None:
     """Execute full daily batch: fetch -> compute -> push-d1."""
     settings = load_settings()
-    summary = run_fetch(settings, force=force)
+    summary = run_fetch(settings, force=force, full_backfill=full_backfill)
     metrics = run_compute(settings)
     d1_stats = None
     if not skip_d1 and settings.cf_account_id and settings.cf_api_token:
@@ -162,6 +165,40 @@ def macro(
         ledger = FetchLedger(settings.state_dir)
         pushed_rows = D1Client(settings).push_macro_snapshot(snapshot, ledger=ledger, full=full)
     typer.echo(json.dumps({"snapshot": snapshot.model_dump(), "d1_rows_written": pushed_rows}, ensure_ascii=False, indent=2))
+
+
+@app.command("pull-research-queue")
+def pull_research_queue(
+    out_file: Path | None = typer.Option(None, "--out", help="Output markdown path (default: 02_Ideas/基金分析线索.md)"),
+) -> None:
+    """Pull FIS Hub fund research watchlist queue from D1 into Obsidian."""
+    settings = load_settings()
+    res = pull_research_queue_to_vault(settings, out_file=out_file)
+    typer.echo(json.dumps(res, ensure_ascii=False, indent=2))
+
+
+@app.command("publish-sop")
+def publish_sop(
+    slug: str = typer.Argument(..., help="Fund slug in D1/catalog, e.g. CN_512890 or Z29_F"),
+    report_dir: Path | None = typer.Option(None, "--report-dir", help="Folder holding SOP v2.0 markdown deliverables"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Validate and parse without writing to D1"),
+    invalidate_url: str | None = typer.Option(None, "--invalidate-url", help="Optional cache invalidation endpoint"),
+    via_wrangler: bool = typer.Option(False, "--via-wrangler", help="Force Wrangler OAuth CLI transport for remote D1"),
+) -> None:
+    """Publish validated SOP v2.0 fund deliverables to Cloudflare D1 wq_fund_sop_reports."""
+    settings = load_settings()
+    vault_root = settings.vault_fund_dir.parents[2]
+    code_guess = slug.split("_")[-1] if "_" in slug and not slug.endswith("_F") else slug.removesuffix("_F")
+    rdir = report_dir or (vault_root / "05_Investment_Research" / "03_Funds" / code_guess)
+    res = publish_sop_to_d1(
+        settings,
+        slug=slug,
+        report_dir=rdir,
+        dry_run=dry_run,
+        invalidate_url=invalidate_url,
+        via_wrangler=via_wrangler,
+    )
+    typer.echo(json.dumps(res, ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":

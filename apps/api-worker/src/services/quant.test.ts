@@ -4,8 +4,13 @@ import {
   clearQuantStoreCaches,
   convertSeriesCurrency,
   getQuantFundSeries,
+  loadQuantCatalog,
+  normalizeMinorCurrency,
   resolveQuantFund,
+  sanitizeQuantSeries,
+  unpackSeriesDates,
 } from "./quantStore";
+import { getDividendMetrics } from "./fip/dataProvider";
 import { StrategyLab, classifyAsset, createPrng } from "./fip/strategyLab";
 import { PortfolioEngine } from "./fip/portfolioEngine";
 import {
@@ -13,10 +18,13 @@ import {
   buildTacticalCandidatePool,
   compareHomogeneousFunds,
   computeHoldingsOverlap,
+  getFundDomicile,
   getHorizonEquityHardCap,
   getRiskEnvelope,
+  hasUsEstateTaxConcern,
   inferFundRole,
   isIlasFund,
+  isIrelandOrLuxembourgFund,
   matchClassicTemplates,
   normalizeProfile,
 } from "./advisoryEngine";
@@ -276,6 +284,16 @@ describe("quantStore & StrategyLab integration", () => {
     expect(res.valid_assets).toEqual(["Z01", "CN_515080"]);
     expect(res.asset_stats["Z01"].name).toBe("惠理高息股票基金");
     expect(res.efficient_frontier && res.efficient_frontier.length).toBeGreaterThan(0);
+    for (const pt of res.efficient_frontier || []) {
+      expect(pt.allocations).toBeDefined();
+      const vals = Object.values(pt.allocations || {});
+      expect(vals.reduce((a, b) => a + b, 0)).toBeCloseTo(1.0, 2);
+      expect(vals.every((w) => w >= -1e-6 && w <= 0.8 + 1e-6)).toBe(true);
+    }
+    for (const key of ["max_sharpe", "min_volatility", "risk_parity"] as const) {
+      const vals = Object.values(res[key].allocations);
+      expect(vals.reduce((a, b) => a + b, 0)).toBeCloseTo(1.0, 2);
+    }
     expect(res.portfolio_diagnostics?.weighted_fee_pct).toBeCloseTo(0.78, 1);
     expect(res.base_currency).toBe("USD");
   });
@@ -1375,5 +1393,330 @@ describe("Core-Satellite, Homogeneous Deduplication, Hard Caps & AI Fund Swappin
       poisonedCandPool
     );
     expect(normalized.tacticalAdjustment.adjusted_holdings.some((h) => h.lab_id === "GLD")).toBe(false);
+  });
+
+  it("enforces Ireland/Luxembourg UCITS funds on Non-ILAS recommendations when extra_notes mentions US estate tax", () => {
+    const euAndUsCatalog = [
+      { slug: "US_SPY", code: "SPY", yahoo_ticker: "SPY", name: "SPDR S&P 500 ETF Trust", asset_class: "股票", ilas_platform: "非投连险-国际股票", currency: "USD", fee_pct: 0.09, data_tier: "A", quant_score: 96, quant_grade: "A", ret_3y_ann: 0.16, vol_3y: 0.14, sharpe_3y: 1.1, is_distributing: true, tags: [] },
+      { slug: "US_SCHD", code: "SCHD", yahoo_ticker: "SCHD", name: "Schwab US Dividend Equity ETF", asset_class: "股票", ilas_platform: "非投连险-美股分红型ETF", currency: "USD", fee_pct: 0.06, data_tier: "A", quant_score: 94, quant_grade: "A", ret_3y_ann: 0.12, vol_3y: 0.12, sharpe_3y: 1.0, div_yield_ttm: 0.04, is_distributing: true, tags: [] },
+      { slug: "BD_BIL", code: "BIL", yahoo_ticker: "BIL", name: "SPDR Blmbg 1-3 Mth T-Bill ETF", asset_class: "固定收益", ilas_platform: "非投连险-债券基金比较", currency: "USD", fee_pct: 0.14, data_tier: "A", quant_score: 92, quant_grade: "A", ret_3y_ann: 0.05, vol_3y: 0.01, sharpe_3y: 1.6, is_distributing: true, tags: [] },
+      { slug: "BD_USHY", code: "USHY", yahoo_ticker: "USHY", name: "Amundi Index Solution - Amundi USD High Yield", asset_class: "固定收益", ilas_platform: "非投连险-债券基金比较", currency: "USD", fee_pct: 0.15, data_tier: "A", quant_score: 80, quant_grade: "A", ret_3y_ann: 0.07, vol_3y: 0.06, sharpe_3y: 0.8, is_distributing: false, tags: [] },
+      { slug: "BD_IWDA", code: "IWDA", yahoo_ticker: "IWDA.L", name: "iShares Core MSCI World UCITS ETF USD (Acc)", asset_class: "股票", ilas_platform: "非投连险-债券基金比较", currency: "USD", fee_pct: 0.2, data_tier: "A", quant_score: 76, quant_grade: "A", ret_3y_ann: 0.16, vol_3y: 0.13, sharpe_3y: 0.91, is_distributing: false, tags: [] },
+      { slug: "BD_VHYD", code: "VHYD", yahoo_ticker: "VHYD.L", name: "Vanguard FTSE All-World High Dividend Yield UCITS ETF", asset_class: "股票", ilas_platform: "非投连险-债券基金比较", currency: "USD", fee_pct: 0.29, data_tier: "A", quant_score: 91, quant_grade: "A", ret_3y_ann: 0.17, vol_3y: 0.12, sharpe_3y: 1.15, div_yield_ttm: 0.038, is_distributing: true, tags: [] },
+      { slug: "BD_VHYA", code: "VHYA", yahoo_ticker: "VHYA.L", name: "Vanguard FTSE All-World High Dividend Yield UCITS ETF Acc", asset_class: "股票", ilas_platform: "非投连险-债券基金比较", currency: "USD", fee_pct: 0.29, data_tier: "A", quant_score: 91, quant_grade: "A", ret_3y_ann: 0.17, vol_3y: 0.12, sharpe_3y: 1.11, is_distributing: false, tags: [] },
+      { slug: "BD_JREG", code: "JREG", yahoo_ticker: "JREG.L", name: "JPMorgan ETFs (Ireland) ICAV - Global Research Enhanced", asset_class: "股票", ilas_platform: "非投连险-债券基金比较", currency: "USD", fee_pct: 0.25, data_tier: "A", quant_score: 74, quant_grade: "A", ret_3y_ann: 0.15, vol_3y: 0.13, sharpe_3y: 0.87, is_distributing: false, tags: [] },
+      { slug: "BD_IB01", code: "IB01", yahoo_ticker: "IB01.L", name: "短期美债 iShares $ Treasury Bond 0-1yr UCITS ETF", asset_class: "固定收益", ilas_platform: "非投连险-债券基金比较", currency: "USD", fee_pct: 0.07, data_tier: "A", quant_score: 79, quant_grade: "A", ret_3y_ann: 0.045, vol_3y: 0.01, sharpe_3y: 1.29, is_distributing: false, tags: [] },
+      { slug: "BD_CSH2", code: "CSH2", yahoo_ticker: "CSH2.L", name: "短期美债 Amundi Smart Overnight Return", asset_class: "固定收益", ilas_platform: "非投连险-债券基金比较", currency: "GBP", fee_pct: 0.1, data_tier: "A", quant_score: 83, quant_grade: "A", ret_3y_ann: 0.048, vol_3y: 0.01, sharpe_3y: 2.06, is_distributing: false, tags: [] },
+      { slug: "BD_CBU7", code: "CBU7", yahoo_ticker: "CBU7.L", name: "CBU7 iShares $ Treasury Bond 3-7yr UCITS ETF", asset_class: "固定收益", ilas_platform: "非投连险-债券基金比较", currency: "USD", fee_pct: 0.07, data_tier: "A", quant_score: 31, quant_grade: "C", ret_3y_ann: 0.039, vol_3y: 0.05, sharpe_3y: -0.02, is_distributing: false, tags: [] },
+      { slug: "Z01_F", code: "Z01", aia_code: "Z01", isin: "HK0000288743", name: "惠理高息股票", asset_class: "股票", ilas_platform: "AIA 卓达智悦2", currency: "USD", fee_pct: 1.25, data_tier: "B", quant_score: 78, quant_grade: "A", is_distributing: true, tags: [] },
+    ];
+
+    const estateProf = normalizeProfile({
+      product_scope: "all",
+      ilp_planned: false,
+      risk_level: "balanced",
+      horizon_years: 10,
+      extra_notes: "客户为香港居民，十分关注美国遗产税风险，请配置非投连险欧洲基金",
+    });
+    expect(estateProf.extra_notes).toContain("美国遗产税");
+    expect(hasUsEstateTaxConcern(estateProf)).toBe(true);
+
+    const env = getRiskEnvelope(estateProf);
+    const res = buildCustomFundBaskets(euAndUsCatalog as any, estateProf, env);
+    expect(res.baskets.length).toBeGreaterThanOrEqual(1);
+    for (const b of res.baskets) {
+      expect(b.universe_mode).toBe("non_ilas");
+      expect(b.us_estate_tax_shield).toBe(true);
+      expect(b.holdings.every((h) => !isIlasFund(h) && isIrelandOrLuxembourgFund(h))).toBe(true);
+      expect(b.holdings.some((h) => ["SPY", "SCHD", "BIL", "USHY"].includes(h.code))).toBe(false);
+      // Share-class twin dedup: VHYD and VHYA should not appear together
+      const codes = b.holdings.map((h) => h.code);
+      expect(codes.includes("VHYD") && codes.includes("VHYA")).toBe(false);
+    }
+
+    // Classic templates also remap US ETFs to IE/LU UCITS
+    const templates = matchClassicTemplates(estateProf, env);
+    expect(templates.length).toBeGreaterThan(0);
+    expect(templates[0].name_zh).toContain("UCITS");
+    expect(
+      templates[0].holdings.every((h) =>
+        ["CSPX", "VWRA", "CNDX", "AGGU", "CBU0", "DTLA", "IBTA", "IWDA", "MXWO", "IWVL", "VHYD", "JREG", "CBU7", "IB01"].includes(
+          h.isin
+        )
+      )
+    ).toBe(true);
+
+    // Tactical pool contains only IE/LU UCITS and rejects injected US SPY
+    const cands = buildTacticalCandidatePool(euAndUsCatalog as any, estateProf, res.baskets[0].holdings, 14);
+    expect(cands.every((c) => !isIlasFund(c) && isIrelandOrLuxembourgFund(c))).toBe(true);
+    expect(getFundDomicile({ code: "USHY", yahoo_ticker: "USHY", ilas_platform: "非投连险-债券基金比较" })).toBe("US");
+
+    const poisonedPool = [
+      ...cands,
+      {
+        slug: "US_SPY",
+        lab_id: "SPY",
+        code: "SPY",
+        isin: null,
+        yahoo_ticker: "SPY",
+        name: "SPDR S&P 500 ETF Trust",
+        asset_class: "股票",
+        sleeve: "equity" as const,
+        core_role: "core" as const,
+        homogeneity_cluster: "equity|US_BROAD",
+        ilas_platform: "非投连险-国际股票",
+        currency: "USD",
+        fee_pct: 0.09,
+        alpha_3y: null,
+        r2_3y: null,
+        beta_3y: null,
+        vol_3y: null,
+        div_yield_ttm: null,
+        quant_grade: "A",
+        is_distributing: true,
+      },
+    ];
+    const llmOut = `<tactical_json>
+{
+  "tactical_summary_zh": "测试注入美股 ETF 拦截",
+  "adjusted_holdings": [
+    { "lab_id": "${res.baskets[0].holdings[0].lab_id}", "adjusted_weight_pct": 80, "reason_zh": "保留" },
+    { "lab_id": "SPY", "adjusted_weight_pct": 20, "reason_zh": "应被遗产税规则拦截" }
+  ]
+}
+</tactical_json>`;
+    const normalized = extractAndNormalizeTacticalJson(llmOut, estateProf, res.baskets[0], poisonedPool);
+    expect(normalized.tacticalAdjustment.adjusted_holdings.some((h) => h.lab_id === "SPY")).toBe(false);
+  });
+
+  it("normalizes GBp/GBP regimes, cleans UYLX pence dividends, and rejects corrupt catalog metrics", async () => {
+    clearQuantStoreCaches();
+
+    expect(normalizeMinorCurrency("GBp")).toEqual({ currency: "GBP", unitScale: 0.01 });
+    expect(normalizeMinorCurrency("GBX")).toEqual({ currency: "GBP", unitScale: 0.01 });
+    expect(normalizeMinorCurrency("GBP")).toEqual({ currency: "GBP", unitScale: 1 });
+    expect(normalizeMinorCurrency("ZAc")).toEqual({ currency: "ZAR", unitScale: 0.01 });
+
+    // Simulated BD_UYLX packed series: 100x spikes + pence dividends (4.8625 on GBP NAV, 4.598 on GBp NAV)
+    const dates = [
+      "2026-05-01",
+      "2026-05-04",
+      "2026-06-11",
+      "2026-06-12",
+      "2026-09-09",
+      "2026-09-10",
+      "2026-09-11",
+      "2026-11-18",
+      "2026-11-19",
+      "2026-11-20",
+    ];
+    const navs = [3.71, 3.73, 3.767, 3.75, 360.1, 361.60001, 3.68, 3.72, 3.721, 3.72225];
+    const adjs = [...navs];
+    const rawDivs: Record<string, number> = {
+      "2026-06-11": 4.8625,
+      "2026-09-10": 4.598,
+    };
+
+    const directCleaned = sanitizeQuantSeries(dates, navs, adjs, rawDivs);
+    expect(Math.max(...directCleaned.nav)).toBeLessThan(10);
+    expect(directCleaned.dividends["2026-06-11"]).toBeCloseTo(0.048625, 5);
+    expect(directCleaned.dividends["2026-09-10"]).toBeCloseTo(0.04598, 5);
+
+    const { db } = createMockD1({
+      funds: [
+        {
+          slug: "BD_UYLX",
+          code: "UYLX",
+          isin: "IE0006LBEDV2",
+          yahoo_ticker: "UYLX.L",
+          name: "UYLX ETF",
+          asset_class: "固定收益",
+          currency: "GBp",
+          fee_pct: 20.0,
+          duration: 120,
+          yield_pct: 250000,
+          is_distributing: 1,
+          primary_source: "yfinance",
+          data_tier: "A",
+          is_trackable: 1,
+          status: "active",
+        },
+      ],
+      metrics: [
+        {
+          slug: "BD_UYLX",
+          latest_nav: 3.72225,
+          div_yield_ttm: 0.3,
+          obs_days: 183,
+          quant_grade: "B",
+        },
+      ],
+      series: {
+        BD_UYLX: {
+          slug: "BD_UYLX",
+          currency: "GBp",
+          series_type: "market_etf",
+          source: "yfinance",
+          series_json: JSON.stringify({
+            d: dates,
+            n: navs,
+            a: adjs,
+            v: [
+              [2, 4.8625],
+              [5, 4.598],
+            ],
+          }),
+        },
+      },
+    });
+
+    const cat = await loadQuantCatalog(db);
+    expect(cat.rows[0].currency).toBe("GBP");
+    expect(cat.rows[0].fee_pct).toBeNull();
+    expect(cat.rows[0].duration).toBeNull();
+    expect(cat.rows[0].yield_pct).toBeNull();
+    expect(cat.rows[0].div_yield_ttm).toBeNull();
+
+    const unpacked = await getQuantFundSeries(db, "BD_UYLX");
+    expect(unpacked?.currency).toBe("GBP");
+    expect(Math.max(...(unpacked?.nav || []))).toBeLessThan(10);
+
+    const dm = await getDividendMetrics(db, "UYLX");
+    const impliedYield = dm.trailing_sum / 3.72225;
+    expect(impliedYield).toBeGreaterThan(0.02);
+    expect(impliedYield).toBeLessThan(0.04);
+  });
+
+  it("resolves UCITS LSE ticker aliases (VHYL/IBTU/IDUS/IDBT/EQQU) and dedupes Acc/Dist share twins", async () => {
+    clearQuantStoreCaches();
+    const { db } = createMockD1({
+      funds: [
+        { slug: "BD_VHYD", code: "VHYD", isin: "IE00B8GKDB10", yahoo_ticker: "VHYD.L", name: "Vanguard High Div (Dist)", asset_class: "股票", ilas_platform: "非投连险-国际股票", currency: "USD", fee_pct: 0.29, twin_code: "VHYA", is_distributing: 1, primary_source: "yfinance", data_tier: "A", is_trackable: 1, status: "active" },
+        { slug: "EU_IB0D", code: "IB0D", isin: "IE00BGR7L912", yahoo_ticker: "IBTU.L", name: "iShares $ Treasury 0-1yr (Dist)", asset_class: "固定收益", ilas_platform: "非投连险-债券基金比较", currency: "USD", fee_pct: 0.07, twin_code: "IB01", is_distributing: 1, primary_source: "yfinance", data_tier: "A", is_trackable: 1, status: "active" },
+        { slug: "EU_IUSA", code: "IUSA", isin: "IE0031442068", yahoo_ticker: "IDUS.L", name: "iShares Core S&P 500 (Dist)", asset_class: "股票", ilas_platform: "非投连险-国际股票", currency: "USD", fee_pct: 0.07, twin_code: "CSPX", is_distributing: 1, primary_source: "yfinance", data_tier: "A", is_trackable: 1, status: "active" },
+        { slug: "EU_EQQQ", code: "EQQQ", isin: "IE0032077012", yahoo_ticker: "EQQU.L", name: "Invesco EQQQ Nasdaq-100 (Dist)", asset_class: "股票", ilas_platform: "非投连险-国际股票", currency: "USD", fee_pct: 0.30, twin_code: "EQAC", is_distributing: 1, primary_source: "yfinance", data_tier: "A", is_trackable: 1, status: "active" },
+        { slug: "EU_IBTS", code: "IBTS", isin: "IE00B14X4S71", yahoo_ticker: "IDBT.L", name: "iShares $ Treasury 1-3yr (Dist)", asset_class: "固定收益", ilas_platform: "非投连险-债券基金比较", currency: "USD", fee_pct: 0.07, twin_code: "IBTA", is_distributing: 1, primary_source: "yfinance", data_tier: "A", is_trackable: 1, status: "active" },
+      ],
+    });
+
+    expect((await resolveQuantFund(db, "VHYL"))?.slug).toBe("BD_VHYD");
+    expect((await resolveQuantFund(db, "IBTU"))?.slug).toBe("EU_IB0D");
+    expect((await resolveQuantFund(db, "IDUS"))?.slug).toBe("EU_IUSA");
+    expect((await resolveQuantFund(db, "EQQU"))?.slug).toBe("EU_EQQQ");
+    expect((await resolveQuantFund(db, "IDBT"))?.slug).toBe("EU_IBTS");
+
+    // Ensure CSPX/IUSA and VWRA/VWRD Acc/Dist twins are never co-selected under income preference
+    const twinCatalog = [
+      { slug: "EU_CSPX", code: "CSPX", isin: "IE00B5BMR087", yahoo_ticker: "CSPX.L", name: "iShares Core S&P 500 UCITS ETF (Acc)", asset_class: "股票", ilas_platform: "非投连险-国际股票", currency: "USD", fee_pct: 0.07, data_tier: "A", quant_score: 96, quant_grade: "A", ret_3y_ann: 0.17, vol_3y: 0.14, sharpe_3y: 1.15, r2_3y: 0.99, beta_3y: 1.0, is_distributing: false, twin_code: "IUSA", tags: [] },
+      { slug: "EU_IUSA", code: "IUSA", isin: "IE0031442068", yahoo_ticker: "IDUS.L", name: "iShares Core S&P 500 UCITS ETF (Dist)", asset_class: "股票", ilas_platform: "非投连险-国际股票", currency: "USD", fee_pct: 0.07, data_tier: "A", quant_score: 95, quant_grade: "A", ret_3y_ann: 0.17, vol_3y: 0.14, sharpe_3y: 1.14, r2_3y: 0.99, beta_3y: 1.0, div_yield_ttm: 0.01, is_distributing: true, twin_code: "CSPX", tags: [] },
+      { slug: "EU_VWRA", code: "VWRA", isin: "IE00BK5BQT80", yahoo_ticker: "VWRA.L", name: "Vanguard FTSE All-World UCITS ETF (Acc)", asset_class: "股票", ilas_platform: "非投连险-国际股票", currency: "USD", fee_pct: 0.22, data_tier: "A", quant_score: 94, quant_grade: "A", ret_3y_ann: 0.16, vol_3y: 0.138, sharpe_3y: 1.1, is_distributing: false, twin_code: "VWRD", tags: [] },
+      { slug: "EU_VWRD", code: "VWRD", isin: "IE00B3RBWM25", yahoo_ticker: "VWRD.L", name: "Vanguard FTSE All-World UCITS ETF (Dist)", asset_class: "股票", ilas_platform: "非投连险-国际股票", currency: "USD", fee_pct: 0.22, data_tier: "A", quant_score: 93, quant_grade: "A", ret_3y_ann: 0.16, vol_3y: 0.138, sharpe_3y: 1.09, div_yield_ttm: 0.015, is_distributing: true, twin_code: "VWRA", tags: [] },
+      { slug: "EU_VDTY", code: "VDTY", isin: "IE00BZ163M45", yahoo_ticker: "VDTY.L", name: "Vanguard USD Treasury Bond UCITS ETF (Dist)", asset_class: "固定收益", ilas_platform: "非投连险-债券基金比较", currency: "USD", fee_pct: 0.07, data_tier: "A", quant_score: 84, quant_grade: "B", ret_3y_ann: 0.036, vol_3y: 0.046, sharpe_3y: 0.2, div_yield_ttm: 0.042, is_distributing: true, twin_code: "VDTA", tags: [] },
+      { slug: "EU_IB0D", code: "IB0D", isin: "IE00BGR7L912", yahoo_ticker: "IBTU.L", name: "iShares $ Treasury Bond 0-1yr UCITS ETF (Dist)", asset_class: "固定收益", ilas_platform: "非投连险-债券基金比较", currency: "USD", fee_pct: 0.07, data_tier: "A", quant_score: 90, quant_grade: "A", ret_3y_ann: 0.045, vol_3y: 0.005, sharpe_3y: 1.4, div_yield_ttm: 0.038, is_distributing: true, twin_code: "IB01", tags: [] },
+    ];
+    const prof = normalizeProfile({
+      product_scope: "eu_ucits",
+      ilp_planned: false,
+      risk_level: "balanced",
+      horizon_years: 10,
+      primary_goal: "income",
+    });
+    const res = buildCustomFundBaskets(twinCatalog as any, prof, getRiskEnvelope(prof));
+    for (const b of res.baskets) {
+      const codes = b.holdings.map((h) => h.code);
+      expect(codes.includes("CSPX") && codes.includes("IUSA")).toBe(false);
+      expect(codes.includes("VWRA") && codes.includes("VWRD")).toBe(false);
+    }
+  });
+
+  it("unpacks compact delta dates (d0/dd), resolves bidirectional twins, classifies .L S&P 500 as US equity, and back-stitches young funds in StrategyLab", async () => {
+    clearQuantStoreCaches();
+    // 1. Compact delta-date unpacking with omitted `a`
+    const recon = unpackSeriesDates({ d0: "2020-01-02", dd: [1, 3, 1] });
+    expect(recon).toEqual(["2020-01-02", "2020-01-03", "2020-01-06", "2020-01-07"]);
+
+    // 2. .L US broad equity classification check
+    expect(classifyAsset("CSPX.L", "iShares Core S&P 500 UCITS ETF (Acc)").class_key).toBe("US_BROAD_EQUITY");
+    expect(classifyAsset("SPYL", "SPDR S&P 500 UCITS ETF (Acc)").class_key).toBe("US_BROAD_EQUITY");
+    expect(classifyAsset("IWDA.L", "iShares Core MSCI World UCITS ETF (Acc)").class_key).toBe("GLOBAL_DEVELOPED_EQUITY");
+
+    // 3. Build 300-day history (2023-01-02 onward) for CSPX + SPY benchmark, and only 60-day history for SPYL
+    const genDates = (startIso: string, count: number) => {
+      const out: string[] = [];
+      const cur = new Date(`${startIso}T00:00:00Z`);
+      while (out.length < count) {
+        if (cur.getUTCDay() !== 0 && cur.getUTCDay() !== 6) out.push(cur.toISOString().slice(0, 10));
+        cur.setUTCDate(cur.getUTCDate() + 1);
+      }
+      return out;
+    };
+    const longDates = genDates("2023-01-02", 300);
+    const shortDates = longDates.slice(240); // 60 days starting way later (>90 calendar days gap)
+    const ddLong = longDates.slice(1).map((d, idx) =>
+      Math.round((Date.parse(`${d}T00:00:00Z`) - Date.parse(`${longDates[idx]}T00:00:00Z`)) / 86400000)
+    );
+    const pxLong = longDates.map((_, i) => Number((400 * Math.pow(1.0004, i)).toFixed(4)));
+    const pxShort = shortDates.map((_, i) => Number((12 * Math.pow(1.0004, i)).toFixed(4)));
+
+    const { db } = createMockD1({
+      funds: [
+        { slug: "V02_F", code: "V02", aia_code: "V02", name: "惠理高息股票 (累積)", asset_class: "股票", ilas_platform: "AIA 卓达智悦2", currency: "USD", twin_code: null, is_distributing: 0, benchmark_code: "2800.HK", primary_source: "aia_fundinfo2", data_tier: "B", is_trackable: 1, status: "active" },
+        { slug: "Z01_F", code: "Z01", aia_code: "Z01", name: "惠理高息股票 (派息)", asset_class: "股票", ilas_platform: "AIA 卓达智悦2", currency: "USD", twin_code: "V02", is_distributing: 1, benchmark_code: "2800.HK", primary_source: "aia_fundinfo2", data_tier: "B", is_trackable: 1, status: "active" },
+        { slug: "EU_CSPX", code: "CSPX", yahoo_ticker: "CSPX.L", name: "iShares Core S&P 500 UCITS ETF (Acc)", asset_class: "股票", ilas_platform: "非投连险-国际股票", currency: "USD", fee_pct: 0.07, benchmark_code: "SPY", primary_source: "yfinance", data_tier: "A", is_trackable: 1, status: "active" },
+        { slug: "EU_SPYL", code: "SPYL", yahoo_ticker: "SPYL.L", name: "SPDR S&P 500 UCITS ETF (Acc)", asset_class: "股票", ilas_platform: "非投连险-国际股票", currency: "USD", fee_pct: 0.03, benchmark_code: "SPY", primary_source: "yfinance", data_tier: "A", is_trackable: 1, status: "active" },
+      ],
+      series: {
+        EU_CSPX: {
+          slug: "EU_CSPX",
+          currency: "USD",
+          series_type: "market_etf",
+          source: "yfinance",
+          series_json: JSON.stringify({ d0: longDates[0], dd: ddLong, n: pxLong, t: "market_etf", s: "yfinance" }),
+        },
+        EU_SPYL: {
+          slug: "EU_SPYL",
+          currency: "USD",
+          series_type: "market_etf",
+          source: "yfinance",
+          series_json: JSON.stringify({ d: shortDates, n: pxShort, t: "market_etf", s: "yfinance" }),
+        },
+      },
+      benchmarks: {
+        SPY: {
+          code: "SPY",
+          currency: "USD",
+          series_json: JSON.stringify({ d0: longDates[0], dd: ddLong, c: pxLong }),
+        },
+      },
+    });
+
+    const cat = await loadQuantCatalog(db);
+    const v02 = cat.lookup.get("V02");
+    expect(v02?.twin_codes).toEqual(["Z01"]);
+    expect(v02?.twin_funds?.[0]?.slug).toBe("Z01_F");
+
+    const lab = new StrategyLab(db);
+    const res = await lab.runAnalysis(["CSPX", "SPYL"], 5475, 0.7, { CSPX: 0.5, SPYL: 0.5 }, { capital: 100000, years: 10 }, 0.04, "raw", "USD");
+    // Back-stitching preserves full ~300d window instead of truncating to SPYL's 60d window!
+    expect(res.data_points).toBeGreaterThanOrEqual(290);
+    expect(res.sample_window?.start_date).toBe(longDates[0]);
+    expect(res.asset_stats["SPYL"].backstitched_from).toBe(shortDates[0]);
+
+    // 4. Institutional Core vs. Satellite enforcement overrides stale legacy role='核心' on HY & EM funds
+    expect(inferFundRole({ code: "I28", aia_code: "I28", name: "貝萊德環球高收益債券基金", asset_class: "固定收益", role: "核心" } as any)).toBe("satellite");
+    expect(inferFundRole({ code: "F16", aia_code: "F16", name: "摩根環球債券收益基金", asset_class: "固定收益", role: "核心" } as any)).toBe("satellite");
+    expect(inferFundRole({ code: "J07", aia_code: "J07", name: "施羅德新興市場債券", asset_class: "固定收益", role: "核心" } as any)).toBe("satellite");
+    expect(inferFundRole({ code: "NB1", aia_code: "NB1", name: "路博邁新興市場債券", asset_class: "固定收益", role: "核心" } as any)).toBe("satellite");
+    expect(inferFundRole({ code: "HYG", name: "iShares iBoxx $ High Yield Corp Bd ETF", asset_class: "固定收益", benchmark_code: "HYG" } as any)).toBe("satellite");
+    expect(inferFundRole({ code: "VWO", name: "Vanguard FTSE Emerging Markets ETF", asset_class: "股票" } as any)).toBe("satellite");
+    expect(inferFundRole({ code: "CSPX", name: "iShares Core S&P 500 UCITS ETF (Acc)", asset_class: "股票" } as any)).toBe("core");
+    expect(inferFundRole({ code: "AGG", name: "iShares Core US Aggregate Bond ETF", asset_class: "固定收益" } as any)).toBe("core");
+    expect(inferFundRole({ code: "A05", aia_code: "A05", name: "PineBridge Hong Kong Dollar Money Market Fund", asset_class: "货币基金" } as any)).toBe("core");
+    expect(inferFundRole({ code: "CG9", aia_code: "CG9", name: "Capital Group Global Corporate Bond (LUX)", asset_class: "固定收益" } as any)).toBe("core");
+    expect(inferFundRole({ code: "VHYD", name: "Vanguard FTSE All-World High Dividend Yield UCITS ETF", asset_class: "股票" } as any)).toBe("core");
+    expect(inferFundRole({ code: "SCHD", name: "美国红利股ETF", asset_class: "股票" } as any)).toBe("core");
+    expect(inferFundRole({ code: "I17", aia_code: "I17", name: "贝莱德系统分析环球股票高息基金", asset_class: "股票" } as any)).toBe("core");
+    expect(inferFundRole({ code: "Z01", aia_code: "Z01", name: "惠理高息股票基金 (亚太)", asset_class: "股票" } as any)).toBe("satellite");
+    expect(inferFundRole({ code: "DIVO", name: "Amplify CWP Enhanced Dividend Income ETF", asset_class: "股票" } as any)).toBe("satellite");
   });
 });

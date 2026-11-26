@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -86,11 +87,47 @@ def _stitch_aia_official_onto_proxy(df_slug: pd.DataFrame) -> pd.DataFrame:
     return work
 
 
+def _stitch_incremental_series(
+    existing: pd.DataFrame,
+    incoming: pd.DataFrame,
+    date_col: str,
+    adj_col: str,
+    key_col: str,
+    key_val: str,
+) -> pd.DataFrame:
+    """When an incremental 40-day refresh sees an ex-dividend/split shift in adj_nav, rescale pre-window history smoothly."""
+    if existing.empty or incoming.empty:
+        return incoming
+    ex_sub = existing[existing[key_col] == key_val].copy()
+    if ex_sub.empty:
+        return incoming
+    inc_first = str(incoming[date_col].min())
+    ex_dates = set(ex_sub[date_col].astype(str))
+    inc_map = {str(r[date_col]): float(r[adj_col]) for _, r in incoming.iterrows() if float(r[adj_col]) > 0}
+    scale = 1.0
+    for d in sorted(ex_dates):
+        if d >= inc_first and d in inc_map:
+            ex_val = float(ex_sub.loc[ex_sub[date_col] == d, adj_col].iloc[0])
+            if ex_val > 0 and inc_map[d] > 0:
+                ratio = inc_map[d] / ex_val
+                if abs(ratio - 1.0) > 0.002 and 0.1 <= ratio <= 10.0:
+                    scale = ratio
+            break
+    if abs(scale - 1.0) > 0.002:
+        # Modify existing rows prior to inc_first directly in a copy of ex_sub and return combined
+        pre = ex_sub[ex_sub[date_col] < inc_first].copy()
+        if not pre.empty:
+            pre[adj_col] = (pre[adj_col].astype(float) * scale).round(6)
+            return pd.concat([pre, incoming], ignore_index=True)
+    return incoming
+
+
 def run_fetch(
     settings: Settings,
     force: bool = False,
     dry_run: bool = False,
     limit_yahoo: int | None = None,
+    full_backfill: bool = False,
 ) -> PipelineRunSummary:
     settings.ensure_runtime_dirs()
     today_str = now_hkt().strftime("%Y-%m-%d")
@@ -166,22 +203,50 @@ def run_fetch(
 
     # ── 2. Tencent hfq (A-share / HK-Connect ETFs + sh510300 benchmark) ────
     tx_funds = [f for f in trackable if f.primary_source == "tencent_hfq" and f.cn_code]
-    if force or not ledger.fetched_today("tencent_hfq", today_str):
+    if force or full_backfill or not ledger.fetched_today("tencent_hfq", today_str):
         tx_codes = list({f.cn_code for f in tx_funds if f.cn_code} | {"sh510300"})
+        inc_start_tx = (date.today() - timedelta(days=settings.incremental_days)).isoformat()
+        existing_bm_codes = set(existing_bm["code"].astype(str)) if not existing_bm.empty else set()
+        existing_nav_slugs = set(existing_nav["slug"].astype(str)) if not existing_nav.empty else set()
+        code_to_slug = {f.cn_code: f.slug for f in tx_funds if f.cn_code}
+        deep_tx = [
+            c
+            for c in tx_codes
+            if full_backfill
+            or ledger.get_d1_hash(f"backfill15y:tx:{c}") != "done"
+            or (c == "sh510300" and "sh510300" not in existing_bm_codes)
+            or (c != "sh510300" and code_to_slug.get(c) not in existing_nav_slugs)
+        ]
+        inc_tx = [c for c in tx_codes if c not in deep_tx]
         try:
-            tx_map, tx_errs = fetch_tencent_batch(tx_codes, years=settings.history_years)
+            tx_map: dict[str, pd.DataFrame] = {}
+            tx_errs: dict[str, str] = {}
+            if deep_tx:
+                m_deep, e_deep = fetch_tencent_batch(deep_tx, years=settings.history_years)
+                tx_map.update(m_deep)
+                tx_errs.update(e_deep)
+                for c in m_deep:
+                    ledger.set_d1_hash(f"backfill15y:tx:{c}", "done")
+            if inc_tx:
+                m_inc, e_inc = fetch_tencent_batch(inc_tx, years=1, start_date=inc_start_tx)
+                tx_map.update(m_inc)
+                tx_errs.update(e_inc)
             for f in tx_funds:
                 if f.cn_code and f.cn_code in tx_map:
                     df = tx_map[f.cn_code].copy()
                     df["slug"] = f.slug
                     df["series_type"] = "market_etf"
                     df["source"] = "tencent_hfq"
+                    if f.cn_code in inc_tx:
+                        df = _stitch_incremental_series(existing_nav, df[NAV_COLS], "nav_date", "adj_nav", "slug", f.slug)
                     new_nav_rows.append(df[NAV_COLS])
             if "sh510300" in tx_map:
                 b_df = tx_map["sh510300"].copy()
                 b_df["code"] = "sh510300"
                 b_df["currency"] = "CNY"
                 b_df = b_df.rename(columns={"nav": "close_price", "adj_nav": "adj_close"})
+                if "sh510300" in inc_tx:
+                    b_df = _stitch_incremental_series(existing_bm, b_df[BM_COLS], "nav_date", "adj_close", "code", "sh510300")
                 existing_bm = (
                     pd.concat([existing_bm, b_df[BM_COLS]], ignore_index=True)
                     .drop_duplicates(subset=["code", "nav_date"], keep="last")
@@ -197,7 +262,7 @@ def run_fetch(
 
     # ── 3. EastMoney / AkShare (CN open-end mutual funds) ──────────────────
     em_funds = [f for f in trackable if f.primary_source == "eastmoney_open" and f.cn_code]
-    if em_funds and (force or not ledger.fetched_today("eastmoney_open", today_str)):
+    if em_funds and (force or full_backfill or not ledger.fetched_today("eastmoney_open", today_str)):
         try:
             em_map, em_errs = fetch_eastmoney_batch([f.cn_code for f in em_funds if f.cn_code], years=settings.history_years)
             for f in em_funds:
@@ -216,7 +281,7 @@ def run_fetch(
             alerts.append(f"EastMoney fetch error: {exc}")
 
     # ── 4. Yahoo Finance (yfinance curl_cffi): ETFs + AIA 0P/ISIN backfill + Benchmarks + FX
-    if force or not ledger.fetched_today("yfinance", today_str):
+    if force or full_backfill or not ledger.fetched_today("yfinance", today_str):
         yf_fund_targets: list[tuple[FundRecord, str, str]] = []
         for f in trackable:
             if f.primary_source == "yfinance" and f.yahoo_ticker:
@@ -236,14 +301,55 @@ def run_fetch(
             fund_tickers = fund_tickers[:limit_yahoo]
         all_yf = list(dict.fromkeys(list(bm_tickers.values()) + list(fx_tickers.values()) + fund_tickers))
 
+        inc_start_yf = (date.today() - timedelta(days=settings.incremental_days)).isoformat()
+        existing_nav_slugs = set(existing_nav["slug"].astype(str)) if not existing_nav.empty else set()
+        existing_bm_codes = set(existing_bm["code"].astype(str)) if not existing_bm.empty else set()
+        existing_fx_pairs = set(existing_fx["pair"].astype(str)) if not existing_fx.empty else set()
+
+        # Check which yahoo tickers have existing data for at least one mapped target
+        ticker_has_cache: set[str] = set()
+        for f, t, _ in yf_fund_targets:
+            if f.slug in existing_nav_slugs:
+                ticker_has_cache.add(t)
+        for code, t in bm_tickers.items():
+            if code in existing_bm_codes:
+                ticker_has_cache.add(t)
+        for pair, t in fx_tickers.items():
+            if pair in existing_fx_pairs:
+                ticker_has_cache.add(t)
+
+        deep_yf = [
+            t
+            for t in all_yf
+            if full_backfill
+            or ledger.get_d1_hash(f"backfill15y:yf:{t}") != "done"
+            or t not in ticker_has_cache
+        ]
+        inc_yf = [t for t in all_yf if t not in deep_yf]
+
         try:
-            yf_map, yf_errs = fetch_yahoo_batch(all_yf, years=settings.history_years)
+            yf_map: dict[str, pd.DataFrame] = {}
+            yf_errs: dict[str, str] = {}
+            if deep_yf:
+                m_deep, e_deep = fetch_yahoo_batch(deep_yf, years=settings.history_years)
+                yf_map.update(m_deep)
+                yf_errs.update(e_deep)
+                for t in m_deep:
+                    ledger.set_d1_hash(f"backfill15y:yf:{t}", "done")
+            if inc_yf:
+                m_inc, e_inc = fetch_yahoo_batch(inc_yf, start_date=inc_start_yf, years=1)
+                yf_map.update(m_inc)
+                yf_errs.update(e_inc)
+
+            inc_yf_set = set(inc_yf)
             for f, ticker, s_type in yf_fund_targets:
                 if ticker in yf_map:
                     df = yf_map[ticker].copy()
                     df["slug"] = f.slug
                     df["series_type"] = s_type
                     df["source"] = "yfinance"
+                    if ticker in inc_yf_set:
+                        df = _stitch_incremental_series(existing_nav, df[NAV_COLS], "nav_date", "adj_nav", "slug", f.slug)
                     new_nav_rows.append(df[NAV_COLS])
 
             # Benchmarks
@@ -254,6 +360,8 @@ def run_fetch(
                     b_df["code"] = code
                     b_df["currency"] = cfg.get("currency", "USD")
                     b_df = b_df.rename(columns={"nav": "close_price", "adj_nav": "adj_close"})
+                    if cfg["ticker"] in inc_yf_set:
+                        b_df = _stitch_incremental_series(existing_bm, b_df[BM_COLS], "nav_date", "adj_close", "code", code)
                     bm_frames.append(b_df[BM_COLS])
             existing_bm = (
                 pd.concat([x for x in bm_frames if not x.empty], ignore_index=True)

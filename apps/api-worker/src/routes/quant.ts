@@ -3,6 +3,7 @@ import { Env, Variables } from "../types";
 import { HttpError, requireUser } from "../utils/auth";
 import {
   buildBenchmarkProxySeries,
+  clearQuantStoreCaches,
   convertSeriesCurrency,
   getQuantBenchmarkSeries,
   getQuantFundSeries,
@@ -11,10 +12,21 @@ import {
   resolveQuantFund,
 } from "../services/quantStore";
 import { countBusinessDaysBetween } from "../services/quantWatchdog";
-import { buildTacticalCandidatePool, recommendForClient, resolveBasketUniverseMode } from "../services/advisoryEngine";
+import {
+  buildTacticalCandidatePool,
+  getFundDomicile,
+  hasUsEstateTaxConcern,
+  inferFundRole,
+  isEuropeanCategoryFund,
+  isIlasFund,
+  isIrelandOrLuxembourgFund,
+  recommendForClient,
+  resolveBasketUniverseMode,
+} from "../services/advisoryEngine";
 import { callLlmChat, extractAndNormalizeTacticalJson } from "../services/llm";
 import { getFundTopHoldings } from "../services/fundHoldings";
 import { formatMacroPromptBlock, getLatestMacroSnapshot } from "../services/macroStore";
+import { batchEnqueueResearchRequests, computeFullPortfolioXRay } from "../services/portfolioXRayService";
 
 export const quantRouter = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -36,6 +48,7 @@ function rangeToCutoffIso(rangeStr: string): string {
     "1y": 370,
     "3y": 365 * 3 + 5,
     "5y": 365 * 5 + 5,
+    "10y": 365 * 10 + 5,
     max: 365 * 20,
   };
   const days = daysMap[r] ?? 365 * 3 + 5;
@@ -107,17 +120,27 @@ quantRouter.get("/health", async (c) => {
 
 // ── 2. Screener & Catalog List (5m Worker isolate cached join, 0 extra D1 reads on filter/sort) ──
 quantRouter.get("/funds", async (c) => {
-  await requireQuantAccess(c);
+  const user = await requireQuantAccess(c);
   const { rows } = await loadQuantCatalog(c.env.DB);
 
   const q = (c.req.query("q") || "").trim().toLowerCase();
   const platformGroup = (c.req.query("platform_group") || "all").trim();
+  const domicile = (c.req.query("domicile") || "all").trim().toLowerCase();
+  const roleFilter = (c.req.query("role") || "all").trim().toLowerCase();
+  const currencyFilter = (c.req.query("currency") || "all").trim().toUpperCase();
+  const tagsParam = (c.req.query("tags") || "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
   const assetClass = (c.req.query("asset_class") || "").trim();
   const minStars = parseInt(c.req.query("min_stars") || "0", 10) || 0;
   const tier = (c.req.query("tier") || "").trim().toUpperCase();
   const grade = (c.req.query("grade") || "").trim().toUpperCase();
   const excludeNonRec = c.req.query("exclude_non_rec") === "true";
   const onlyDistributing = c.req.query("only_distributing") === "true";
+  const onlySop = c.req.query("only_sop") === "true";
+  const onlyQueued = c.req.query("only_queued") === "true";
+  const distType = (c.req.query("dist_type") || "all").trim().toLowerCase();
   const sortKey = (c.req.query("sort") || "quant_score").trim();
   const order = (c.req.query("order") || "desc").toLowerCase() === "asc" ? 1 : -1;
 
@@ -126,12 +149,23 @@ quantRouter.get("/funds", async (c) => {
     total: rows.length,
     aia: 0,
     non_ilas: 0,
+    eu_ucits: 0,
+    sop_covered: 0,
+    queued_research: 0,
+    domiciles: {} as Record<string, number>,
     tiers: { A: 0, B: 0, C: 0, U: 0 } as Record<string, number>,
     asset_classes: {} as Record<string, number>,
   };
   for (const r of rows) {
     if ((r.ilas_platform || "").startsWith("AIA")) facets.aia++;
     else facets.non_ilas++;
+    if (isEuropeanCategoryFund(r)) facets.eu_ucits++;
+    if (r.has_sop_report) facets.sop_covered++;
+    if (r.research_queue_status && ["queued", "watching", "in_progress"].includes(r.research_queue_status)) {
+      facets.queued_research++;
+    }
+    const dom = getFundDomicile(r);
+    facets.domiciles[dom] = (facets.domiciles[dom] || 0) + 1;
     facets.tiers[r.data_tier] = (facets.tiers[r.data_tier] || 0) + 1;
     facets.asset_classes[r.asset_class] = (facets.asset_classes[r.asset_class] || 0) + 1;
   }
@@ -139,15 +173,37 @@ quantRouter.get("/funds", async (c) => {
   let filtered = rows.filter((r) => {
     if (platformGroup === "aia" && !(r.ilas_platform || "").startsWith("AIA")) return false;
     if (platformGroup === "non_ilas" && (r.ilas_platform || "").startsWith("AIA")) return false;
+    if (platformGroup === "eu_ucits" && !isEuropeanCategoryFund(r)) return false;
     if (platformGroup === "us_intl" && !["非投连险-美股分红型ETF", "非投连险-国际股票", "非投连险-分红型基金", "非投连险-日本宽基ETF"].includes(r.ilas_platform || "")) return false;
     if (platformGroup === "cn_hk" && !["非投连险-中国分红", "非投连险-港股通ETF", "非投连险-A股价值型", "非投连险-中国QDII", "非投连险-货币基金"].includes(r.ilas_platform || "")) return false;
     if (platformGroup === "bonds" && r.ilas_platform !== "非投连险-债券基金比较" && r.asset_class !== "固定收益") return false;
+    if (domicile && domicile !== "all") {
+      const dom = getFundDomicile(r);
+      if (domicile === "eu_ucits" && !isIrelandOrLuxembourgFund(r)) return false;
+      else if (domicile === "ie" && dom !== "IE") return false;
+      else if (domicile === "lu" && dom !== "LU") return false;
+      else if (domicile === "non_us" && !isIlasFund(r) && dom === "US") return false;
+      else if (domicile === "hk" && dom !== "HK") return false;
+      else if (domicile === "cn" && dom !== "CN") return false;
+      else if (domicile === "jp" && dom !== "JP") return false;
+      else if (domicile === "us" && (isIlasFund(r) || dom !== "US")) return false;
+    }
+    if (roleFilter === "core" && inferFundRole(r) !== "core") return false;
+    if (roleFilter === "satellite" && inferFundRole(r) !== "satellite") return false;
+    if (currencyFilter && currencyFilter !== "ALL" && r.currency !== currencyFilter) return false;
+    if (tagsParam.length > 0 && !tagsParam.some((t) => r.tags.includes(t))) return false;
     if (assetClass && assetClass !== "all" && r.asset_class !== assetClass) return false;
     if (minStars > 0 && (r.morningstar_stars || 0) < minStars) return false;
     if (tier && tier !== "ALL" && r.data_tier !== tier) return false;
     if (grade && grade !== "ALL" && r.quant_grade !== grade) return false;
     if (excludeNonRec && r.tags.includes("非推荐选择")) return false;
-    if (onlyDistributing && !r.is_distributing) return false;
+    if (onlySop && !r.has_sop_report) return false;
+    if (onlyQueued && !["queued", "watching", "in_progress"].includes(r.research_queue_status || "")) return false;
+    if (onlyDistributing || distType === "dist") {
+      if (!r.is_distributing) return false;
+    } else if (distType === "acc") {
+      if (r.is_distributing) return false;
+    }
     if (q) {
       const hay = `${r.slug} ${r.code} ${r.aia_code || ""} ${r.isin || ""} ${r.yahoo_ticker || ""} ${r.name} ${r.manager || ""} ${r.tags.join(" ")}`.toLowerCase();
       if (!hay.includes(q)) return false;
@@ -184,10 +240,15 @@ quantRouter.get("/funds", async (c) => {
     return String((a as any)[sortKey] || "").localeCompare(String((b as any)[sortKey] || "")) * order;
   });
 
+  const itemsOut = filtered.map(({ research_requester_ids, ...rest }) => ({
+    ...rest,
+    requested_by_me: Array.isArray(research_requester_ids) && research_requester_ids.includes(String(user.id)),
+  }));
+
   return c.json({
-    total_matched: filtered.length,
+    total_matched: itemsOut.length,
     facets,
-    items: filtered,
+    items: itemsOut,
   });
 });
 
@@ -195,16 +256,34 @@ quantRouter.get("/funds", async (c) => {
 quantRouter.get("/funds/:slug", async (c) => {
   await requireQuantAccess(c);
   const slug = c.req.param("slug");
-  const fund = await resolveQuantFund(c.env.DB, slug);
+  const { lookup } = await loadQuantCatalog(c.env.DB);
+  const fund = lookup.get(slug.trim().toUpperCase()) || (await resolveQuantFund(c.env.DB, slug));
   if (!fund) throw new HttpError(404, `未找到基金: ${slug}`);
 
-  let twin: QuantFundCatalogRow | null = null;
+  const twins: QuantFundCatalogRow[] = [];
+  const seenTwinSlugs = new Set<string>([fund.slug]);
+  if (Array.isArray(fund.twin_funds)) {
+    for (const tf of fund.twin_funds) {
+      if (tf?.slug && !seenTwinSlugs.has(tf.slug)) {
+        const full = lookup.get(tf.slug.toUpperCase());
+        if (full) {
+          twins.push(full);
+          seenTwinSlugs.add(full.slug);
+        }
+      }
+    }
+  }
   if (fund.twin_code) {
-    twin = await resolveQuantFund(c.env.DB, fund.twin_code);
+    const direct = lookup.get(fund.twin_code.trim().toUpperCase());
+    if (direct && !seenTwinSlugs.has(direct.slug)) {
+      twins.unshift(direct);
+      seenTwinSlugs.add(direct.slug);
+    }
   }
   return c.json({
     fund,
-    twin,
+    twin: twins[0] || null,
+    twins,
   });
 });
 
@@ -440,6 +519,9 @@ quantRouter.post("/compare", async (c) => {
 
 // ── 6. Historical Stress-Test Replay (uses D1 packed series + benchmarks) ──
 const STRESS_WINDOWS = [
+  { id: "china_2015_crash", label: "2015 新兴市场/A股去杠杆巨震", label_en: "2015 China/EM Deleveraging Shock", start: "2015-06-12", end: "2015-09-30" },
+  { id: "fed_qt_2018_q4", label: "2018 Q4 美联储缩表与贸易摩擦回撤", label_en: "2018 Q4 Fed QT & Trade Shock", start: "2018-09-20", end: "2018-12-24" },
+  { id: "covid_2020_crash", label: "2020.03 新冠疫情全球流动性熔断", label_en: "2020 COVID-19 Liquidity Crash", start: "2020-02-19", end: "2020-03-23" },
   { id: "rate_hike_2022", label: "2022 全球激进加息股债双杀", label_en: "2022 Global Rate Hike Shock", start: "2022-01-03", end: "2022-10-21" },
   { id: "q3_2023_yield_spike", label: "2023 下半年美债长端利率飙升", label_en: "2023 H2 Long-Bond Yield Spike", start: "2023-07-31", end: "2023-10-27" },
   { id: "aug_2024_carry_unwind", label: "2024.08 日元套息平仓闪崩", label_en: "Aug 2024 Yen Carry Unwind", start: "2024-07-16", end: "2024-08-09" },
@@ -468,12 +550,31 @@ quantRouter.post("/stress-test", async (c) => {
       if (targetCcy !== "NATIVE" && targetCcy !== packed.currency) {
         m = await convertSeriesCurrency(c.env.DB, m, packed.currency, targetCcy);
       }
+      // Pre-inception benchmark back-stitching so newer funds (e.g. SPYL) also participate in 2015/2018/2020 stress replay
+      const realDates = Object.keys(m).sort();
+      const firstReal = realDates[0];
+      if (firstReal && firstReal > "2015-07-01") {
+        const proxy = await buildBenchmarkProxySeries(
+          c.env.DB,
+          f || { code: assetId, name: assetId },
+          5500,
+          targetCcy
+        );
+        if (proxy && Object.keys(proxy.series).length >= 20 && proxy.series[firstReal] > 0 && m[firstReal] > 0) {
+          const scale = m[firstReal] / proxy.series[firstReal];
+          for (const [pd, pv] of Object.entries(proxy.series)) {
+            if (pd < firstReal && pv > 0) {
+              m[pd] = Math.round(pv * scale * 1e6) / 1e6;
+            }
+          }
+        }
+      }
       seriesByAsset[assetId] = m;
     } else {
       const proxy = await buildBenchmarkProxySeries(
         c.env.DB,
         f || { code: assetId, name: assetId },
-        3650,
+        5500,
         targetCcy
       );
       if (proxy && Object.keys(proxy.series).length >= 20) {
@@ -580,7 +681,7 @@ quantRouter.post("/recommend/explain", async (c) => {
       ? candidatePool
           .map(
             (cand) =>
-              `- ${cand.lab_id} (${cand.name}): 类别=${cand.asset_class}, 定位=${cand.core_role === "core" ? "核心" : "卫星"}, 赛道=${cand.homogeneity_cluster}, 平台=${cand.ilas_platform || "全市场"}, 费率=${cand.fee_pct != null ? `${cand.fee_pct}%` : "N/A"}, Alpha=${cand.alpha_3y != null ? `${(cand.alpha_3y * 100).toFixed(2)}%` : "N/A"}, R²=${cand.r2_3y != null ? cand.r2_3y.toFixed(2) : "N/A"}, 股息=${cand.div_yield_ttm != null ? `${(cand.div_yield_ttm * 100).toFixed(1)}%` : "N/A"}, 评级=${cand.quant_grade || "N/A"}`
+              `- ${cand.lab_id} (${cand.name}): 类别=${cand.asset_class}, 定位=${cand.core_role === "core" ? "核心" : "卫星"}, 税籍=${getFundDomicile(cand as any)}, 赛道=${cand.homogeneity_cluster}, 平台=${cand.ilas_platform || "全市场"}, 费率=${cand.fee_pct != null ? `${cand.fee_pct}%` : "N/A"}, Alpha=${cand.alpha_3y != null ? `${(cand.alpha_3y * 100).toFixed(2)}%` : "N/A"}, R²=${cand.r2_3y != null ? cand.r2_3y.toFixed(2) : "N/A"}, 股息=${cand.div_yield_ttm != null ? `${(cand.div_yield_ttm * 100).toFixed(1)}%` : "N/A"}, 评级=${cand.quant_grade || "N/A"}`
           )
           .join("\n")
       : "无额外候补基金（请基于原篮子标的调整权重）";
@@ -593,9 +694,14 @@ quantRouter.post("/recommend/explain", async (c) => {
         catalogData.rows
       );
   const isIlasMode = recUniverse === "ilas";
+  const estateTaxShield = !isIlasMode && hasUsEstateTaxConcern(profile);
   const ilasConstraintRule = isIlasMode
     ? "4. 【纯投连险平台硬约束】本组合为纯投连险（AIA 卓达智悦2）组合，严禁混入任何平台外非投连险基金/ETF，且所有保留或新增标的的 `adjusted_weight_pct` 必须为 >= 10 的整数（或设为 0 表示剔除）；"
-    : "4. 【纯非投连险硬约束】本组合为纯平台外基金/ETF 组合，严禁混入任何投连险（AIA/ILAS）平台基金；单只保留或新增标的建议权重 >= 5%，避免过于零碎；";
+    : `4. 【纯非投连险硬约束】本组合为纯平台外基金/ETF 组合，严禁混入任何投连险（AIA/ILAS）平台基金；单只保留或新增标的建议权重 >= 5%，避免过于零碎；${
+        estateTaxShield
+          ? "\n4b. 【美国遗产税隔离硬约束】客户关注美国遗产税风险（非美税务居民持有美国本土 US-Situs ETF 免税额仅 6 万美元，超额税率最高 40%）。本组合为非投连险平台架构，所有保留或替换标的必须 100% 采用爱尔兰（IE）或卢森堡（LU）注册的欧洲 UCITS 基金，严禁建议任何美国本土注册 ETF，并在报告第二章阐明爱尔兰/卢森堡 UCITS 架构在规避美股遗产税及股息预扣税协定上的核心优势；"
+          : ""
+      }`;
 
   const metricsSummary = rec.metrics
     ? `预期3Y年化: ${rec.metrics.est_cagr_pct}%, 年化波动率: ${rec.metrics.est_vol_pct}%, 夏普比率: ${rec.metrics.est_sharpe}, 参考股息率: ${rec.metrics.est_div_yield_pct}%, 加权年费率: ${rec.metrics.weighted_fee_pct || 0}%`
@@ -629,7 +735,7 @@ ${candidatePoolBlock}
 ${macroBlock}
 
 【配置原则与报告输出要求】
-1. 严格遵循「核心—卫星」配置原则（核心资产 ≥ 70% 承担 Beta 压舱，卫星资产合计 ≤ 30% 承担 Alpha/低相关分散），并审视同质性、费率与指数贴合度/Alpha 效率；
+1. 严格遵循「核心—卫星」配置原则（核心资产 ≥ 70% 承担广泛高质量 Beta 压舱，仅限全球/发达/美股大盘宽基与全球/美股红利高股息、主权国债/全球及美元投资级综合债、短债/货币现金与经典股债平衡；高收益债、新兴市场/亚洲/单一非美国家资产、可转债/优先证券、期权备兑及行业主题资产一律只能归为卫星资产，且卫星合计 ≤ 30%），并审视同质性、费率与指数贴合度/Alpha 效率；
 2. 完全基于上方实时宏观数据客观判断所处利率与估值周期，禁止套用刻板预设观点；任何偏离或换基建议必须附带明确的**退出/复位条件**。
 请使用规范清晰的 Markdown 格式输出，包含以下章节结构：
 ### 一、宏观利率与市场估值时钟研判（基于当期利率、利差、ERP 与大宗商品数据的中性客观研判）
@@ -834,4 +940,256 @@ quantRouter.get("/factsheet-queue", async (c) => {
   } catch {
     return c.json({ items: [] });
   }
+});
+
+// ── 10. Single-Fund SOP v2.0 Deep Analysis & Research Watchlist Queue ──────
+function safeParseJson<T>(raw: string | null | undefined, fallback: T): T {
+  if (!raw) return fallback;
+  try {
+    return JSON.parse(raw) as T;
+  } catch {
+    return fallback;
+  }
+}
+
+quantRouter.get("/funds/:slug/sop-report", async (c) => {
+  const user = await requireQuantAccess(c);
+  const rawSlug = c.req.param("slug");
+  const fund = await resolveQuantFund(c.env.DB, rawSlug);
+  const canonicalSlug = fund?.slug || rawSlug.trim();
+
+  let reportRow: any = null;
+  let queueRow: any = null;
+  try {
+    reportRow = await c.env.DB.prepare(
+      "SELECT * FROM wq_fund_sop_reports WHERE slug = ? COLLATE NOCASE OR code = ? COLLATE NOCASE"
+    )
+      .bind(canonicalSlug, canonicalSlug)
+      .first<any>();
+  } catch {
+    reportRow = null;
+  }
+  try {
+    queueRow = await c.env.DB.prepare("SELECT * FROM wq_fund_research_queue WHERE slug = ?")
+      .bind(canonicalSlug)
+      .first<any>();
+  } catch {
+    queueRow = null;
+  }
+
+  const requesters = safeParseJson<any[]>(queueRow?.requesters_json, []);
+  const myEntry = requesters.find((r) => String(r?.user_id) === String(user.id)) || null;
+  const queueSummary = queueRow
+    ? {
+        slug: queueRow.slug,
+        status: queueRow.status,
+        priority: queueRow.priority,
+        request_count: Number(queueRow.request_count || requesters.length || 0),
+        requested_by_me: Boolean(myEntry),
+        my_note: myEntry?.note || "",
+        first_requested_at: queueRow.first_requested_at,
+        last_requested_at: queueRow.last_requested_at,
+        admin_note: user.role === "admin" ? queueRow.admin_note || null : null,
+      }
+    : null;
+
+  if (!reportRow) {
+    return c.json({
+      has_report: false,
+      slug: canonicalSlug,
+      code: fund?.code || rawSlug,
+      can_view_internal_decision: user.role === "admin",
+      queue_entry: queueSummary,
+    });
+  }
+
+  const isAdmin = user.role === "admin";
+  return c.json({
+    has_report: true,
+    slug: reportRow.slug,
+    code: reportRow.code,
+    fund_name: reportRow.fund_name,
+    sop_version: reportRow.sop_version,
+    report_date: reportRow.report_date,
+    data_as_of: reportRow.data_as_of,
+    fund_type: reportRow.fund_type,
+    val_route: reportRow.val_route,
+    medal_rating: reportRow.medal_rating,
+    pillar_score: reportRow.pillar_score != null ? Number(reportRow.pillar_score) : null,
+    g1_g5_pass: Boolean(reportRow.g1_g5_pass),
+    uncertainty: reportRow.uncertainty,
+    valuation_zone: reportRow.valuation_zone,
+    valuation_pct_5y: reportRow.valuation_pct_5y != null ? Number(reportRow.valuation_pct_5y) : null,
+    dividend_yield_ttm: reportRow.dividend_yield_ttm != null ? Number(reportRow.dividend_yield_ttm) : null,
+    dividend_spread_rf: reportRow.dividend_spread_rf != null ? Number(reportRow.dividend_spread_rf) : null,
+    one_liner: reportRow.one_liner || "",
+    red_flag_top: reportRow.red_flag_top || "",
+    pillars: safeParseJson<Record<string, any>>(reportRow.pillar_json, {}),
+    valuation_summary: safeParseJson<Record<string, any>>(reportRow.valuation_summary_json, {}),
+    dividend_summary: safeParseJson<Record<string, any>>(reportRow.dividend_summary_json, {}),
+    masters: safeParseJson<any[]>(reportRow.masters_json, []),
+    commercial_tabs: safeParseJson<any[]>(reportRow.commercial_tabs_json, []),
+    one_pager_md: reportRow.one_pager_md || "",
+    // Compliance Isolation: internal B-edition decision tree strictly restricted to admin
+    can_view_internal_decision: isAdmin,
+    decision_md: isAdmin ? reportRow.decision_md || null : null,
+    published_at: reportRow.published_at,
+    updated_at: reportRow.updated_at,
+    queue_entry: queueSummary,
+  });
+});
+
+quantRouter.post("/funds/:slug/research-request", async (c) => {
+  const user = await requireQuantAccess(c);
+  const rawSlug = c.req.param("slug");
+  const fund = await resolveQuantFund(c.env.DB, rawSlug);
+  if (!fund) {
+    throw new HttpError(404, `未找到基金: ${rawSlug}`);
+  }
+
+  let body: { note?: string; priority_hint?: string } = {};
+  try {
+    body = await c.req.json();
+  } catch {
+    body = {};
+  }
+  const note = String(body.note || "").trim().slice(0, 300);
+  const hint = body.priority_hint === "P0_urgent" || body.priority_hint === "P1_high" ? body.priority_hint : "normal";
+  const nowIso = new Date().toISOString();
+
+  const existing = await c.env.DB.prepare("SELECT * FROM wq_fund_research_queue WHERE slug = ?")
+    .bind(fund.slug)
+    .first<any>();
+
+  const requesters = safeParseJson<any[]>(existing?.requesters_json, []);
+  const uid = String(user.id);
+  const idx = requesters.findIndex((r) => String(r?.user_id) === uid);
+  const entry = {
+    user_id: uid,
+    name: user.name || user.email,
+    email: user.email,
+    role: user.role,
+    note,
+    requested_at: nowIso,
+  };
+  if (idx >= 0) {
+    requesters[idx] = entry;
+  } else {
+    requesters.push(entry);
+  }
+
+  const reqCount = requesters.length;
+  const nextStatus =
+    !existing || existing.status === "dismissed" || existing.status === "completed"
+      ? "queued"
+      : existing.status;
+  const prioRank: Record<string, number> = { P0_urgent: 0, P1_high: 1, normal: 2 };
+  const currentPrio = existing?.priority || "normal";
+  const nextPriority = prioRank[hint] < prioRank[currentPrio] ? hint : currentPrio;
+
+  await c.env.DB.prepare(
+    `INSERT INTO wq_fund_research_queue (
+      slug, code, fund_name, asset_class, ilas_platform, status, priority,
+      request_count, requesters_json, first_requested_at, last_requested_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(slug) DO UPDATE SET
+      code = excluded.code,
+      fund_name = excluded.fund_name,
+      asset_class = excluded.asset_class,
+      ilas_platform = excluded.ilas_platform,
+      status = excluded.status,
+      priority = excluded.priority,
+      request_count = excluded.request_count,
+      requesters_json = excluded.requesters_json,
+      last_requested_at = excluded.last_requested_at`
+  )
+    .bind(
+      fund.slug,
+      fund.code || fund.slug,
+      fund.name,
+      fund.asset_class,
+      fund.ilas_platform || null,
+      nextStatus,
+      nextPriority,
+      reqCount,
+      JSON.stringify(requesters),
+      existing?.first_requested_at || nowIso,
+      nowIso
+    )
+    .run();
+
+  clearQuantStoreCaches();
+
+  return c.json({
+    success: true,
+    slug: fund.slug,
+    status: nextStatus,
+    priority: nextPriority,
+    request_count: reqCount,
+    requested_by_me: true,
+    my_note: note,
+  });
+});
+
+quantRouter.delete("/funds/:slug/research-request", async (c) => {
+  const user = await requireQuantAccess(c);
+  const rawSlug = c.req.param("slug");
+  const fund = await resolveQuantFund(c.env.DB, rawSlug);
+  const canonicalSlug = fund?.slug || rawSlug.trim();
+
+  const existing = await c.env.DB.prepare("SELECT * FROM wq_fund_research_queue WHERE slug = ?")
+    .bind(canonicalSlug)
+    .first<any>();
+
+  if (!existing) {
+    return c.json({ success: true, slug: canonicalSlug, request_count: 0, requested_by_me: false });
+  }
+
+  const uid = String(user.id);
+  const remaining = safeParseJson<any[]>(existing.requesters_json, []).filter(
+    (r) => String(r?.user_id) !== uid
+  );
+
+  if (remaining.length === 0 && existing.status === "queued") {
+    await c.env.DB.prepare("DELETE FROM wq_fund_research_queue WHERE slug = ?")
+      .bind(canonicalSlug)
+      .run();
+    clearQuantStoreCaches();
+    return c.json({ success: true, slug: canonicalSlug, request_count: 0, requested_by_me: false });
+  }
+
+  await c.env.DB.prepare(
+    "UPDATE wq_fund_research_queue SET request_count = ?, requesters_json = ? WHERE slug = ?"
+  )
+    .bind(remaining.length, JSON.stringify(remaining), canonicalSlug)
+    .run();
+
+  clearQuantStoreCaches();
+  return c.json({
+    success: true,
+    slug: canonicalSlug,
+    request_count: remaining.length,
+    requested_by_me: false,
+  });
+});
+
+// ── 10. Full Institutional Portfolio X-Ray v2 (Funds + Direct Stocks/Bonds) ─
+quantRouter.post("/xray", async (c) => {
+  const body = await c.req.json<any>().catch(() => ({}));
+  if (!Array.isArray(body?.holdings) || body.holdings.length === 0) {
+    throw new HttpError(400, "請提供至少一項有效持倉進行組合透視");
+  }
+  const result = await computeFullPortfolioXRay(c.env.DB, body);
+  return c.json(result);
+});
+
+quantRouter.post("/research-request/batch", async (c) => {
+  const user = await requireQuantAccess(c);
+  const body = await c.req.json<any>().catch(() => ({}));
+  const slugs = Array.isArray(body?.slugs) ? body.slugs : [];
+  if (slugs.length === 0) {
+    throw new HttpError(400, "請提供需要加入研究隊列的基金列表");
+  }
+  const res = await batchEnqueueResearchRequests(c.env.DB, user, slugs, body.note);
+  return c.json({ success: true, ...res });
 });

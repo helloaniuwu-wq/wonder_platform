@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { Env, Variables } from "../types";
 import { HttpError, requireUser } from "../utils/auth";
+import { clearQuantStoreCaches } from "../services/quantStore";
 
 export const adminRouter = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -200,4 +201,188 @@ adminRouter.post("/users/:user_id/toggle-premium", async (c) => {
     is_verified: Boolean(target.is_verified),
     created_at: target.created_at,
   });
+});
+
+// ── 基金观察分析队列调度台 (Admin Only) ────────────────────────────────────
+function parseJsonArraySafe(raw: string | null | undefined): any[] {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+adminRouter.get("/fund-research-queue", async (c) => {
+  await requireAdmin(c);
+  const statusFilter = (c.req.query("status") || "all").trim();
+
+  let totalFunds = 0;
+  let sopCovered = 0;
+  let queueRows: any[] = [];
+  try {
+    const fRow = await c.env.DB.prepare("SELECT COUNT(*) as cnt FROM wq_funds WHERE is_trackable = 1").first<any>();
+    totalFunds = Number(fRow?.cnt || 0);
+  } catch {
+    totalFunds = 0;
+  }
+  try {
+    const sRow = await c.env.DB.prepare("SELECT COUNT(*) as cnt FROM wq_fund_sop_reports").first<any>();
+    sopCovered = Number(sRow?.cnt || 0);
+  } catch {
+    sopCovered = 0;
+  }
+  try {
+    const qRes = await c.env.DB.prepare(
+      `SELECT rq.*,
+              CASE WHEN sr.slug IS NOT NULL THEN 1 ELSE 0 END AS has_sop_report,
+              sr.medal_rating AS sop_medal,
+              sr.report_date AS sop_report_date
+       FROM wq_fund_research_queue rq
+       LEFT JOIN wq_fund_sop_reports sr ON sr.slug = rq.slug
+       ORDER BY
+         CASE rq.status WHEN 'in_progress' THEN 0 WHEN 'queued' THEN 1 WHEN 'watching' THEN 2 WHEN 'completed' THEN 3 ELSE 4 END,
+         CASE rq.priority WHEN 'P0_urgent' THEN 0 WHEN 'P1_high' THEN 1 ELSE 2 END,
+         rq.request_count DESC,
+         rq.last_requested_at DESC`
+    ).all<any>();
+    queueRows = qRes.results || [];
+  } catch {
+    queueRows = [];
+  }
+
+  const items = queueRows
+    .map((r) => ({
+      slug: r.slug,
+      code: r.code || r.slug,
+      fund_name: r.fund_name || r.slug,
+      asset_class: r.asset_class || "",
+      ilas_platform: r.ilas_platform || "",
+      status: r.status,
+      priority: r.priority,
+      request_count: Number(r.request_count || 0),
+      requesters: parseJsonArraySafe(r.requesters_json),
+      admin_note: r.admin_note || "",
+      assigned_to: r.assigned_to || "",
+      first_requested_at: r.first_requested_at,
+      last_requested_at: r.last_requested_at,
+      started_at: r.started_at || null,
+      completed_at: r.completed_at || null,
+      has_sop_report: Boolean(r.has_sop_report),
+      sop_medal: r.sop_medal || null,
+      sop_report_date: r.sop_report_date || null,
+    }))
+    .filter((item) => statusFilter === "all" || item.status === statusFilter);
+
+  const queuedCount = queueRows.filter((r) => r.status === "queued").length;
+  const watchingCount = queueRows.filter((r) => r.status === "watching").length;
+  const inProgressCount = queueRows.filter((r) => r.status === "in_progress").length;
+  const completedCount = queueRows.filter((r) => r.status === "completed").length;
+
+  return c.json({
+    summary: {
+      total_funds: totalFunds,
+      sop_covered_count: sopCovered,
+      coverage_pct: totalFunds > 0 ? Math.round((sopCovered / totalFunds) * 1000) / 10 : 0,
+      queued_count: queuedCount,
+      watching_count: watchingCount,
+      in_progress_count: inProgressCount,
+      completed_count: completedCount,
+    },
+    items,
+  });
+});
+
+adminRouter.put("/fund-research-queue/:slug", async (c) => {
+  await requireAdmin(c);
+  const slug = c.req.param("slug");
+  const existing = await c.env.DB.prepare("SELECT * FROM wq_fund_research_queue WHERE slug = ?")
+    .bind(slug)
+    .first<any>();
+  if (!existing) {
+    throw new HttpError(404, `观察队列中不存在基金: ${slug}`);
+  }
+
+  const body = await c.req.json<{
+    status?: string;
+    priority?: string;
+    admin_note?: string;
+    assigned_to?: string;
+  }>();
+
+  const validStatuses = new Set(["queued", "watching", "in_progress", "completed", "dismissed"]);
+  const validPrios = new Set(["P0_urgent", "P1_high", "normal"]);
+
+  const nextStatus = body.status && validStatuses.has(body.status) ? body.status : existing.status;
+  const nextPrio = body.priority && validPrios.has(body.priority) ? body.priority : existing.priority;
+  const nextNote = body.admin_note !== undefined ? String(body.admin_note) : existing.admin_note;
+  const nextAssigned = body.assigned_to !== undefined ? String(body.assigned_to) : existing.assigned_to;
+
+  const nowIso = new Date().toISOString();
+  const nextStarted =
+    nextStatus === "in_progress" && !existing.started_at ? nowIso : existing.started_at;
+  const nextCompleted =
+    nextStatus === "completed" && !existing.completed_at ? nowIso : existing.completed_at;
+
+  await c.env.DB.prepare(
+    `UPDATE wq_fund_research_queue
+     SET status = ?, priority = ?, admin_note = ?, assigned_to = ?, started_at = ?, completed_at = ?
+     WHERE slug = ?`
+  )
+    .bind(nextStatus, nextPrio, nextNote, nextAssigned, nextStarted, nextCompleted, slug)
+    .run();
+
+  clearQuantStoreCaches();
+
+  return c.json({
+    success: true,
+    slug,
+    status: nextStatus,
+    priority: nextPrio,
+    admin_note: nextNote || "",
+    assigned_to: nextAssigned || "",
+  });
+});
+
+adminRouter.get("/fund-research-queue/export", async (c) => {
+  await requireAdmin(c);
+  const fmt = (c.req.query("format") || "markdown").toLowerCase();
+  const res = await c.env.DB.prepare(
+    `SELECT * FROM wq_fund_research_queue
+     WHERE status IN ('queued', 'watching', 'in_progress')
+     ORDER BY
+       CASE priority WHEN 'P0_urgent' THEN 0 WHEN 'P1_high' THEN 1 ELSE 2 END,
+       request_count DESC,
+       first_requested_at ASC`
+  ).all<any>();
+  const rows = res.results || [];
+
+  if (fmt === "json") {
+    return c.json({ count: rows.length, items: rows });
+  }
+
+  const lines = [
+    "# 🔍 FIS 观察分析基金线索清单（管理员导出）",
+    "",
+    `> 导出时间：${new Date().toISOString()}`,
+    "",
+  ];
+  for (const r of rows) {
+    const reqs = parseJsonArraySafe(r.requesters_json);
+    const notes = reqs.map((x: any) => String(x?.note || "").trim()).filter(Boolean);
+    const focus = notes.length > 0 ? notes.join(" / ") : r.admin_note || "常规深度体检";
+    lines.push(
+      `- [ ] ${r.slug} (${r.code || r.slug} · ${r.fund_name || ""}) | 状态:${r.status} | 优先级:${r.priority} | 关注:${r.request_count || 1}人 | 平台:${r.ilas_platform || "—"} | 焦点: ${focus}`
+    );
+  }
+  return c.text(lines.join("\n") + "\n", 200, {
+    "Content-Type": "text/markdown; charset=utf-8",
+  });
+});
+
+adminRouter.post("/quant/invalidate-cache", async (c) => {
+  await requireAdmin(c);
+  clearQuantStoreCaches();
+  return c.json({ success: true, invalidated_at: new Date().toISOString() });
 });

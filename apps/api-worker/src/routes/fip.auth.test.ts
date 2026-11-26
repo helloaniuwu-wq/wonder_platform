@@ -10,6 +10,8 @@ interface MockState {
   manual_dividends: Record<number, { id: number; portfolio_id: number }>;
   advisor_clients: Array<{ advisor_id: string; client_id: string; is_active: number }>;
   portfolio_ilp_config: Record<number, { portfolio_id: number; enabled: number; age: number; gender: string; smoker: number; premium: number; currency: string; enrollment_rate: number | null; updated_at: string }>;
+  lab_scenarios: Record<number, { id: number; name: string; assets_json: string; weights_json: string; settings_json: string; summary_json: string; chart_json: string; user_id: string | null; created_at: string }>;
+  nextScenarioId: number;
 }
 
 function createMockDb(state: MockState): D1Database {
@@ -50,6 +52,10 @@ function createMockDb(state: MockState): D1Database {
         if (sql.includes("FROM portfolio_stats_cache WHERE portfolio_id = ?")) {
           return { total_nav: 1000, last_updated: "2026-01-01T00:00:00Z" } as T;
         }
+        if (sql.includes("FROM lab_scenarios WHERE id = ?")) {
+          const sc = state.lab_scenarios[Number(params[0])];
+          return (sc || null) as T | null;
+        }
         return null;
       },
       all: async <T = unknown>() => {
@@ -57,6 +63,13 @@ function createMockDb(state: MockState): D1Database {
           const pid = Number(params[0]);
           const rows = Object.values(state.transactions).filter((t) => t.portfolio_id === pid);
           return { results: rows as T[], success: true, meta: {} as any };
+        }
+        if (sql.includes("FROM lab_scenarios")) {
+          const allRows = Object.values(state.lab_scenarios);
+          const filtered = sql.includes("WHERE user_id = ?")
+            ? allRows.filter((s) => s.user_id === params[0])
+            : allRows;
+          return { results: filtered as T[], success: true, meta: {} as any };
         }
         return { results: [] as T[], success: true, meta: {} as any };
       },
@@ -74,6 +87,33 @@ function createMockDb(state: MockState): D1Database {
             enrollment_rate: params[7] != null ? Number(params[7]) : null,
             updated_at: String(params[8] ?? new Date().toISOString()),
           };
+        }
+        if (sql.includes("INSERT INTO lab_scenarios")) {
+          const id = state.nextScenarioId++;
+          state.lab_scenarios[id] = {
+            id,
+            name: String(params[0] ?? ""),
+            assets_json: String(params[1] ?? "[]"),
+            weights_json: String(params[2] ?? "{}"),
+            settings_json: String(params[3] ?? "{}"),
+            summary_json: String(params[4] ?? "{}"),
+            chart_json: String(params[5] ?? "[]"),
+            user_id: params[6] != null ? String(params[6]) : null,
+            created_at: String(params[7] ?? new Date().toISOString()),
+          };
+          return { success: true, meta: { changes: 1, last_row_id: id } as any };
+        }
+        if (sql.includes("UPDATE lab_scenarios SET")) {
+          const setClause = sql.slice(sql.indexOf("SET ") + 4, sql.indexOf(" WHERE id = ?"));
+          const cols = setClause.split(",").map((part) => part.trim().split("=")[0].trim());
+          const targetId = Number(params[params.length - 1]);
+          const row = state.lab_scenarios[targetId];
+          if (row) {
+            cols.forEach((col, idx) => {
+              (row as any)[col] = params[idx];
+            });
+          }
+          return { success: true, meta: { changes: row ? 1 : 0, last_row_id: targetId } as any };
         }
         return { success: true, meta: { changes: 1, last_row_id: 1 } as any };
       },
@@ -150,6 +190,8 @@ function makeState(): MockState {
     manual_dividends: { 200: { id: 200, portfolio_id: 10 } },
     advisor_clients: [{ advisor_id: "adv-1", client_id: "owner-1", is_active: 1 }],
     portfolio_ilp_config: {},
+    lab_scenarios: {},
+    nextScenarioId: 1,
   };
 }
 
@@ -588,5 +630,107 @@ describe("Per-Portfolio ILP Config Isolation", () => {
       env
     );
     expect(idorRes.status).toBe(403);
+  });
+});
+
+describe("Strategy Lab Scenario Save & Update", () => {
+  it("supports creating, full overwriting via PUT without losing ILP/insurance/currency, rename-only PUT, and IDOR guard", async () => {
+    const state = makeState();
+    const env = makeEnv(state);
+    const ownerToken = await createAccessToken({ sub: "owner-1" }, env);
+    const otherToken = await createAccessToken({ sub: "other-1" }, env);
+
+    // 1. Save new scenario with ILP + Savings Insurance + base_currency
+    const saveRes = await app.fetch(
+      new Request("http://localhost/api/lab/scenarios/save", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${ownerToken}`, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: "初始UCITS方案",
+          assets: ["CSPX", "IBTA"],
+          custom_weights: { CSPX: 60, IBTA: 40 },
+          mc_settings: { capital: 500000, years: 20, withdrawal: 15000 },
+          summary: { capital: 500000, withdrawal: 15000, years: 20 },
+          chart_data: [],
+          base_currency: "HKD",
+          days_back: 3650,
+          ilp_enabled: true,
+          ilp_config: { age: 38, gender: "female", smoker: false, totalPremium: 500000, currency: "HKD" },
+          insurance_enabled: true,
+          insurance_plan: { policy_name: "盈御3", years: [] },
+          insurance_alpha_low: 0.75,
+          insurance_alpha_high: 1.15,
+        }),
+      }),
+      env
+    );
+    expect(saveRes.status).toBe(200);
+    const saveJson = (await saveRes.json()) as any;
+    expect(saveJson.id).toBe(1);
+
+    // 2. Full overwrite via PUT updates assets/weights/MC/ILP while preserving insurance_plan when untouched
+    const putUpdate = await app.fetch(
+      new Request("http://localhost/api/lab/scenarios/1", {
+        method: "PUT",
+        headers: { Authorization: `Bearer ${ownerToken}`, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: "优化后UCITS方案",
+          assets: ["CSPX", "VWRA", "IB01"],
+          custom_weights: { CSPX: 40, VWRA: 30, IB01: 30 },
+          mc_settings: { capital: 800000, years: 25, withdrawal: 24000 },
+          summary: { capital: 800000, withdrawal: 24000, years: 25, sharpe_ratio: 1.12 },
+          chart_data: [{ year: 1, p50: 840000 }],
+          base_currency: "USD",
+          ilp_enabled: true,
+          ilp_config: { age: 39, gender: "female", smoker: false, totalPremium: 800000, currency: "USD" },
+        }),
+      }),
+      env
+    );
+    expect(putUpdate.status).toBe(200);
+    const putJson = (await putUpdate.json()) as any;
+    expect(putJson.name).toBe("优化后UCITS方案");
+    expect(putJson.message).toBe("方案已更新保存");
+
+    // 3. Rename-only PUT leaves all settings intact
+    const putRename = await app.fetch(
+      new Request("http://localhost/api/lab/scenarios/1", {
+        method: "PUT",
+        headers: { Authorization: `Bearer ${ownerToken}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "客户最终确认版" }),
+      }),
+      env
+    );
+    expect(putRename.status).toBe(200);
+    expect(((await putRename.json()) as any).message).toBe("方案名称已更新");
+
+    const getRes = await app.fetch(
+      new Request("http://localhost/api/lab/scenarios/1", {
+        headers: { Authorization: `Bearer ${ownerToken}` },
+      }),
+      env
+    );
+    expect(getRes.status).toBe(200);
+    const loaded = (await getRes.json()) as any;
+    expect(loaded.name).toBe("客户最终确认版");
+    expect(loaded.assets).toEqual(["CSPX", "VWRA", "IB01"]);
+    expect(loaded.weights).toEqual({ CSPX: 40, VWRA: 30, IB01: 30 });
+    expect(loaded.base_currency).toBe("USD");
+    expect(loaded.ilp_enabled).toBe(true);
+    expect(loaded.ilp_config.age).toBe(39);
+    expect(loaded.insurance_enabled).toBe(true);
+    expect(loaded.insurance_plan.policy_name).toBe("盈御3");
+    expect(loaded.chart_data).toEqual([{ year: 1, p50: 840000 }]);
+
+    // 4. Cross-user PUT is blocked with 403
+    const blockedPut = await app.fetch(
+      new Request("http://localhost/api/lab/scenarios/1", {
+        method: "PUT",
+        headers: { Authorization: `Bearer ${otherToken}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "恶意覆盖" }),
+      }),
+      env
+    );
+    expect(blockedPut.status).toBe(403);
   });
 });

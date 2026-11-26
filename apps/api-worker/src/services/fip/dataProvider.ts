@@ -1,7 +1,9 @@
 import {
   getQuantFundSeries,
   getQuantFxSeries,
+  normalizeMinorCurrency,
   resolveQuantFund,
+  sanitizeQuantSeries,
 } from "../quantStore";
 
 export interface MarketData {
@@ -312,14 +314,15 @@ export async function getFxRate(
   toCurr: string = "USD"
 ): Promise<number> {
   if (!fromCurr || !toCurr) return 1.0;
-  const f = fromCurr.toUpperCase().trim();
-  const t = toCurr.toUpperCase().trim();
-  if (f === t) return 1.0;
+  const { currency: f, unitScale: fromScale } = normalizeMinorCurrency(fromCurr);
+  const { currency: t, unitScale: toScale } = normalizeMinorCurrency(toCurr);
+  const scaleFactor = fromScale / toScale;
+  if (f === t) return scaleFactor;
 
   const ticker = `${f}${t}=X`;
   const mem = memoryFxCache.get(ticker);
   if (mem && mem.expiresAt > Date.now()) {
-    return mem.rate;
+    return mem.rate * scaleFactor;
   }
 
   // 0. Check Wonder Quant packed FX table (1 D1 row read, 30m isolate cache)
@@ -329,7 +332,7 @@ export async function getFxRate(
     if (qFrom && qFrom > 0 && qTo && qTo > 0) {
       const rate = qFrom / qTo;
       memoryFxCache.set(ticker, { rate, expiresAt: Date.now() + 15 * 60 * 1000 });
-      return rate;
+      return rate * scaleFactor;
     }
   } catch {
     // ignore
@@ -347,7 +350,7 @@ export async function getFxRate(
       .first<{ price: number }>();
     if (row && row.price && row.price > 0) {
       memoryFxCache.set(ticker, { rate: Number(row.price), expiresAt: Date.now() + 15 * 60 * 1000 });
-      return Number(row.price);
+      return Number(row.price) * scaleFactor;
     }
   } catch {
     // ignore
@@ -383,7 +386,7 @@ export async function getFxRate(
         } catch {
           // ignore
         }
-        return rate;
+        return rate * scaleFactor;
       }
     }
   } catch {
@@ -397,13 +400,13 @@ export async function getFxRate(
       .bind(ticker)
       .first<{ price: number }>();
     if (row && row.price && row.price > 0) {
-      return Number(row.price);
+      return Number(row.price) * scaleFactor;
     }
   } catch {
     // ignore
   }
 
-  return getStaticFxRate(f, t);
+  return getStaticFxRate(f, t) * scaleFactor;
 }
 
 async function fetchYahooChart(
@@ -433,32 +436,29 @@ async function fetchYahooChart(
     if (!result) return null;
 
     const meta = result.meta || {};
+    const { currency: normCurrency, unitScale } = normalizeMinorCurrency(meta.currency);
     const timestamps: number[] = result.timestamp || [];
     const closes: (number | null)[] = result.indicators?.quote?.[0]?.close || [];
     const adjCloses: (number | null)[] = result.indicators?.adjclose?.[0]?.adjclose || closes;
-    const prices: Record<string, number> = {};
-    const adjPrices: Record<string, number> = {};
-    let lastClose: number | null = null;
 
+    // Deduplicate ordered bars before sanitizing 100x regime flips / transient spikes
+    const byDate = new Map<string, { nav: number; adj: number }>();
     for (let i = 0; i < timestamps.length; i++) {
       const c = closes[i];
       const a = adjCloses[i];
       if (typeof c === "number" && c > 0 && isFinite(c)) {
         const dStr = new Date(timestamps[i] * 1000).toISOString().slice(0, 10);
-        prices[dStr] = c;
-        adjPrices[dStr] = typeof a === "number" && a > 0 && isFinite(a) ? a : c;
-        lastClose = c;
+        const navScaled = c * unitScale;
+        const adjScaled = typeof a === "number" && a > 0 && isFinite(a) ? a * unitScale : navScaled;
+        byDate.set(dStr, { nav: navScaled, adj: adjScaled });
       }
     }
 
-    const regularPrice =
-      typeof meta.regularMarketPrice === "number" && meta.regularMarketPrice > 0
-        ? meta.regularMarketPrice
-        : lastClose;
-    const name = meta.longName || meta.shortName || null;
-    const currency = meta.currency || null;
+    const sortedDates = Array.from(byDate.keys()).sort();
+    const rawNavs = sortedDates.map((d) => byDate.get(d)!.nav);
+    const rawAdjs = sortedDates.map((d) => byDate.get(d)!.adj);
 
-    const dividends: Record<string, number> = {};
+    const rawDividends: Record<string, number> = {};
     const divEvents = result.events?.dividends || {};
     for (const key of Object.keys(divEvents)) {
       const ev = divEvents[key];
@@ -466,17 +466,37 @@ async function fetchYahooChart(
       const amt = ev?.amount;
       if (typeof ts === "number" && typeof amt === "number" && amt > 0) {
         const dStr = new Date(ts * 1000).toISOString().slice(0, 10);
-        dividends[dStr] = amt;
+        rawDividends[dStr] = amt * unitScale;
+      }
+    }
+
+    const sanitized = sanitizeQuantSeries(sortedDates, rawNavs, rawAdjs, rawDividends);
+    const prices: Record<string, number> = {};
+    const adjPrices: Record<string, number> = {};
+    for (let i = 0; i < sanitized.dates.length; i++) {
+      prices[sanitized.dates[i]] = sanitized.nav[i];
+      adjPrices[sanitized.dates[i]] = sanitized.adj_nav[i];
+    }
+    const lastCleanNav = sanitized.nav.length > 0 ? sanitized.nav[sanitized.nav.length - 1] : null;
+    const rawRegular =
+      typeof meta.regularMarketPrice === "number" && meta.regularMarketPrice > 0
+        ? meta.regularMarketPrice * unitScale
+        : null;
+    let regularPrice = rawRegular ?? lastCleanNav;
+    if (regularPrice != null && lastCleanNav != null && lastCleanNav > 0) {
+      const r = regularPrice / lastCleanNav;
+      if ((r >= 50 && r <= 200) || (r >= 0.005 && r <= 0.02)) {
+        regularPrice = lastCleanNav;
       }
     }
 
     return {
       price: regularPrice,
-      name,
-      currency,
+      name: meta.longName || meta.shortName || null,
+      currency: meta.currency ? normCurrency : null,
       prices,
       adjPrices,
-      dividends,
+      dividends: sanitized.dividends,
     };
   } catch {
     return null;
@@ -721,7 +741,13 @@ export async function getHistoricalSeries(
             results[d] = v;
           }
         }
-        if (Object.keys(results).length >= 5) {
+        const firstAvailable = qSeries.dates[0];
+        const coverageToleranceDate = new Date(startDate.getTime() + 60 * 86400 * 1000)
+          .toISOString()
+          .slice(0, 10);
+        const hitCount = Object.keys(results).length;
+        // Return immediately when D1 already covers the requested horizon OR holds full inception history (>=60 pts)
+        if (hitCount >= 5 && (firstAvailable <= coverageToleranceDate || qSeries.dates.length >= 60)) {
           memoryHistoryCache.set(cacheKey, { series: results, expiresAt: Date.now() + 30 * 60 * 1000 });
           return results;
         }
@@ -786,7 +812,9 @@ export async function getHistoricalSeries(
         ? "2y"
         : daysBack <= 1850
         ? "5y"
-        : "10y";
+        : daysBack <= 3700
+        ? "10y"
+        : "max";
 
     const yfData = await fetchYahooChart(yahooTicker, rangeStr, true);
     if (yfData) {
@@ -977,14 +1005,44 @@ export async function getDividendMetrics(
   isin: string
 ): Promise<DividendMetrics> {
   try {
-    // 0. Check Wonder Quant pre-computed TTM dividend yield first
+    // 0. Check Wonder Quant pre-computed TTM dividend yield (guarded < 0.20) or sanitized series dividends
     const qFund = await resolveQuantFund(db, isin);
-    if (qFund && qFund.latest_nav && qFund.latest_nav > 0 && qFund.div_yield_ttm != null) {
+    if (
+      qFund &&
+      qFund.latest_nav &&
+      qFund.latest_nav > 0 &&
+      qFund.div_yield_ttm != null &&
+      qFund.div_yield_ttm > 0 &&
+      qFund.div_yield_ttm < 0.20
+    ) {
       return {
         trailing_sum: qFund.div_yield_ttm * qFund.latest_nav,
         next_date: null,
         next_amount: null,
       };
+    }
+
+    if (qFund?.slug) {
+      const qSeries = await getQuantFundSeries(db, qFund.slug);
+      if (qSeries && qSeries.dates.length > 0 && Object.keys(qSeries.dividends).length > 0) {
+        const endDate = qSeries.dates[qSeries.dates.length - 1];
+        const cutoff = new Date(new Date(`${endDate}T00:00:00Z`).getTime() - 365 * 86400 * 1000)
+          .toISOString()
+          .slice(0, 10);
+        let qTrailingSum = 0;
+        for (const [dt, amt] of Object.entries(qSeries.dividends)) {
+          if (dt >= cutoff && dt <= endDate && amt > 0) {
+            qTrailingSum += amt;
+          }
+        }
+        if (qTrailingSum > 0) {
+          return {
+            trailing_sum: qTrailingSum,
+            next_date: null,
+            next_amount: null,
+          };
+        }
+      }
     }
 
     const oneYearAgo = new Date(Date.now() - 365 * 86400 * 1000).toISOString().slice(0, 10);

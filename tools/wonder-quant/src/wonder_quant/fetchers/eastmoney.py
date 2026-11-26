@@ -55,8 +55,8 @@ def fetch_eastmoney_open_fund(fund_code: str, years: int = 5) -> pd.DataFrame:
 
 def fetch_eastmoney_batch(
     fund_codes: list[str],
-    years: int = 5,
-    pause_seconds: float = 0.8,
+    years: int = 15,
+    pause_seconds: float = 1.2,
 ) -> tuple[dict[str, pd.DataFrame], dict[str, str]]:
     unique_codes = list(dict.fromkeys(c.strip() for c in fund_codes if c and c.strip()))
     results: dict[str, pd.DataFrame] = {}

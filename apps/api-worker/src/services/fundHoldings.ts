@@ -6,14 +6,138 @@ export interface TopHoldingItem {
   weight_pct: number | null;
 }
 
+export interface FundXRayProfile {
+  source: string;
+  updated_at?: string;
+  asset_split?: { equity: number; bond: number; cash: number; other: number };
+  sectors?: Record<string, number>;
+  regions?: Record<string, number>;
+  equity_style?: { size: "large" | "mid" | "small"; style: "value" | "blend" | "growth" } | null;
+  bond_style?: { credit: "high" | "medium" | "low"; sensitivity: "limited" | "moderate" | "extensive" } | null;
+  bond_ratings?: Record<string, number>;
+  valuation?: { pe?: number | null; pb?: number | null; ytm?: number | null; duration?: number | null };
+}
+
 export interface TopHoldingsResult {
   source: string;
   holdings: TopHoldingItem[];
   top10_total_pct?: number | null;
+  xray_profile?: FundXRayProfile | null;
   sync_status?: "live_updated" | "queued_for_local" | "cached" | "none";
   queued_at?: string | null;
   factsheet_url?: string | null;
   message?: string | null;
+}
+
+const YAHOO_SECTOR_KEY_MAP: Record<string, string> = {
+  technology: "information_technology",
+  financial_services: "financials",
+  healthcare: "health_care",
+  energy: "energy",
+  utilities: "utilities",
+  industrials: "industrials",
+  consumer_cyclical: "consumer_discretionary",
+  consumer_defensive: "consumer_staples",
+  communication_services: "communication_services",
+  basic_materials: "materials",
+  realestate: "real_estate",
+};
+
+function numRaw(val: any): number | null {
+  const raw = val && typeof val === "object" && "raw" in val ? val.raw : val;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : null;
+}
+
+export function parseYahooXRayProfile(json: any): FundXRayProfile | null {
+  const result = json?.quoteSummary?.result?.[0];
+  const th = result?.topHoldings;
+  if (!th) return null;
+
+  const sectors: Record<string, number> = {};
+  if (Array.isArray(th.sectorWeightings)) {
+    for (const item of th.sectorWeightings) {
+      if (!item || typeof item !== "object") continue;
+      for (const [k, v] of Object.entries(item)) {
+        const pct = numRaw(v);
+        if (pct != null && pct > 0) {
+          const normKey = YAHOO_SECTOR_KEY_MAP[k] || k;
+          sectors[normKey] = Math.round((sectors[normKey] || 0) * 100 + pct * 10000) / 100;
+        }
+      }
+    }
+  }
+
+  const eq = numRaw(th.stockPosition);
+  const bd = numRaw(th.bondPosition);
+  const ca = numRaw(th.cashPosition);
+  const ot = numRaw(th.otherPosition);
+  const asset_split =
+    eq != null || bd != null || ca != null
+      ? {
+          equity: Math.round((eq || 0) * 1000) / 10,
+          bond: Math.round((bd || 0) * 1000) / 10,
+          cash: Math.round((ca || 0) * 1000) / 10,
+          other: Math.round((ot || 0) * 1000) / 10,
+        }
+      : undefined;
+
+  const bond_ratings: Record<string, number> = {};
+  if (Array.isArray(th.bondRatings)) {
+    for (const item of th.bondRatings) {
+      if (!item || typeof item !== "object") continue;
+      for (const [k, v] of Object.entries(item)) {
+        const pct = numRaw(v);
+        if (pct != null && pct > 0) {
+          bond_ratings[k.toLowerCase()] = Math.round(pct * 1000) / 10;
+        }
+      }
+    }
+  }
+
+  const pe = numRaw(th.equityHoldings?.priceToEarnings);
+  const pb = numRaw(th.equityHoldings?.priceToBook);
+  const duration = numRaw(th.bondHoldings?.duration);
+
+  const catName = String(result?.fundProfile?.categoryName || "").toLowerCase();
+  let equity_style: FundXRayProfile["equity_style"] = null;
+  if (/large|mid|small/.test(catName) && /value|blend|growth/.test(catName)) {
+    const size = catName.includes("small") ? "small" : catName.includes("mid") ? "mid" : "large";
+    const style = catName.includes("value") ? "value" : catName.includes("growth") ? "growth" : "blend";
+    equity_style = { size, style };
+  }
+  let bond_style: FundXRayProfile["bond_style"] = null;
+  if (duration != null || Object.keys(bond_ratings).length > 0) {
+    const sensitivity = duration != null ? (duration < 3.5 ? "limited" : duration <= 6.5 ? "moderate" : "extensive") : "moderate";
+    const highW = (bond_ratings.aaa || 0) + (bond_ratings.aa || 0) + (bond_ratings.a || 0) + (bond_ratings.us_government || 0);
+    const lowW = (bond_ratings.bb || 0) + (bond_ratings.b || 0) + (bond_ratings.below_b || 0);
+    const credit = lowW > 30 ? "low" : highW >= 50 ? "high" : "medium";
+    bond_style = { credit, sensitivity };
+  }
+
+  const hasContent =
+    Object.keys(sectors).length > 0 ||
+    asset_split != null ||
+    Object.keys(bond_ratings).length > 0 ||
+    pe != null ||
+    pb != null ||
+    duration != null;
+  if (!hasContent) return null;
+
+  return {
+    source: "Yahoo Finance",
+    updated_at: new Date().toISOString().slice(0, 10),
+    asset_split,
+    sectors: Object.keys(sectors).length > 0 ? sectors : undefined,
+    equity_style,
+    bond_style,
+    bond_ratings: Object.keys(bond_ratings).length > 0 ? bond_ratings : undefined,
+    valuation: {
+      pe: pe != null && pe > 0 && pe < 200 ? Math.round(pe * 100) / 100 : null,
+      pb: pb != null && pb > 0 && pb < 50 ? Math.round(pb * 100) / 100 : null,
+      duration: duration != null && duration >= -5 && duration <= 40 ? Math.round(duration * 100) / 100 : null,
+    },
+  };
 }
 
 const USER_AGENT =
@@ -81,7 +205,7 @@ async function fetchYahooTopHoldings(ticker: string): Promise<TopHoldingsResult 
 
   for (const host of ["query2.finance.yahoo.com", "query1.finance.yahoo.com"]) {
     try {
-      const url = `https://${host}/v10/finance/quoteSummary/${encodeURIComponent(clean)}?modules=topHoldings`;
+      const url = `https://${host}/v10/finance/quoteSummary/${encodeURIComponent(clean)}?modules=topHoldings,fundProfile`;
       const res = await fetch(url, {
         headers: { "User-Agent": USER_AGENT, Accept: "application/json" },
         signal: AbortSignal.timeout(4000),
@@ -89,7 +213,11 @@ async function fetchYahooTopHoldings(ticker: string): Promise<TopHoldingsResult 
       if (!res.ok) continue;
       const json = await res.json();
       const parsed = parseYahooTopHoldings(json);
-      if (parsed) return parsed;
+      const xray = parseYahooXRayProfile(json);
+      if (parsed) {
+        if (xray) parsed.xray_profile = xray;
+        return parsed;
+      }
     } catch {
       // try next host
     }
@@ -181,11 +309,24 @@ export async function getFundTopHoldings(
   for (const ticker of Array.from(new Set(candidates))) {
     const live = await fetchYahooTopHoldings(ticker);
     if (live && live.holdings && live.holdings.length > 0) {
+      const holdingsPayload = JSON.stringify({
+        source: live.source,
+        holdings: live.holdings,
+        top10_total_pct: live.top10_total_pct ?? null,
+      });
+      const xrayPayload = live.xray_profile ? JSON.stringify(live.xray_profile) : null;
       try {
-        await db
-          .prepare("UPDATE wq_funds SET top_holdings_json = ? WHERE slug = ?")
-          .bind(JSON.stringify(live), fund.slug)
-          .run();
+        try {
+          await db
+            .prepare("UPDATE wq_funds SET top_holdings_json = ?, xray_profile_json = COALESCE(?, xray_profile_json) WHERE slug = ?")
+            .bind(holdingsPayload, xrayPayload, fund.slug)
+            .run();
+        } catch {
+          await db
+            .prepare("UPDATE wq_funds SET top_holdings_json = ? WHERE slug = ?")
+            .bind(holdingsPayload, fund.slug)
+            .run();
+        }
         if (queueRow) {
           await db
             .prepare(

@@ -178,12 +178,14 @@ def parse_factsheet_with_llm(text: str, fund_name: str) -> dict[str, Any] | None
     report_date = data.get("report_date")
     src_label = f"Factsheet AI 解析 ({report_date})" if report_date else "Factsheet AI 解析"
 
+    dur_val = _to_float(data.get("duration"))
+    yld_val = _to_float(data.get("yield_pct"))
     return {
         "source": src_label,
         "holdings": holdings,
         "top10_total_pct": top10_total,
-        "duration": _to_float(data.get("duration")),
-        "yield_pct": _to_float(data.get("yield_pct")),
+        "duration": dur_val if (dur_val is not None and -5.0 <= dur_val <= 40.0) else None,
+        "yield_pct": yld_val if (yld_val is not None and 0.0 < yld_val <= 25.0) else None,
         "avg_rating": str(data.get("avg_rating")).strip() if data.get("avg_rating") else None,
         "credit_quality": str(data.get("credit_quality")).strip() if data.get("credit_quality") else None,
     }

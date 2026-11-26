@@ -941,11 +941,15 @@ const PortfolioView = ({
               weight: data.total_nav > 0 ? Math.max(0, a.market_value / data.total_nav) : 0,
               sector: a.sector,
               country: a.country,
+              currency: a.currency || ccy,
               market_value: a.market_value,
             }))}
             quantFunds={quantFunds}
             totalNav={data.total_nav}
+            currency={ccy}
             currencySymbol={getCurrencySymbol(ccy)}
+            taxRate={taxRate || 0}
+            portfolioName={portfolios?.find((p) => p.id === activeId)?.name || '当前实盘组合'}
           />
         </>
       )}

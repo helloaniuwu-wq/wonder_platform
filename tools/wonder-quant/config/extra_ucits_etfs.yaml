@@ -1,0 +1,589 @@
+# Wonder Quant — 爱尔兰注册伦敦证券交易所 (IBKR: LSEETF / USD) 主流 UCITS ETF 增补库
+# 说明：
+# 1. 严格遵循 R3，不修改 Obsidian Vault 原档案；由此配置与 catalog_overrides.yaml 统一合入产品库。
+# 2. 涵盖股权（Acc / Dist）与固定收益（Acc / Dist）24 只新增爱尔兰 UCITS ETF（其余 5 只已于 Vault 存在并由 overrides 补全）。
+# 3. 对于在 LSE 主代码按英镑(GBp/GBP)报盘的份额（如 IUSA/EQQQ/IBTS），或无直连的代码（如 IB0D/EQAC），
+#    yahoo_ticker 映射至同 ISIN 对应的 USD 交易挂牌代码（IDUS.L / EQQU.L / IDBT.L / IBTU.L / EQAC.SW），保证净值与分红原生以 USD 计价。
+
+extra_funds:
+  # ── 一、股权类 UCITS ETF：1. 累积型（Accumulating / Acc）──────────────────
+  - slug: EU_CSPX
+    code: CSPX
+    yahoo_ticker: CSPX.L
+    isin: IE00B5BMR087
+    name: "iShares Core S&P 500 UCITS ETF (Acc)"
+    manager: "BlackRock (iShares)"
+    asset_class: 股票
+    ilas_platform: 非投连险-国际股票
+    currency: USD
+    fee_pct: 0.07
+    role: 核心
+    twin_code: IUSA
+    is_distributing: false
+    benchmark_code: SPY
+    tags:
+      - 爱尔兰UCITS
+      - LSE美元
+      - 免美遗产税
+      - 累积型(Acc)
+      - 标普500
+      - IBKR:LSEETF
+    commentary: "规模最大（超千亿美元）、流动性最好的标普 500 爱尔兰 UCITS 累积型 ETF（IUSA 的累积版），免美国遗产税且美股股息预扣税降至 15%。"
+
+  - slug: EU_VUAA
+    code: VUAA
+    yahoo_ticker: VUAA.L
+    isin: IE00BFMXXD54
+    name: "Vanguard S&P 500 UCITS ETF (Acc)"
+    manager: "Vanguard"
+    asset_class: 股票
+    ilas_platform: 非投连险-国际股票
+    currency: USD
+    fee_pct: 0.07
+    role: 核心
+    twin_code: VUSD
+    is_distributing: false
+    benchmark_code: SPY
+    tags:
+      - 爱尔兰UCITS
+      - LSE美元
+      - 免美遗产税
+      - 累积型(Acc)
+      - 标普500
+      - IBKR:LSEETF
+    commentary: "Vanguard 旗舰标普 500 累积型 ETF（VUSD 的累积版），单股价格比 CSPX 更低、便于定投，免美国遗产税。"
+
+  - slug: EU_SPYL
+    code: SPYL
+    yahoo_ticker: SPYL.L
+    isin: IE000XZSV718
+    name: "SPDR S&P 500 UCITS ETF (Acc)"
+    manager: "SPDR (State Street)"
+    asset_class: 股票
+    ilas_platform: 非投连险-国际股票
+    currency: USD
+    fee_pct: 0.03
+    role: 核心
+    twin_code: null
+    is_distributing: false
+    benchmark_code: SPY
+    tags:
+      - 爱尔兰UCITS
+      - LSE美元
+      - 免美遗产税
+      - 累积型(Acc)
+      - 标普500
+      - 超低费率
+      - IBKR:LSEETF
+    commentary: "费率最低（0.03%）的标普 500 爱尔兰 UCITS 累积型 ETF，性价比极高，免美国遗产税且美股股息预扣税降至 15%。"
+
+  - slug: EU_CNDX
+    code: CNDX
+    yahoo_ticker: CNDX.L
+    isin: IE00B53SZB19
+    name: "iShares NASDAQ 100 UCITS ETF (Acc)"
+    manager: "BlackRock (iShares)"
+    asset_class: 股票
+    ilas_platform: 非投连险-国际股票
+    currency: USD
+    fee_pct: 0.33
+    role: 卫星
+    twin_code: null
+    is_distributing: false
+    benchmark_code: SPY
+    tags:
+      - 爱尔兰UCITS
+      - LSE美元
+      - 免美遗产税
+      - 累积型(Acc)
+      - 纳斯达克100
+      - 科技成长
+      - IBKR:LSEETF
+    commentary: "贝莱德旗下流动性最强的纳斯达克 100 累积型 UCITS ETF，免美国遗产税。"
+
+  - slug: EU_EQAC
+    code: EQAC
+    yahoo_ticker: EQAC.SW
+    isin: IE00BFZXGZ54
+    name: "Invesco EQQQ Nasdaq-100 UCITS ETF (Acc)"
+    manager: "Invesco"
+    asset_class: 股票
+    ilas_platform: 非投连险-国际股票
+    currency: USD
+    fee_pct: 0.30
+    role: 卫星
+    twin_code: EQQQ
+    is_distributing: false
+    benchmark_code: SPY
+    tags:
+      - 爱尔兰UCITS
+      - LSE美元
+      - 免美遗产税
+      - 累积型(Acc)
+      - 纳斯达克100
+      - 科技成长
+      - IBKR:LSEETF
+    commentary: "景顺（Invesco）纳斯达克 100 累积型份额（EQQQ 的累积版），单价亲民，免美国遗产税。"
+
+  - slug: EU_VWRA
+    code: VWRA
+    yahoo_ticker: VWRA.L
+    isin: IE00BK5BQT80
+    name: "Vanguard FTSE All-World UCITS ETF (Acc)"
+    manager: "Vanguard"
+    asset_class: 股票
+    ilas_platform: 非投连险-国际股票
+    currency: USD
+    fee_pct: 0.22
+    role: 核心
+    twin_code: VWRD
+    is_distributing: false
+    benchmark_code: VT
+    tags:
+      - 爱尔兰UCITS
+      - LSE美元
+      - 免美遗产税
+      - 累积型(Acc)
+      - 全球股市
+      - IBKR:LSEETF
+    commentary: "对应美股 VT（VWRD 的累积版），一篮子覆盖全球发达+新兴市场约 3,700 只大中盘股，股息自动再投资且免美国遗产税。"
+
+  - slug: EU_IUIT
+    code: IUIT
+    yahoo_ticker: IUIT.L
+    isin: IE00B3WJKG14
+    name: "iShares S&P 500 Information Technology Sector UCITS ETF (Acc)"
+    manager: "BlackRock (iShares)"
+    asset_class: 股票
+    ilas_platform: 非投连险-国际股票
+    currency: USD
+    fee_pct: 0.15
+    role: 卫星
+    twin_code: null
+    is_distributing: false
+    benchmark_code: SPY
+    tags:
+      - 爱尔兰UCITS
+      - LSE美元
+      - 免美遗产税
+      - 累积型(Acc)
+      - 美国科技板块
+      - 科技成长
+      - IBKR:LSEETF
+    commentary: "聚焦标普 500 信息技术巨头（苹果、微软、英伟达等），费率仅 0.15%，爱尔兰注册免美国遗产税。"
+
+  # ── 一、股权类 UCITS ETF：2. 分派型（Distributing / Dist）──────────────────
+  - slug: EU_VUSD
+    code: VUSD
+    yahoo_ticker: VUSD.L
+    isin: IE00B3XXRP09
+    name: "Vanguard S&P 500 UCITS ETF (Dist)"
+    manager: "Vanguard"
+    asset_class: 股票
+    ilas_platform: 非投连险-国际股票
+    currency: USD
+    fee_pct: 0.07
+    role: 核心
+    twin_code: VUAA
+    is_distributing: true
+    benchmark_code: SPY
+    tags:
+      - 爱尔兰UCITS
+      - LSE美元
+      - 免美遗产税
+      - 分派型(Dist)
+      - 每季派息
+      - 标普500
+      - IBKR:LSEETF
+    commentary: "每季派息（VUAA 的分派版），追踪标普 500 指数；爱尔兰注册免美国遗产税且美股股息预扣税降至 15%。"
+
+  - slug: EU_IUSA
+    code: IUSA
+    yahoo_ticker: IDUS.L
+    isin: IE0031442068
+    name: "iShares Core S&P 500 UCITS ETF (Dist · IUSA/IDUS)"
+    manager: "BlackRock (iShares)"
+    asset_class: 股票
+    ilas_platform: 非投连险-国际股票
+    currency: USD
+    fee_pct: 0.07
+    role: 核心
+    twin_code: CSPX
+    is_distributing: true
+    benchmark_code: SPY
+    tags:
+      - 爱尔兰UCITS
+      - LSE美元
+      - 免美遗产税
+      - 分派型(Dist)
+      - 每季派息
+      - 标普500
+      - IDUS
+      - IBKR:LSEETF
+    commentary: "每季派息（CSPX 的分派版；LSE 美元代码 IDUS），追踪标普 500；爱尔兰注册免美国遗产税且美股股息预扣税 15%。"
+
+  - slug: EU_EQQQ
+    code: EQQQ
+    yahoo_ticker: EQQU.L
+    isin: IE0032077012
+    name: "Invesco EQQQ Nasdaq-100 UCITS ETF (Dist · EQQQ/EQQU)"
+    manager: "Invesco"
+    asset_class: 股票
+    ilas_platform: 非投连险-国际股票
+    currency: USD
+    fee_pct: 0.30
+    role: 卫星
+    twin_code: EQAC
+    is_distributing: true
+    benchmark_code: SPY
+    tags:
+      - 爱尔兰UCITS
+      - LSE美元
+      - 免美遗产税
+      - 分派型(Dist)
+      - 每季派息
+      - 纳斯达克100
+      - EQQU
+      - IBKR:LSEETF
+    commentary: "欧洲最老牌的纳斯达克 100 分派型 ETF（EQAC 的分派版；LSE 美元代码 EQQU），每季派息且免美国遗产税。"
+
+  - slug: EU_VWRD
+    code: VWRD
+    yahoo_ticker: VWRD.L
+    isin: IE00B3RBWM25
+    name: "Vanguard FTSE All-World UCITS ETF (Dist)"
+    manager: "Vanguard"
+    asset_class: 股票
+    ilas_platform: 非投连险-国际股票
+    currency: USD
+    fee_pct: 0.22
+    role: 核心
+    twin_code: VWRA
+    is_distributing: true
+    benchmark_code: VT
+    tags:
+      - 爱尔兰UCITS
+      - LSE美元
+      - 免美遗产税
+      - 分派型(Dist)
+      - 每季派息
+      - 全球股市
+      - IBKR:LSEETF
+    commentary: "每季派息（VWRA 的分派版），对应美股 VT 全球股市配置；爱尔兰注册免美国遗产税。"
+
+  # ── 二、固定收益类 UCITS ETF：1. 累积型（Accumulating / Acc）────────────────
+  - slug: EU_IBTA
+    code: IBTA
+    yahoo_ticker: IBTA.L
+    isin: IE00BYXPSP02
+    name: "iShares $ Treasury Bond 1-3yr UCITS ETF (Acc)"
+    manager: "BlackRock (iShares)"
+    asset_class: 固定收益
+    ilas_platform: 非投连险-债券基金比较
+    currency: USD
+    fee_pct: 0.07
+    role: 核心
+    twin_code: IBTS
+    is_distributing: false
+    benchmark_code: BIL
+    tags:
+      - 爱尔兰UCITS
+      - LSE美元
+      - 免美遗产税
+      - 累积型(Acc)
+      - 短期美债
+      - 短债/现金管理
+      - IBKR:LSEETF
+    commentary: "对应美股 SHY（IBTS 的累积版），低波动防守型 1-3 年短期美债现金管理工具，美债利息 0% 预扣税且免美国遗产税。"
+
+  - slug: EU_CBU0
+    code: CBU0
+    yahoo_ticker: CBU0.L
+    isin: IE00B3VWN518
+    name: "iShares $ Treasury Bond 7-10yr UCITS ETF (Acc)"
+    manager: "BlackRock (iShares)"
+    asset_class: 固定收益
+    ilas_platform: 非投连险-债券基金比较
+    currency: USD
+    fee_pct: 0.07
+    role: 核心
+    twin_code: IDTM
+    is_distributing: false
+    benchmark_code: AGG
+    tags:
+      - 爱尔兰UCITS
+      - LSE美元
+      - 免美遗产税
+      - 累积型(Acc)
+      - 中长期美债
+      - IBKR:LSEETF
+    commentary: "对应美股 IEF（IDTM 的累积版），经典的股债对冲 7-10 年美债核心资产，底层美债利息 0% 预扣税且免美国遗产税。"
+
+  - slug: EU_DTLA
+    code: DTLA
+    yahoo_ticker: DTLA.L
+    isin: IE00BFM6TC58
+    name: "iShares $ Treasury Bond 20+yr UCITS ETF (Acc)"
+    manager: "BlackRock (iShares)"
+    asset_class: 固定收益
+    ilas_platform: 非投连险-债券基金比较
+    currency: USD
+    fee_pct: 0.07
+    role: 卫星
+    twin_code: IDTL
+    is_distributing: false
+    benchmark_code: AGG
+    tags:
+      - 爱尔兰UCITS
+      - LSE美元
+      - 免美遗产税
+      - 累积型(Acc)
+      - 超长期美债
+      - 20+年久期
+      - IBKR:LSEETF
+    commentary: "对应美股 TLT（IDTL 的累积版），20+ 年超长久期高弹性美债，适合博弈降息周期资本利得，利息 0% 预扣税且免美国遗产税。"
+
+  - slug: EU_VDTA
+    code: VDTA
+    yahoo_ticker: VDTA.L
+    isin: IE00BGYWFS63
+    name: "Vanguard USD Treasury Bond UCITS ETF (Acc)"
+    manager: "Vanguard"
+    asset_class: 固定收益
+    ilas_platform: 非投连险-债券基金比较
+    currency: USD
+    fee_pct: 0.07
+    role: 核心
+    twin_code: VDTY
+    is_distributing: false
+    benchmark_code: AGG
+    tags:
+      - 爱尔兰UCITS
+      - LSE美元
+      - 免美遗产税
+      - 累积型(Acc)
+      - 全期限美债
+      - IBKR:LSEETF
+    commentary: "对应美股 GOVT（VDTY 的累积版），一揽子覆盖短、中、长全期限美国国债，利息 0% 预扣税且免美国遗产税。"
+
+  - slug: EU_LQDA
+    code: LQDA
+    yahoo_ticker: LQDA.L
+    isin: IE00BYXYYJ35
+    name: "iShares $ Corp Bond UCITS ETF (Acc)"
+    manager: "BlackRock (iShares)"
+    asset_class: 固定收益
+    ilas_platform: 非投连险-债券基金比较
+    currency: USD
+    fee_pct: 0.20
+    role: 核心
+    twin_code: LQDE
+    is_distributing: false
+    benchmark_code: AGG
+    tags:
+      - 爱尔兰UCITS
+      - LSE美元
+      - 免美遗产税
+      - 累积型(Acc)
+      - 美元投资级企业债
+      - IBKR:LSEETF
+    commentary: "对应美股 LQD（LQDE 的累积版），持有苹果、微软、摩根大通等高评级美元公司债，享受组合利息豁免（0% 预扣税）且免美国遗产税。"
+
+  - slug: EU_AGGU
+    code: AGGU
+    yahoo_ticker: AGGU.L
+    isin: IE00BZ043R46
+    name: "iShares Core Global Aggregate Bond UCITS ETF (USD Hedged Acc)"
+    manager: "BlackRock (iShares)"
+    asset_class: 固定收益
+    ilas_platform: 非投连险-债券基金比较
+    currency: USD
+    fee_pct: 0.10
+    role: 核心
+    twin_code: null
+    is_distributing: false
+    benchmark_code: AGG
+    tags:
+      - 爱尔兰UCITS
+      - LSE美元
+      - 免美遗产税
+      - 累积型(Acc)
+      - 全球综合债券
+      - 美元对冲
+      - IBKR:LSEETF
+    commentary: "对应美股 BNDW / AGG，全球主权债+投资级企业债美元对冲高度分散配置，费率仅 0.10%，免美国遗产税。"
+
+  # ── 二、固定收益类 UCITS ETF：2. 分派型（Distributing / Dist）────────────────
+  - slug: EU_IB0D
+    code: IB0D
+    yahoo_ticker: IBTU.L
+    isin: IE00BGR7L912
+    name: "iShares $ Treasury Bond 0-1yr UCITS ETF (Dist · IB0D/IBTU)"
+    manager: "BlackRock (iShares)"
+    asset_class: 固定收益
+    ilas_platform: 非投连险-债券基金比较
+    currency: USD
+    fee_pct: 0.07
+    role: 核心
+    twin_code: IB01
+    is_distributing: true
+    benchmark_code: BIL
+    tags:
+      - 爱尔兰UCITS
+      - LSE美元
+      - 免美遗产税
+      - 分派型(Dist)
+      - 每半年派息
+      - 短债/现金管理
+      - 超短美债
+      - IBTU
+      - IBKR:LSEETF
+    commentary: "每半年派息（IB01 的分派版；LSE 美元代码 IBTU），0-1 年超短美债收益型配置，底层美债利息 0% 预扣税且免美国遗产税。"
+
+  - slug: EU_IBTS
+    code: IBTS
+    yahoo_ticker: IDBT.L
+    isin: IE00B14X4S71
+    name: "iShares $ Treasury Bond 1-3yr UCITS ETF (Dist · IBTS/IDBT)"
+    manager: "BlackRock (iShares)"
+    asset_class: 固定收益
+    ilas_platform: 非投连险-债券基金比较
+    currency: USD
+    fee_pct: 0.07
+    role: 核心
+    twin_code: IBTA
+    is_distributing: true
+    benchmark_code: BIL
+    tags:
+      - 爱尔兰UCITS
+      - LSE美元
+      - 免美遗产税
+      - 分派型(Dist)
+      - 每半年派息
+      - 短期美债
+      - 短债/现金管理
+      - IDBT
+      - IBKR:LSEETF
+    commentary: "每半年派息（IBTA 的分派版；LSE 美元代码 IDBT，对应美股 SHY），低波动短期美债现金流工具，免美国遗产税。"
+
+  - slug: EU_IDTM
+    code: IDTM
+    yahoo_ticker: IDTM.L
+    isin: IE00B1FZS798
+    name: "iShares $ Treasury Bond 7-10yr UCITS ETF (Dist)"
+    manager: "BlackRock (iShares)"
+    asset_class: 固定收益
+    ilas_platform: 非投连险-债券基金比较
+    currency: USD
+    fee_pct: 0.07
+    role: 核心
+    twin_code: CBU0
+    is_distributing: true
+    benchmark_code: AGG
+    tags:
+      - 爱尔兰UCITS
+      - LSE美元
+      - 免美遗产税
+      - 分派型(Dist)
+      - 每半年派息
+      - 中长期美债
+      - IBKR:LSEETF
+    commentary: "每半年派息（CBU0 的分派版，对应美股 IEF），7-10 年期中长美债定期派息版，利息 0% 预扣税且免美国遗产税。"
+
+  - slug: EU_IDTL
+    code: IDTL
+    yahoo_ticker: IDTL.L
+    isin: IE00BSKRJZ44
+    name: "iShares $ Treasury Bond 20+yr UCITS ETF (Dist)"
+    manager: "BlackRock (iShares)"
+    asset_class: 固定收益
+    ilas_platform: 非投连险-债券基金比较
+    currency: USD
+    fee_pct: 0.07
+    role: 卫星
+    twin_code: DTLA
+    is_distributing: true
+    benchmark_code: AGG
+    tags:
+      - 爱尔兰UCITS
+      - LSE美元
+      - 免美遗产税
+      - 分派型(Dist)
+      - 每半年派息
+      - 超长期美债
+      - 20+年久期
+      - IBKR:LSEETF
+    commentary: "每半年派息（DTLA 的分派版，对应美股 TLT），20+ 年超长美债分派版本，免美国遗产税。"
+
+  - slug: EU_VDTY
+    code: VDTY
+    yahoo_ticker: VDTY.L
+    isin: IE00BZ163M45
+    name: "Vanguard USD Treasury Bond UCITS ETF (Dist)"
+    manager: "Vanguard"
+    asset_class: 固定收益
+    ilas_platform: 非投连险-债券基金比较
+    currency: USD
+    fee_pct: 0.07
+    role: 核心
+    twin_code: VDTA
+    is_distributing: true
+    benchmark_code: AGG
+    tags:
+      - 爱尔兰UCITS
+      - LSE美元
+      - 免美遗产税
+      - 分派型(Dist)
+      - 每月派息
+      - 全期限美债
+      - IBKR:LSEETF
+    commentary: "每月派息（VDTA 的分派版，对应美股 GOVT），全期限美债月度现金流核心工具，美债利息 0% 预扣税且免美国遗产税。"
+
+  - slug: EU_LQDE
+    code: LQDE
+    yahoo_ticker: LQDE.L
+    isin: IE0032895942
+    name: "iShares $ Corp Bond UCITS ETF (Dist)"
+    manager: "BlackRock (iShares)"
+    asset_class: 固定收益
+    ilas_platform: 非投连险-债券基金比较
+    currency: USD
+    fee_pct: 0.20
+    role: 核心
+    twin_code: LQDA
+    is_distributing: true
+    benchmark_code: AGG
+    tags:
+      - 爱尔兰UCITS
+      - LSE美元
+      - 免美遗产税
+      - 分派型(Dist)
+      - 每月派息
+      - 美元投资级企业债
+      - IBKR:LSEETF
+    commentary: "每月派息（LQDA 的分派版，对应美股 LQD），美元投资级公司债月度收息核心品种，免美国遗产税。"
+
+  - slug: EU_IHYU
+    code: IHYU
+    yahoo_ticker: IHYU.L
+    isin: IE00B4PY7Y77
+    name: "iShares $ High Yield Corp Bond UCITS ETF (Dist)"
+    manager: "BlackRock (iShares)"
+    asset_class: 固定收益
+    ilas_platform: 非投连险-债券基金比较
+    currency: USD
+    fee_pct: 0.50
+    role: 卫星
+    twin_code: null
+    is_distributing: true
+    benchmark_code: HYG
+    tags:
+      - 爱尔兰UCITS
+      - LSE美元
+      - 免美遗产税
+      - 分派型(Dist)
+      - 每半年派息
+      - 高收益债
+      - 高股息/红利
+      - IBKR:LSEETF
+    commentary: "每半年派息（对应美股 HYG），美元高收益企业债分派型 ETF，票息较高但波动较大，爱尔兰注册免美国遗产税。"

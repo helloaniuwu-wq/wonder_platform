@@ -28,19 +28,30 @@ export interface QuantFundCatalogRow {
   tags: string[];
   commentary: string | null;
   twin_code: string | null;
+  twin_codes?: string[];
+  twin_funds?: Array<{
+    slug: string;
+    code: string;
+    aia_code: string | null;
+    name: string;
+    currency: string;
+    is_distributing: boolean;
+  }>;
   is_distributing: boolean;
   benchmark_code: string;
   primary_source: string;
   data_tier: string;
   is_trackable: boolean;
   status: string;
-  // Fixed income & external quote metadata (0007)
+  // Fixed income & external quote metadata (0007 / 0012)
   duration?: number | null;
   yield_pct?: number | null;
   avg_rating?: string | null;
   credit_quality?: string | null;
   morningstar_url?: string | null;
   top_holding_keys?: string[];
+  top_holdings?: Array<{ name: string; symbol?: string; weight_pct: number | null }>;
+  xray_profile?: Record<string, any> | null;
   // Metrics joined from wq_fund_metrics
   as_of_date: string | null;
   valuation_date: string | null;
@@ -71,6 +82,19 @@ export interface QuantFundCatalogRow {
   quant_grade: string | null;
   obs_days: number;
   anomalies: string[];
+  // Lightweight SOP & Research Queue metadata (0011)
+  has_sop_report?: boolean;
+  sop_medal?: string | null;
+  sop_pillar_score?: number | null;
+  sop_valuation_zone?: string | null;
+  sop_report_date?: string | null;
+  sop_valuation_pct_5y?: number | null;
+  sop_dividend_yield_ttm?: number | null;
+  sop_dividend_spread_rf?: number | null;
+  sop_red_flag_top?: string | null;
+  research_queue_status?: string | null;
+  research_request_count?: number;
+  research_requester_ids?: string[];
 }
 
 export interface UnpackedFundSeries {
@@ -124,6 +148,47 @@ function safeJsonArray(raw: string | null | undefined): string[] {
   try {
     const parsed = JSON.parse(raw);
     return Array.isArray(parsed) ? parsed.map(String) : [];
+  } catch {
+    return [];
+  }
+}
+
+function safeJsonObject(raw: string | null | undefined): Record<string, any> | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function extractTopHoldingsList(rawJson: string | null | undefined): Array<{ name: string; symbol?: string; weight_pct: number | null }> {
+  if (!rawJson) return [];
+  try {
+    const parsed = JSON.parse(rawJson);
+    const list = Array.isArray(parsed?.holdings) ? parsed.holdings : Array.isArray(parsed) ? parsed : [];
+    return list
+      .filter((h: any) => h && (h.name || h.symbol))
+      .slice(0, 15)
+      .map((h: any) => ({
+        name: String(h.name || h.symbol || "").trim(),
+        symbol: h.symbol ? String(h.symbol).trim() : undefined,
+        weight_pct: h.weight_pct != null && Number.isFinite(Number(h.weight_pct)) ? Number(h.weight_pct) : null,
+      }));
+  } catch {
+    return [];
+  }
+}
+
+function extractRequesterIds(raw: string | null | undefined): string[] {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .map((item: any) => (item && item.user_id != null ? String(item.user_id) : ""))
+      .filter(Boolean);
   } catch {
     return [];
   }
@@ -200,15 +265,29 @@ export async function loadQuantCatalog(db: D1Database): Promise<{
             f.is_distributing, f.benchmark_code, f.primary_source,
             COALESCE(m.data_tier, f.data_tier) AS data_tier,
             f.is_trackable, f.status,
-            f.duration, f.yield_pct, f.avg_rating, f.credit_quality, f.morningstar_url, f.top_holdings_json,
+            f.duration, f.yield_pct, f.avg_rating, f.credit_quality, f.morningstar_url, f.top_holdings_json, f.xray_profile_json,
             m.as_of_date, m.valuation_date, m.latest_nav,
             m.ret_1m, m.ret_3m, m.ret_6m, m.ret_ytd, m.ret_1y, m.ret_3y_ann, m.ret_5y_ann,
             m.vol_1y, m.vol_3y, m.max_dd_1y, m.max_dd_3y, m.max_dd_5y, m.dd_recovery_days,
             m.sharpe_3y, m.sortino_3y, m.calmar_3y, m.beta_3y, m.alpha_3y, m.r2_3y, m.ir_3y,
             m.div_yield_ttm, m.peer_rank_pct, m.quant_score, m.quant_grade,
-            COALESCE(m.obs_days, 0) AS obs_days, m.anomalies_json
+            COALESCE(m.obs_days, 0) AS obs_days, m.anomalies_json,
+            CASE WHEN sr.slug IS NOT NULL THEN 1 ELSE 0 END AS has_sop_report,
+            sr.medal_rating AS sop_medal,
+            sr.pillar_score AS sop_pillar_score,
+            sr.valuation_zone AS sop_valuation_zone,
+            sr.report_date AS sop_report_date,
+            sr.valuation_pct_5y AS sop_valuation_pct_5y,
+            sr.dividend_yield_ttm AS sop_dividend_yield_ttm,
+            sr.dividend_spread_rf AS sop_dividend_spread_rf,
+            sr.red_flag_top AS sop_red_flag_top,
+            rq.status AS research_queue_status,
+            COALESCE(rq.request_count, 0) AS research_request_count,
+            rq.requesters_json AS research_requesters_json
            FROM wq_funds f
            LEFT JOIN wq_fund_metrics m ON m.slug = f.slug
+           LEFT JOIN wq_fund_sop_reports sr ON sr.slug = f.slug COLLATE NOCASE
+           LEFT JOIN wq_fund_research_queue rq ON rq.slug = f.slug
            WHERE f.is_trackable = 1`
         )
         .all<any>();
@@ -229,9 +308,19 @@ export async function loadQuantCatalog(db: D1Database): Promise<{
             m.vol_1y, m.vol_3y, m.max_dd_1y, m.max_dd_3y, m.max_dd_5y, m.dd_recovery_days,
             m.sharpe_3y, m.sortino_3y, m.calmar_3y, m.beta_3y, m.alpha_3y, m.r2_3y, m.ir_3y,
             m.div_yield_ttm, m.peer_rank_pct, m.quant_score, m.quant_grade,
-            COALESCE(m.obs_days, 0) AS obs_days, m.anomalies_json
+            COALESCE(m.obs_days, 0) AS obs_days, m.anomalies_json,
+            CASE WHEN sr.slug IS NOT NULL THEN 1 ELSE 0 END AS has_sop_report,
+            sr.medal_rating AS sop_medal,
+            sr.pillar_score AS sop_pillar_score,
+            sr.valuation_zone AS sop_valuation_zone,
+            sr.report_date AS sop_report_date,
+            rq.status AS research_queue_status,
+            COALESCE(rq.request_count, 0) AS research_request_count,
+            rq.requesters_json AS research_requesters_json
            FROM wq_funds f
            LEFT JOIN wq_fund_metrics m ON m.slug = f.slug
+           LEFT JOIN wq_fund_sop_reports sr ON sr.slug = f.slug COLLATE NOCASE
+           LEFT JOIN wq_fund_research_queue rq ON rq.slug = f.slug
            WHERE f.is_trackable = 1`
         )
         .all<any>();
@@ -250,10 +339,13 @@ export async function loadQuantCatalog(db: D1Database): Promise<{
       manager: r.manager || null,
       asset_class: r.asset_class,
       ilas_platform: r.ilas_platform || null,
-      currency: (r.currency || "USD").toUpperCase(),
+      currency: normalizeMinorCurrency(r.currency).currency,
       risk_class: r.risk_class || null,
       morningstar_stars: r.morningstar_stars != null ? Number(r.morningstar_stars) : null,
-      fee_pct: r.fee_pct != null ? Number(r.fee_pct) : null,
+      fee_pct:
+        r.fee_pct != null && Number(r.fee_pct) >= 0 && Number(r.fee_pct) <= 5
+          ? Number(r.fee_pct)
+          : null,
       role: r.role || null,
       fit_plans: safeJsonArray(r.fit_plans_json),
       tags: safeJsonArray(r.tags_json),
@@ -265,12 +357,20 @@ export async function loadQuantCatalog(db: D1Database): Promise<{
       data_tier: r.data_tier || "U",
       is_trackable: Boolean(r.is_trackable),
       status: r.status || "active",
-      duration: r.duration != null ? Number(r.duration) : null,
-      yield_pct: r.yield_pct != null ? Number(r.yield_pct) : null,
+      duration:
+        r.duration != null && Number(r.duration) >= -5 && Number(r.duration) <= 40
+          ? Number(r.duration)
+          : null,
+      yield_pct:
+        r.yield_pct != null && Number(r.yield_pct) > 0 && Number(r.yield_pct) <= 25
+          ? Number(r.yield_pct)
+          : null,
       avg_rating: r.avg_rating || null,
       credit_quality: r.credit_quality || null,
       morningstar_url: r.morningstar_url || null,
       top_holding_keys: extractHoldingKeys(r.top_holdings_json),
+      top_holdings: extractTopHoldingsList(r.top_holdings_json),
+      xray_profile: safeJsonObject(r.xray_profile_json),
       as_of_date: r.as_of_date || null,
       valuation_date: r.valuation_date || null,
       latest_nav: r.latest_nav != null ? Number(r.latest_nav) : null,
@@ -294,12 +394,27 @@ export async function loadQuantCatalog(db: D1Database): Promise<{
       alpha_3y: r.alpha_3y != null ? Number(r.alpha_3y) : null,
       r2_3y: r.r2_3y != null ? Number(r.r2_3y) : null,
       ir_3y: r.ir_3y != null ? Number(r.ir_3y) : null,
-      div_yield_ttm: r.div_yield_ttm != null ? Number(r.div_yield_ttm) : null,
+      div_yield_ttm:
+        r.div_yield_ttm != null && Number(r.div_yield_ttm) >= 0 && Number(r.div_yield_ttm) < 0.25
+          ? Number(r.div_yield_ttm)
+          : null,
       peer_rank_pct: r.peer_rank_pct != null ? Number(r.peer_rank_pct) : null,
       quant_score: r.quant_score != null ? Number(r.quant_score) : null,
       quant_grade: r.quant_grade || null,
       obs_days: Number(r.obs_days || 0),
       anomalies: safeJsonArray(r.anomalies_json),
+      has_sop_report: Boolean(r.has_sop_report),
+      sop_medal: r.sop_medal || null,
+      sop_pillar_score: r.sop_pillar_score != null ? Number(r.sop_pillar_score) : null,
+      sop_valuation_zone: r.sop_valuation_zone || null,
+      sop_report_date: r.sop_report_date || null,
+      sop_valuation_pct_5y: r.sop_valuation_pct_5y != null ? Number(r.sop_valuation_pct_5y) : null,
+      sop_dividend_yield_ttm: r.sop_dividend_yield_ttm != null ? Number(r.sop_dividend_yield_ttm) : null,
+      sop_dividend_spread_rf: r.sop_dividend_spread_rf != null ? Number(r.sop_dividend_spread_rf) : null,
+      sop_red_flag_top: r.sop_red_flag_top || null,
+      research_queue_status: r.research_queue_status || null,
+      research_request_count: Number(r.research_request_count || 0),
+      research_requester_ids: extractRequesterIds(r.research_requesters_json),
     }));
 
     const lookup = new Map<string, QuantFundCatalogRow>();
@@ -316,9 +431,84 @@ export async function loadQuantCatalog(db: D1Database): Promise<{
       lookup.set(row.slug.toUpperCase(), row);
     }
 
-    catalogCache = { rows, lookup, expiresAt: Date.now() + CATALOG_TTL_MS };
-    return catalogCache;
-  } catch {
+    // LSE alternate trading tickers for identical Ireland UCITS ISINs (GBP vs USD lines)
+    const UCITS_TICKER_ALIASES: Record<string, string> = {
+      VHYL: "VHYD",
+      "VHYL.L": "VHYD",
+      IDUS: "IUSA",
+      "IDUS.L": "IUSA",
+      EQQU: "EQQQ",
+      "EQQU.L": "EQQQ",
+      IBTU: "IB0D",
+      "IBTU.L": "IB0D",
+      IDBT: "IBTS",
+      "IDBT.L": "IBTS",
+    };
+    for (const [alias, canonical] of Object.entries(UCITS_TICKER_ALIASES)) {
+      if (!lookup.has(alias)) {
+        const target = lookup.get(canonical);
+        if (target) lookup.set(alias, target);
+      }
+    }
+
+    // Bidirectional twin share-class linking (Acc <-> Dist), 0 extra D1 reads
+    const rowBySlug = new Map(rows.map((r) => [r.slug, r]));
+    const reverseTwins = new Map<string, QuantFundCatalogRow[]>();
+    for (const r of rows) {
+      if (!r.twin_code) continue;
+      const target = lookup.get(r.twin_code.trim().toUpperCase());
+      if (target && target.slug !== r.slug) {
+        const list = reverseTwins.get(target.slug) || [];
+        list.push(r);
+        reverseTwins.set(target.slug, list);
+      }
+    }
+    for (const r of rows) {
+      const twinMap = new Map<string, QuantFundCatalogRow>();
+      if (r.twin_code) {
+        const direct = lookup.get(r.twin_code.trim().toUpperCase());
+        if (direct && direct.slug !== r.slug) {
+          twinMap.set(direct.slug, direct);
+        }
+      }
+      for (const rev of reverseTwins.get(r.slug) || []) {
+        if (rev.slug !== r.slug && !twinMap.has(rev.slug)) {
+          twinMap.set(rev.slug, rev);
+        }
+      }
+      if (twinMap.size > 0) {
+        const sortedTwins = Array.from(twinMap.values()).sort((a, b) => {
+          const sameCcyA = a.currency === r.currency ? 0 : 1;
+          const sameCcyB = b.currency === r.currency ? 0 : 1;
+          if (sameCcyA !== sameCcyB) return sameCcyA - sameCcyB;
+          const oppDistA = a.is_distributing !== r.is_distributing ? 0 : 1;
+          const oppDistB = b.is_distributing !== r.is_distributing ? 0 : 1;
+          if (oppDistA !== oppDistB) return oppDistA - oppDistB;
+          return a.code.localeCompare(b.code);
+        });
+        r.twin_funds = sortedTwins.map((tw) => ({
+          slug: tw.slug,
+          code: tw.code,
+          aia_code: tw.aia_code,
+          name: tw.name,
+          currency: tw.currency,
+          is_distributing: tw.is_distributing,
+        }));
+        r.twin_codes = sortedTwins.map((tw) => tw.aia_code || tw.code);
+        if (!r.twin_code) {
+          r.twin_code = sortedTwins[0].aia_code || sortedTwins[0].code;
+        }
+      }
+    }
+    // Reference rowBySlug to silence any unused warning if needed
+    void rowBySlug;
+
+    if (rows.length > 0) {
+      catalogCache = { rows, lookup, expiresAt: Date.now() + CATALOG_TTL_MS };
+    }
+    return { rows, lookup };
+  } catch (err: any) {
+    console.error("loadQuantCatalog error:", err);
     return { rows: [], lookup: new Map() };
   }
 }
@@ -330,6 +520,162 @@ export async function resolveQuantFund(
   if (!identifier) return null;
   const { lookup } = await loadQuantCatalog(db);
   return lookup.get(identifier.trim().toUpperCase()) || null;
+}
+
+function arrayMedian(vals: number[]): number | null {
+  if (!vals.length) return null;
+  const s = [...vals].sort((a, b) => a - b);
+  const mid = Math.floor(s.length / 2);
+  return s.length % 2 === 1 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
+}
+
+export function normalizeMinorCurrency(currency: string | null | undefined): {
+  currency: string;
+  unitScale: number;
+} {
+  const raw = (currency || "USD").trim();
+  if (!raw) return { currency: "USD", unitScale: 1 };
+  // Check exact case-sensitive "GBp"/"ZAc" BEFORE uppercasing ("GBP" is pounds, "GBp" is pence)
+  if (raw === "GBp" || raw.toUpperCase() === "GBX") return { currency: "GBP", unitScale: 0.01 };
+  if (raw === "ZAc" || raw.toUpperCase() === "ZAC") return { currency: "ZAR", unitScale: 0.01 };
+  if (raw.toUpperCase() === "ILA") return { currency: "ILS", unitScale: 0.01 };
+  if (raw.toUpperCase() === "USX") return { currency: "USD", unitScale: 0.01 };
+  return { currency: raw.toUpperCase(), unitScale: 1 };
+}
+
+export function sanitizeQuantSeries(
+  rawDates: string[],
+  rawNav: number[],
+  rawAdjNav: number[],
+  rawDividends: Record<string, number>
+): {
+  dates: string[];
+  nav: number[];
+  adj_nav: number[];
+  dividends: Record<string, number>;
+} {
+  const n = Math.min(rawDates.length, rawNav.length);
+  if (n < 3) {
+    return {
+      dates: [...rawDates],
+      nav: [...rawNav],
+      adj_nav: [...rawAdjNav],
+      dividends: { ...rawDividends },
+    };
+  }
+
+  const dates = rawDates.slice(0, n);
+  const nav = rawNav.slice(0, n);
+  const adj = Array.from({ length: n }, (_, i) =>
+    Number.isFinite(rawAdjNav[i]) && rawAdjNav[i] > 0 ? rawAdjNav[i] : nav[i]
+  );
+  const dividends: Record<string, number> = { ...rawDividends };
+
+  // Step 1: Normalize 100x currency-regime flips anchored to terminal window
+  const tail = nav.slice(Math.max(0, n - 10)).filter((v) => v > 0 && Number.isFinite(v));
+  const anchor = arrayMedian(tail);
+  if (anchor && anchor > 0) {
+    for (let i = 0; i < n; i++) {
+      const v = nav[i];
+      if (!Number.isFinite(v) || v <= 0) continue;
+      const ratio = v / anchor;
+      let scale = 1;
+      if (ratio >= 50 && ratio <= 200) scale = 0.01;
+      else if (ratio >= 0.005 && ratio <= 0.02) scale = 100;
+      if (scale !== 1) {
+        nav[i] = Number((nav[i] * scale).toFixed(6));
+        adj[i] = Number((adj[i] * scale).toFixed(6));
+        const dt = dates[i];
+        const dv = dividends[dt];
+        if (dv && dv > 0) {
+          if (scale === 0.01 && dv / nav[i] > 0.2) {
+            dividends[dt] = Number((dv * scale).toFixed(6));
+          } else if (scale === 100 && (dv * 100) / nav[i] <= 0.15 && dv / v <= 0.15) {
+            dividends[dt] = Number((dv * scale).toFixed(6));
+          }
+        }
+      }
+    }
+  }
+
+  // Step 2: Repair 1..5 bar transient glitches (longest block first; endpoints must match baseline)
+  for (let k = Math.min(5, Math.max(1, n - 4)); k >= 1; k--) {
+    for (let i = 2; i <= n - k - 2; i++) {
+      const pre = nav.slice(Math.max(0, i - 3), i).filter((x) => x > 0);
+      const post = nav.slice(i + k, Math.min(n, i + k + 3)).filter((x) => x > 0);
+      const preMed = arrayMedian(pre);
+      const postMed = arrayMedian(post);
+      if (!preMed || !postMed) continue;
+      const drift = preMed / postMed;
+      if (drift < 0.65 || drift > 1.54) continue;
+      const baseline = 0.5 * (preMed + postMed);
+      const leftNav = nav[i - 1];
+      const rightNav = nav[i + k];
+      if (
+        !(leftNav > 0 && rightNav > 0 && leftNav / baseline >= 0.65 && leftNav / baseline <= 1.54 && rightNav / baseline >= 0.65 && rightNav / baseline <= 1.54)
+      ) {
+        continue;
+      }
+      let allGlitched = true;
+      for (let j = i; j < i + k; j++) {
+        if (nav[j] <= 0) continue;
+        const r = nav[j] / baseline;
+        if (r <= 2.5 && r >= 0.4) {
+          allGlitched = false;
+          break;
+        }
+      }
+      if (allGlitched) {
+        const leftAdj = adj[i - 1];
+        const rightAdj = adj[i + k];
+        const span = k + 1;
+        for (let step = 0; step < k; step++) {
+          const j = i + step;
+          const frac = (step + 1) / span;
+          nav[j] = Number((leftNav + (rightNav - leftNav) * frac).toFixed(6));
+          adj[j] = Number((leftAdj + (rightAdj - leftAdj) * frac).toFixed(6));
+        }
+        i += k - 1;
+      }
+    }
+  }
+
+  // Step 3: Guard single-bar minor-unit dividends on major-unit NAV (or impossible >25% single dividend)
+  const navByDate = new Map<string, number>();
+  for (let i = 0; i < n; i++) navByDate.set(dates[i], nav[i]);
+  for (const [dt, dv] of Object.entries(dividends)) {
+    const px = navByDate.get(dt);
+    if (!px || px <= 0 || dv <= 0) continue;
+    const singleYield = dv / px;
+    if (singleYield > 0.2) {
+      if ((dv / 100) / px <= 0.15) {
+        dividends[dt] = Number((dv / 100).toFixed(6));
+      } else if (singleYield > 0.25) {
+        delete dividends[dt];
+      }
+    }
+  }
+
+  return { dates, nav, adj_nav: adj, dividends };
+}
+
+export function unpackSeriesDates(parsed: any): string[] {
+  if (Array.isArray(parsed?.d) && parsed.d.length > 0) {
+    return parsed.d.map((s: any) => String(s).slice(0, 10));
+  }
+  if (typeof parsed?.d0 === "string" && parsed.d0.length >= 10 && Array.isArray(parsed?.dd)) {
+    const startMs = Date.parse(`${parsed.d0.slice(0, 10)}T00:00:00Z`);
+    if (!Number.isFinite(startMs)) return [];
+    const out: string[] = [parsed.d0.slice(0, 10)];
+    let curMs = startMs;
+    for (let i = 0; i < parsed.dd.length; i++) {
+      const delta = Number(parsed.dd[i]);
+      curMs += (Number.isFinite(delta) ? delta : 1) * 86400_000;
+      out.push(new Date(curMs).toISOString().slice(0, 10));
+    }
+    return out;
+  }
+  return [];
 }
 
 export async function getQuantFundSeries(
@@ -350,28 +696,30 @@ export async function getQuantFundSeries(
       return null;
     }
     const parsed = JSON.parse(row.series_json);
-    const dates: string[] = Array.isArray(parsed.d) ? parsed.d : [];
-    const nav: number[] = Array.isArray(parsed.n) ? parsed.n : [];
-    const adj_nav: number[] = Array.isArray(parsed.a) ? parsed.a : nav;
-    const dividends: Record<string, number> = {};
+    const rawDates: string[] = unpackSeriesDates(parsed);
+    const rawNav: number[] = Array.isArray(parsed.n) ? parsed.n : [];
+    const rawAdjNav: number[] =
+      Array.isArray(parsed.a) && parsed.a.length === rawNav.length ? parsed.a : rawNav;
+    const rawDividends: Record<string, number> = {};
     if (Array.isArray(parsed.v)) {
       for (const pair of parsed.v) {
         if (Array.isArray(pair) && pair.length >= 2) {
-          const dt = dates[Number(pair[0])];
+          const dt = rawDates[Number(pair[0])];
           const amt = Number(pair[1]);
-          if (dt && amt > 0) dividends[dt] = amt;
+          if (dt && amt > 0) rawDividends[dt] = amt;
         }
       }
     }
+    const cleaned = sanitizeQuantSeries(rawDates, rawNav, rawAdjNav, rawDividends);
     const unpacked: UnpackedFundSeries = {
       slug: row.slug,
-      currency: (row.currency || "USD").toUpperCase(),
+      currency: normalizeMinorCurrency(row.currency).currency,
       series_type: row.series_type || parsed.t || "market_etf",
       source: row.source || parsed.s || "yfinance",
-      dates,
-      nav,
-      adj_nav,
-      dividends,
+      dates: cleaned.dates,
+      nav: cleaned.nav,
+      adj_nav: cleaned.adj_nav,
+      dividends: cleaned.dividends,
     };
     seriesCache.set(slug, { data: unpacked, expiresAt: Date.now() + SERIES_TTL_MS });
     return unpacked;
@@ -399,7 +747,7 @@ export async function getQuantFxSeries(db: D1Database, pair: string): Promise<Un
     const unpacked: UnpackedFxSeries = {
       pair: row.pair,
       latest_rate: Number(row.latest_rate || 1.0),
-      dates: Array.isArray(parsed.d) ? parsed.d : [],
+      dates: unpackSeriesDates(parsed),
       rates: Array.isArray(parsed.r) ? parsed.r : [],
     };
     fxSeriesCache.set(key, { data: unpacked, expiresAt: Date.now() + SERIES_TTL_MS });
@@ -427,12 +775,14 @@ export async function getQuantBenchmarkSeries(
       return null;
     }
     const parsed = JSON.parse(row.series_json);
+    const closeArr: number[] = Array.isArray(parsed.c) ? parsed.c : [];
     const unpacked: UnpackedBenchmarkSeries = {
       code: row.code,
       currency: (row.currency || "USD").toUpperCase(),
-      dates: Array.isArray(parsed.d) ? parsed.d : [],
-      close: Array.isArray(parsed.c) ? parsed.c : [],
-      adj_close: Array.isArray(parsed.a) ? parsed.a : parsed.c || [],
+      dates: unpackSeriesDates(parsed),
+      close: closeArr,
+      adj_close:
+        Array.isArray(parsed.a) && parsed.a.length === closeArr.length ? parsed.a : closeArr,
     };
     bmSeriesCache.set(code, { data: unpacked, expiresAt: Date.now() + SERIES_TTL_MS });
     return unpacked;
@@ -497,22 +847,35 @@ interface BenchmarkRecipe {
 
 function selectBenchmarkRecipe(fund: Partial<QuantFundCatalogRow> | null): BenchmarkRecipe {
   const ac = String(fund?.asset_class || "").toLowerCase();
+  const codeUpper = String(fund?.code || "").trim().toUpperCase().replace(/\.[A-Z]+$/, "");
   const name = `${fund?.name || ""} ${fund?.name_en || ""}`;
   const nameLower = name.toLowerCase();
   const bmCode = String(fund?.benchmark_code || "").trim();
 
-  // 1. 现金 / 货币市场基金 (如 M13 富达美元现金基金)
+  // 1. 现金 / 货币市场基金 (如 M13 富达美元现金基金, IB01/IB0D 0-1yr)
   if (
     ac.includes("货币") ||
     ac.includes("现金") ||
     ac.includes("cash") ||
     bmCode === "BIL" ||
+    ["IB01", "IB0D", "IBTU", "SGOV", "BIL"].includes(codeUpper) ||
     name.includes("美元現金") ||
     name.includes("美元现金") ||
     name.includes("货币") ||
     nameLower.includes("cash") ||
-    nameLower.includes("money market")
+    nameLower.includes("money market") ||
+    nameLower.includes("0-1yr")
   ) {
+    if (["IBTA", "IBTS", "IDBT", "SHY"].includes(codeUpper) || nameLower.includes("1-3yr")) {
+      return {
+        legs: [
+          { code: "BIL", weight: 0.5 },
+          { code: "AGG", weight: 0.5 },
+        ],
+        betaMultiplier: 1.0,
+        proxyLabel: "50% BIL + 50% AGG 短债基准",
+      };
+    }
     return {
       legs: [{ code: "BIL", weight: 1.0 }],
       betaMultiplier: 1.0,
@@ -552,8 +915,36 @@ function selectBenchmarkRecipe(fund: Partial<QuantFundCatalogRow> | null): Bench
     name.includes("債券") ||
     name.includes("债券") ||
     nameLower.includes("bond") ||
-    nameLower.includes("fixed income")
+    nameLower.includes("fixed income") ||
+    nameLower.includes("treasury")
   ) {
+    if (
+      ["IBTA", "IBTS", "IDBT", "SHY"].includes(codeUpper) ||
+      nameLower.includes("1-3yr") ||
+      nameLower.includes("short term") ||
+      name.includes("短期")
+    ) {
+      return {
+        legs: [
+          { code: "BIL", weight: 0.5 },
+          { code: "AGG", weight: 0.5 },
+        ],
+        betaMultiplier: 1.0,
+        proxyLabel: "50% BIL + 50% AGG 短债基准",
+      };
+    }
+    if (
+      ["DTLA", "IDTL", "TLT", "EDV", "ZROZ"].includes(codeUpper) ||
+      nameLower.includes("20+yr") ||
+      nameLower.includes("20+") ||
+      name.includes("超长期")
+    ) {
+      return {
+        legs: [{ code: "AGG", weight: 1.0 }],
+        betaMultiplier: 2.1,
+        proxyLabel: "AGG 长久期美债弹性校准基准",
+      };
+    }
     if (
       name.includes("高收益") ||
       name.includes("高息") ||
@@ -574,7 +965,43 @@ function selectBenchmarkRecipe(fund: Partial<QuantFundCatalogRow> | null): Bench
     };
   }
 
-  // 4. 大中华 / 香港 / 中国股票基金 (如 A17 柏瑞大中华股票基金)
+  // 4. 标普 500 & 纳指/科技成长（优先于泛美股/国际股票）
+  if (
+    ["CNDX", "EQAC", "EQQQ", "EQQU", "IUIT", "QQQ", "QQQM", "XLK"].includes(codeUpper) ||
+    nameLower.includes("nasdaq") ||
+    nameLower.includes("information technology") ||
+    name.includes("纳斯达克") ||
+    name.includes("生物科技") ||
+    name.includes("科技") ||
+    name.includes("健康") ||
+    name.includes("医疗") ||
+    name.includes("醫療") ||
+    nameLower.includes("biotech") ||
+    nameLower.includes("technology") ||
+    nameLower.includes("health")
+  ) {
+    const code = bmCode || "SPY";
+    return {
+      legs: [{ code, weight: 1.0 }],
+      betaMultiplier: ["CNDX", "EQAC", "EQQQ", "EQQU", "IUIT", "QQQ"].includes(codeUpper) ? 1.2 : 1.15,
+      proxyLabel: `${code} 科技成长弹性校准基准`,
+    };
+  }
+
+  if (
+    ["CSPX", "VUAA", "SPYL", "VUSD", "IUSA", "IDUS", "SPY", "VOO", "IVV"].includes(codeUpper) ||
+    nameLower.includes("s&p 500") ||
+    name.includes("标普500") ||
+    name.includes("标普 500")
+  ) {
+    return {
+      legs: [{ code: "SPY", weight: 1.0 }],
+      betaMultiplier: 1.0,
+      proxyLabel: "SPY 标普500基准",
+    };
+  }
+
+  // 5. 大中华 / 香港 / 中国股票基金 (如 A17 柏瑞大中华股票基金)
   if (
     name.includes("大中華") ||
     name.includes("大中华") ||
@@ -601,31 +1028,12 @@ function selectBenchmarkRecipe(fund: Partial<QuantFundCatalogRow> | null): Bench
     };
   }
 
-  // 5. 日本股票基金
+  // 6. 日本股票基金
   if (name.includes("日本") || nameLower.includes("japan") || bmCode === "1306.T") {
     return {
       legs: [{ code: "1306.T", weight: 1.0 }],
       betaMultiplier: 1.0,
       proxyLabel: "1306.T 日本东证指数基准",
-    };
-  }
-
-  // 6. 行业高弹性成长基金：生物科技 / 科技 / 医疗健康 (如 D05 富兰克林生物科技)
-  if (
-    name.includes("生物科技") ||
-    name.includes("科技") ||
-    name.includes("健康") ||
-    name.includes("医疗") ||
-    name.includes("醫療") ||
-    nameLower.includes("biotech") ||
-    nameLower.includes("technology") ||
-    nameLower.includes("health")
-  ) {
-    const code = bmCode || "SPY";
-    return {
-      legs: [{ code, weight: 1.0 }],
-      betaMultiplier: 1.15,
-      proxyLabel: `${code} 行业高弹性校准基准`,
     };
   }
 

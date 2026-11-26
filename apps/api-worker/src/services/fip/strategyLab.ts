@@ -64,11 +64,18 @@ export interface StrategyLabAnalysisResult {
       ilas_platform?: string | null;
       is_proxy?: boolean;
       proxy_benchmark?: string | null;
+      real_start_date?: string | null;
+      backstitched_from?: string | null;
     }
   >;
   valid_assets: string[];
   data_points: number;
   data_warnings: string[];
+  sample_window?: {
+    start_date: string;
+    end_date: string;
+    trading_days: number;
+  };
   cma_mode?: "forward_looking" | "shrunk" | "ltcma" | "raw";
   base_currency?: string;
   macro_snapshot?: {
@@ -83,7 +90,12 @@ export interface StrategyLabAnalysisResult {
     regime_flags: string[];
     source: string;
   };
-  efficient_frontier?: Array<{ vol: number; ret: number; sharpe: number }>;
+  efficient_frontier?: Array<{
+    vol: number;
+    ret: number;
+    sharpe: number;
+    allocations?: Record<string, number>;
+  }>;
   portfolio_diagnostics?: {
     max_drawdown: number;
     sortino_ratio: number;
@@ -340,32 +352,54 @@ export function classifyAsset(isin: string, name?: string, meta?: any): AssetCla
     return CMA_PRIORS.US_DIVIDEND_VALUE;
   }
 
-  // 6. 新兴市场与成熟市场
-  if (["VWO", "EEM", "IEMG"].includes(upper) || nameUpper.includes("EMERGING") || rawName.includes("新兴市场")) {
-    return CMA_PRIORS.EMERGING_MARKETS_EQUITY;
-  }
+  // 6. 美股宽基（优先于发达市场判定，避免 .L 后缀的爱尔兰 S&P 500 UCITS ETF 被误归为全球发达市场）
   if (
-    ["EFV", "EFA", "VEA", "IEFA", "SCZ"].includes(upper) ||
-    upper.endsWith(".L") ||
-    upper.endsWith(".PA") ||
-    upper.endsWith(".DE") ||
-    upper.endsWith(".T") ||
-    nameUpper.includes("EAFE") ||
-    nameUpper.includes("DEVELOPED") ||
-    rawName.includes("发达市场")
-  ) {
-    return CMA_PRIORS.GLOBAL_DEVELOPED_EQUITY;
-  }
-
-  // 7. 美股宽基
-  if (
-    ["SPY", "VOO", "IVV", "VTI", "ITOT", "DIA", "IWM", "RSP", "SCHX"].includes(upper) ||
+    [
+      "SPY",
+      "VOO",
+      "IVV",
+      "VTI",
+      "ITOT",
+      "DIA",
+      "IWM",
+      "RSP",
+      "SCHX",
+      "CSPX",
+      "CSPX.L",
+      "VUAA",
+      "VUAA.L",
+      "SPYL",
+      "SPYL.L",
+      "VUSD",
+      "VUSD.L",
+      "IUSA",
+      "IUSA.L",
+      "IDUS",
+      "IDUS.L",
+    ].includes(upper) ||
     nameUpper.includes("S&P 500") ||
     nameUpper.includes("TOTAL STOCK") ||
     nameUpper.includes("RUSSELL") ||
     rawName.includes("标普500")
   ) {
     return CMA_PRIORS.US_BROAD_EQUITY;
+  }
+
+  // 7. 新兴市场与成熟市场
+  if (["VWO", "EEM", "IEMG"].includes(upper) || nameUpper.includes("EMERGING") || rawName.includes("新兴市场")) {
+    return CMA_PRIORS.EMERGING_MARKETS_EQUITY;
+  }
+  if (
+    ["EFV", "EFA", "VEA", "IEFA", "SCZ", "IWDA", "IWDA.L", "URTH"].includes(upper) ||
+    upper.endsWith(".T") ||
+    nameUpper.includes("EAFE") ||
+    nameUpper.includes("MSCI WORLD") ||
+    nameUpper.includes("DEVELOPED") ||
+    nameUpper.includes("EUROPE") ||
+    rawName.includes("发达市场") ||
+    rawName.includes("欧洲")
+  ) {
+    return CMA_PRIORS.GLOBAL_DEVELOPED_EQUITY;
   }
 
   return CMA_PRIORS.GLOBAL_EQUITY_GENERAL;
@@ -480,6 +514,89 @@ export class StrategyLab {
       throw new Error("未能获取到任何所选资产的有效历史数据");
     }
 
+    // 1.5 消除「木桶短板截断效应」：若个别次新基金成立时间显著晚于组合其他资产（>90天），
+    // 在其成立日前按同赛道基准收益率无缝回溯拼接，保留 100% 真实存续期行情
+    const sortedDatesByIsin: Record<string, string[]> = {};
+    let earliestStart = "9999-12-31";
+    for (const isin of validIsins) {
+      const ds = Object.keys(rawSeriesMap[isin] || {}).sort();
+      sortedDatesByIsin[isin] = ds;
+      if (ds.length > 0 && ds[0] < earliestStart) {
+        earliestStart = ds[0];
+      }
+    }
+    const earliestMs = Date.parse(`${earliestStart}T00:00:00Z`);
+    const backstitchMetaMap: Record<string, { realStartDate: string; proxyLabel: string }> = {};
+
+    await Promise.all(
+      validIsins.map(async (isin) => {
+        if (proxyMetaMap[isin]) return; // 已是全段代理，无需再拼
+        const ds = sortedDatesByIsin[isin];
+        if (!ds || ds.length === 0) return;
+        const firstRealDate = ds[0];
+        const firstRealMs = Date.parse(`${firstRealDate}T00:00:00Z`);
+        if (!Number.isFinite(earliestMs) || !Number.isFinite(firstRealMs)) return;
+        if (firstRealMs - earliestMs <= 90 * 86400 * 1000) return;
+
+        const qFund = quantMetaMap[isin];
+        try {
+          const proxy = await buildBenchmarkProxySeries(
+            this.db,
+            qFund || { code: isin, name: isin },
+            daysBack,
+            targetCcy
+          );
+          if (!proxy || Object.keys(proxy.series).length < 20) return;
+          const proxyDates = Object.keys(proxy.series).sort();
+          if (proxyDates[0] >= firstRealDate) return;
+
+          // 查找首个重叠锚点（优先 real 首日起的重叠日，其次代理末个 <= firstRealDate 的点）
+          let anchorReal = rawSeriesMap[isin][firstRealDate];
+          let anchorProxy = proxy.series[firstRealDate];
+          if (!(anchorProxy > 0)) {
+            for (const d of ds) {
+              if (proxy.series[d] && proxy.series[d] > 0) {
+                anchorReal = rawSeriesMap[isin][d];
+                anchorProxy = proxy.series[d];
+                break;
+              }
+            }
+          }
+          if (!(anchorProxy > 0)) {
+            for (let k = proxyDates.length - 1; k >= 0; k--) {
+              const d = proxyDates[k];
+              if (d <= firstRealDate && proxy.series[d] > 0) {
+                anchorProxy = proxy.series[d];
+                break;
+              }
+            }
+          }
+          if (!(anchorReal > 0) || !(anchorProxy > 0)) return;
+
+          const scale = anchorReal / anchorProxy;
+          let addedCount = 0;
+          for (const d of proxyDates) {
+            if (d >= firstRealDate) break;
+            if (d < earliestStart) continue;
+            const pv = proxy.series[d];
+            if (pv > 0) {
+              rawSeriesMap[isin][d] = Math.round(pv * scale * 1e6) / 1e6;
+              addedCount++;
+            }
+          }
+          if (addedCount >= 20) {
+            backstitchMetaMap[isin] = { realStartDate: firstRealDate, proxyLabel: proxy.proxyLabel };
+            const label = qFund ? `${qFund.code} (${qFund.name})` : isin;
+            warnings.push(
+              `资产 ${label} 成立于 ${firstRealDate}，为避免截断组合跨周期样本，其成立前区间已按对标基准 [${proxy.proxyLabel}]${proxy.feeDragPct > 0 ? `（含 ${proxy.feeDragPct}% 年费率校准）` : ""} 无缝回溯拼接（保留 ${firstRealDate} 后 100% 真实行情）。`
+            );
+          }
+        } catch {
+          // ignore backstitch error and fall back gracefully
+        }
+      })
+    );
+
     // 2. 日期求交集对齐
     let commonDates = Object.keys(rawSeriesMap[validIsins[0]] || {});
     for (let i = 1; i < validIsins.length; i++) {
@@ -552,7 +669,7 @@ export class StrategyLab {
         if (md && md.name) assetName = md.name;
         if (md && md.price > 0) {
           const dm = await getDividendMetrics(this.db, isin);
-          divYield = Math.max(0, Math.min(0.2, (dm.trailing_sum || 0) / md.price));
+          divYield = Math.max(0, Math.min(0.18, (dm.trailing_sum || 0) / md.price));
         }
       } catch {
         // ignore
@@ -560,7 +677,7 @@ export class StrategyLab {
 
       // 若 Yahoo 未返回或为 0，优先回退到量化库实际维护的 div_yield_ttm
       if (divYield === 0 && qMeta && typeof qMeta.div_yield_ttm === "number" && qMeta.div_yield_ttm > 0) {
-        divYield = Math.max(0, Math.min(0.2, qMeta.div_yield_ttm));
+        divYield = Math.max(0, Math.min(0.18, qMeta.div_yield_ttm));
       }
 
       // 获取资产大类基准先验 (CMA Prior，结合 qMeta 识别中国资产与债券)
@@ -639,7 +756,9 @@ export class StrategyLab {
             }
           : {}),
         is_proxy: Boolean(proxyMetaMap[isin]),
-        proxy_benchmark: proxyMetaMap[isin]?.proxyLabel || null,
+        proxy_benchmark: proxyMetaMap[isin]?.proxyLabel || backstitchMetaMap[isin]?.proxyLabel || null,
+        real_start_date: sortedDatesByIsin[isin]?.[0] || commonDates[0] || null,
+        backstitched_from: backstitchMetaMap[isin]?.realStartDate || null,
       };
     }
 
@@ -786,75 +905,6 @@ export class StrategyLab {
     // 上限若不可行（n × cap < 1），退化为等权
     const feasibleCap = maxBound * validIsins.length >= 1 - 1e-9 ? maxBound : 1.0;
 
-    // 同步采样有效前沿候选点（按波动率分桶取每桶最高收益点，零额外计算开销）
-    const frontierCandidates: Array<{ vol: number; ret: number; sharpe: number }> = [];
-
-    for (let t = 0; t < trials; t++) {
-      // Dirichlet(1,...,1) 随机分配
-      const raw = validIsins.map(() => -Math.log(Math.random() + 1e-12));
-      const sumRaw = raw.reduce((a, b) => a + b, 0);
-      const candidate = projectToCappedSimplex(
-        raw.map((r) => r / sumRaw),
-        feasibleCap
-      );
-
-      // 计算当前权重表现
-      let pRet = 0;
-      let pVar = 0;
-      for (const a of validIsins) {
-        pRet += candidate[a] * meanReturns[a];
-        for (const b of validIsins) {
-          pVar += candidate[a] * candidate[b] * covMatrix[a][b];
-        }
-      }
-      const pVol = Math.sqrt(Math.max(1e-6, pVar));
-      const sharpe = (pRet - liveRfRate) / pVol;
-
-      if (t % 2 === 0) {
-        frontierCandidates.push({ vol: pVol, ret: pRet, sharpe });
-      }
-
-      if (sharpe > bestSharpeVal) {
-        bestSharpeVal = sharpe;
-        bestSharpeAlloc = { ...candidate };
-      }
-      if (pVol < minVolVal) {
-        minVolVal = pVol;
-        minVolAlloc = { ...candidate };
-      }
-    }
-
-    // 提炼 20 点严格单调递增的有效前沿包络线
-    const efficientFrontier: Array<{ vol: number; ret: number; sharpe: number }> = [];
-    if (frontierCandidates.length > 0) {
-      let minV = Infinity;
-      let maxV = -Infinity;
-      for (const pt of frontierCandidates) {
-        if (pt.vol < minV) minV = pt.vol;
-        if (pt.vol > maxV) maxV = pt.vol;
-      }
-      const buckets = 20;
-      const step = Math.max(1e-5, (maxV - minV) / buckets);
-      const bestPerBucket: Array<{ vol: number; ret: number; sharpe: number } | null> = new Array(buckets).fill(null);
-      for (const pt of frontierCandidates) {
-        const idx = Math.min(buckets - 1, Math.floor((pt.vol - minV) / step));
-        if (!bestPerBucket[idx] || pt.ret > bestPerBucket[idx]!.ret) {
-          bestPerBucket[idx] = pt;
-        }
-      }
-      let runningBestRet = -Infinity;
-      for (const pt of bestPerBucket) {
-        if (pt && pt.ret >= runningBestRet) {
-          runningBestRet = pt.ret;
-          efficientFrontier.push({
-            vol: Math.round(pt.vol * 10000) / 10000,
-            ret: Math.round(pt.ret * 10000) / 10000,
-            sharpe: Math.round(pt.sharpe * 100) / 100,
-          });
-        }
-      }
-    }
-
     // 格式化百分比分配
     const cleanWeights = (w: Record<string, number>) => {
       const res: Record<string, number> = {};
@@ -869,11 +919,133 @@ export class StrategyLab {
       const drift = Math.round((1.0 - sum) * 1000) / 1000;
       if (validIsins.length > 0 && Math.abs(drift) > 0) {
         const sorted = [...validIsins].sort((a, b) => res[a] - res[b]);
-        const target = sorted.find((isin) => res[isin] + drift <= maxBound + 1e-9) || sorted[0];
+        const target = sorted.find((isin) => res[isin] + drift <= feasibleCap + 1e-9) || sorted[0];
         res[target] = Math.round((res[target] + drift) * 1000) / 1000;
       }
       return res;
     };
+
+    const scoreCandidateWeights = (candidate: Record<string, number>) => {
+      let pRet = 0;
+      let pVar = 0;
+      for (const a of validIsins) {
+        pRet += (candidate[a] || 0) * meanReturns[a];
+        for (const b of validIsins) {
+          pVar += (candidate[a] || 0) * (candidate[b] || 0) * covMatrix[a][b];
+        }
+      }
+      const pVol = Math.sqrt(Math.max(1e-6, pVar));
+      const sharpe = (pRet - liveRfRate) / pVol;
+      return { vol: pVol, ret: pRet, sharpe, allocations: candidate };
+    };
+
+    // 同步采样有效前沿候选点（保留每个点的配置权重，零额外计算开销）
+    const frontierCandidates: Array<{
+      vol: number;
+      ret: number;
+      sharpe: number;
+      allocations: Record<string, number>;
+    }> = [];
+
+    for (let t = 0; t < trials; t++) {
+      // Dirichlet(1,...,1) 随机分配
+      const raw = validIsins.map(() => -Math.log(Math.random() + 1e-12));
+      const sumRaw = raw.reduce((a, b) => a + b, 0);
+      const candidate = projectToCappedSimplex(
+        raw.map((r) => r / sumRaw),
+        feasibleCap
+      );
+
+      const scored = scoreCandidateWeights(candidate);
+      if (t % 2 === 0) {
+        frontierCandidates.push(scored);
+      }
+
+      if (scored.sharpe > bestSharpeVal) {
+        bestSharpeVal = scored.sharpe;
+        bestSharpeAlloc = { ...candidate };
+      }
+      if (scored.vol < minVolVal) {
+        minVolVal = scored.vol;
+        minVolAlloc = { ...candidate };
+      }
+    }
+
+    // 构造最高收益上限锚点与 MinVol → MaxSharpe → MaxRet 凸组合包络点，使前沿更平滑准确
+    const sortedByRet = [...validIsins].sort((a, b) => meanReturns[b] - meanReturns[a]);
+    const maxRetAlloc: Record<string, number> = {};
+    let remWeight = 1.0;
+    for (const isin of sortedByRet) {
+      const take = Math.min(feasibleCap, remWeight);
+      maxRetAlloc[isin] = take;
+      remWeight = Math.max(0, remWeight - take);
+    }
+
+    const anchorPairs: Array<[Record<string, number>, Record<string, number>]> = [
+      [minVolAlloc, bestSharpeAlloc],
+      [bestSharpeAlloc, maxRetAlloc],
+    ];
+    for (const [wA, wB] of anchorPairs) {
+      for (let step = 0; step <= 20; step++) {
+        const lam = step / 20;
+        const blendedRaw = validIsins.map(
+          (isin) => (1 - lam) * (wA[isin] || 0) + lam * (wB[isin] || 0)
+        );
+        const candidate = projectToCappedSimplex(blendedRaw, feasibleCap);
+        const scored = scoreCandidateWeights(candidate);
+        frontierCandidates.push(scored);
+        if (scored.sharpe > bestSharpeVal) {
+          bestSharpeVal = scored.sharpe;
+          bestSharpeAlloc = { ...candidate };
+        }
+        if (scored.vol < minVolVal) {
+          minVolVal = scored.vol;
+          minVolAlloc = { ...candidate };
+        }
+      }
+    }
+
+    // 提炼 20 点严格单调递增的有效前沿包络线（每点附带干净的配置比例）
+    const efficientFrontier: Array<{
+      vol: number;
+      ret: number;
+      sharpe: number;
+      allocations: Record<string, number>;
+    }> = [];
+    if (frontierCandidates.length > 0) {
+      let minV = Infinity;
+      let maxV = -Infinity;
+      for (const pt of frontierCandidates) {
+        if (pt.vol < minV) minV = pt.vol;
+        if (pt.vol > maxV) maxV = pt.vol;
+      }
+      const buckets = 20;
+      const step = Math.max(1e-5, (maxV - minV) / buckets);
+      const bestPerBucket: Array<{
+        vol: number;
+        ret: number;
+        sharpe: number;
+        allocations: Record<string, number>;
+      } | null> = new Array(buckets).fill(null);
+      for (const pt of frontierCandidates) {
+        const idx = Math.min(buckets - 1, Math.floor((pt.vol - minV) / step));
+        if (!bestPerBucket[idx] || pt.ret > bestPerBucket[idx]!.ret) {
+          bestPerBucket[idx] = pt;
+        }
+      }
+      let runningBestRet = -Infinity;
+      for (const pt of bestPerBucket) {
+        if (pt && pt.ret >= runningBestRet) {
+          runningBestRet = pt.ret;
+          efficientFrontier.push({
+            vol: Math.round(pt.vol * 10000) / 10000,
+            ret: Math.round(pt.ret * 10000) / 10000,
+            sharpe: Math.round(pt.sharpe * 100) / 100,
+            allocations: cleanWeights(pt.allocations),
+          });
+        }
+      }
+    }
 
     const maxSharpe = evaluatePortfolio(cleanWeights(bestSharpeAlloc));
     const minVol = evaluatePortfolio(cleanWeights(minVolAlloc));
@@ -1305,6 +1477,11 @@ export class StrategyLab {
       valid_assets: validIsins,
       data_points: tradingDays,
       data_warnings: warnings,
+      sample_window: {
+        start_date: commonDates[0] || "",
+        end_date: commonDates[commonDates.length - 1] || "",
+        trading_days: tradingDays,
+      },
       cma_mode: effectiveCmaMode,
       base_currency: targetCcy,
       macro_snapshot: {

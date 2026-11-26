@@ -37,17 +37,24 @@ class FundRecord(BaseModel):
     primary_source: PrimarySource = "none"
     data_tier: DataTier = "U"
     is_trackable: bool = True
+    is_vault_native: bool = True
     skip_reason: str | None = None
     status: str = "active"
     vault_last_updated: str | None = None
 
 
 class PackedSeriesPayload(BaseModel):
-    """Columnar compact time-series stored as 1 row per instrument in D1 Free Tier."""
+    """Columnar compact time-series stored as 1 row per instrument in D1 Free Tier.
 
-    d: list[str] = Field(default_factory=list)  # ISO dates YYYY-MM-DD
+    Uses anchor date `d0` + day offsets `dd` (and omits redundant `a` when identical to `n`)
+    so 15 years (~3,780 trading days) compresses well under Cloudflare D1's 100 KB SQL statement limit.
+    """
+
+    d0: str | None = None
+    dd: list[int] = Field(default_factory=list)
+    d: list[str] = Field(default_factory=list)
     n: list[float] = Field(default_factory=list)  # Clean unit NAV / close
-    a: list[float] = Field(default_factory=list)  # Total-return adjusted NAV
+    a: list[float] | None = None  # Total-return adjusted NAV (omitted if identical to n)
     v: list[list[float]] = Field(default_factory=list)  # Sparse dividends [[date_index, amount], ...]
     t: SeriesType = "market_etf"
     s: str = "yfinance"

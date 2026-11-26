@@ -20,6 +20,7 @@ export type ProductScope =
   | "all"
   | "non_ilas"
   | "aia_tmp2"
+  | "eu_ucits"
   | "global_etf"
   | "cn_hk_dividend"
   | "bonds_income";
@@ -38,6 +39,7 @@ export interface ClientAdvisoryProfile {
   product_scope?: ProductScope;
   ilp_planned?: boolean;
   notes?: string;
+  extra_notes?: string;
 }
 
 export interface TargetEnvelope {
@@ -129,6 +131,8 @@ export interface TacticalCandidateFund {
   slug: string;
   lab_id: string;
   code: string;
+  isin?: string | null;
+  yahoo_ticker?: string | null;
   name: string;
   asset_class: string;
   sleeve: "equity" | "bond" | "other";
@@ -149,6 +153,7 @@ export interface TacticalCandidateFund {
 export interface CustomFundBasket {
   key: "core" | "alternative";
   universe_mode: "ilas" | "non_ilas";
+  us_estate_tax_shield?: boolean;
   title_zh: string;
   title_en: string;
   subtitle_zh: string;
@@ -274,6 +279,7 @@ export function normalizeProfile(raw: Partial<ClientAdvisoryProfile>): ClientAdv
     "all",
     "non_ilas",
     "aia_tmp2",
+    "eu_ucits",
     "global_etf",
     "cn_hk_dividend",
     "bonds_income",
@@ -311,6 +317,7 @@ export function normalizeProfile(raw: Partial<ClientAdvisoryProfile>): ClientAdv
     riskScore = RISK_META[riskLevel].score;
   }
 
+  const rawNotes = String(raw.extra_notes ?? raw.notes ?? "").trim().slice(0, 1000);
   return {
     client_name: raw.client_name ? String(raw.client_name).trim().slice(0, 80) : "",
     age: raw.age != null && Number.isFinite(Number(raw.age)) ? clamp(Number(raw.age), 18, 95) : null,
@@ -330,7 +337,8 @@ export function normalizeProfile(raw: Partial<ClientAdvisoryProfile>): ClientAdv
         : null,
     product_scope: scope,
     ilp_planned: Boolean(raw.ilp_planned),
-    notes: raw.notes ? String(raw.notes).trim().slice(0, 300) : "",
+    notes: rawNotes,
+    extra_notes: rawNotes,
   };
 }
 
@@ -583,10 +591,54 @@ const CLASSIC_ARCHETYPES: ClassicSpec[] = [
   },
 ];
 
+const CLASSIC_UCITS_REMAP: Record<
+  string,
+  { isin: string; asset_class: string; label_zh: string; label_en: string }
+> = {
+  VTI: { isin: "VWRA", asset_class: "equity", label_zh: "全球全市场股票 (爱尔兰 UCITS)", label_en: "FTSE All-World (IE UCITS)" },
+  SPY: { isin: "CSPX", asset_class: "equity", label_zh: "标普 500 核心股票 (爱尔兰 UCITS)", label_en: "Core S&P 500 (IE UCITS)" },
+  VXUS: { isin: "MXWO", asset_class: "equity", label_zh: "发达国际股票 (爱尔兰 UCITS)", label_en: "Intl Equity (IE UCITS)" },
+  VEA: { isin: "MXWO", asset_class: "equity", label_zh: "发达国际股票 (爱尔兰 UCITS)", label_en: "Developed Intl (IE UCITS)" },
+  VBR: { isin: "IWVL", asset_class: "equity", label_zh: "全球价值因子股票 (爱尔兰 UCITS)", label_en: "World Value (IE UCITS)" },
+  VWO: { isin: "VHYD", asset_class: "equity", label_zh: "全球高股息股票 (爱尔兰 UCITS)", label_en: "All-World High Div (IE UCITS)" },
+  QQQ: { isin: "CNDX", asset_class: "equity", label_zh: "纳斯达克 100 科技成长 (爱尔兰 UCITS)", label_en: "NASDAQ 100 (IE UCITS)" },
+  BND: { isin: "AGGU", asset_class: "bond", label_zh: "全球综合债券美元对冲 (爱尔兰 UCITS)", label_en: "Global Aggregate Bond USD Hedged (IE UCITS)" },
+  IEF: { isin: "CBU0", asset_class: "bond", label_zh: "7-10年美国国债 (爱尔兰 UCITS)", label_en: "US 7-10Y Treasury (IE UCITS)" },
+  TLT: { isin: "DTLA", asset_class: "bond", label_zh: "20+年超长期美债 (爱尔兰 UCITS)", label_en: "US 20+Y Treasury (IE UCITS)" },
+  TIP: { isin: "CBU7", asset_class: "bond", label_zh: "3-7年中期美债替代 (爱尔兰 UCITS)", label_en: "US 3-7Y Treasury (IE UCITS)" },
+  BIL: { isin: "IB01", asset_class: "cash", label_zh: "0-1年超短美债 (爱尔兰 UCITS)", label_en: "US Treasury 0-1Y (IE UCITS)" },
+  SHY: { isin: "IBTA", asset_class: "bond", label_zh: "1-3年短期美债 (爱尔兰 UCITS)", label_en: "US 1-3Y Treasury (IE UCITS)" },
+  GLD: { isin: "VHYD", asset_class: "equity", label_zh: "高股息防御替代 (爱尔兰 UCITS)", label_en: "All-World High Div (IE UCITS)" },
+  DBC: { isin: "JREG", asset_class: "equity", label_zh: "全球核心分散替代 (爱尔兰 UCITS)", label_en: "Global Core Diversifier (IE UCITS)" },
+  VNQ: { isin: "VHYD", asset_class: "equity", label_zh: "全球高股息收益替代 (爱尔兰 UCITS)", label_en: "All-World High Div (IE UCITS)" },
+};
+
+function remapHoldingsToUcits(holdings: ClassicTemplateHolding[]): ClassicTemplateHolding[] {
+  const merged = new Map<string, ClassicTemplateHolding>();
+  for (const h of holdings) {
+    const mapped = CLASSIC_UCITS_REMAP[h.isin.toUpperCase()];
+    const targetIsin = mapped ? mapped.isin : h.isin;
+    const prev = merged.get(targetIsin);
+    if (prev) {
+      prev.weight_pct = Math.round((prev.weight_pct + h.weight_pct) * 10) / 10;
+    } else {
+      merged.set(targetIsin, {
+        isin: targetIsin,
+        weight_pct: h.weight_pct,
+        asset_class: mapped ? mapped.asset_class : h.asset_class,
+        label_zh: mapped ? mapped.label_zh : h.label_zh,
+        label_en: mapped ? mapped.label_en : h.label_en,
+      });
+    }
+  }
+  return Array.from(merged.values());
+}
+
 export function matchClassicTemplates(
   profile: ClientAdvisoryProfile,
   envelope: TargetEnvelope
 ): ClassicTemplateMatch[] {
+  const useUcitsRemap = resolveBasketUniverseMode(profile) === "non_ilas" && hasUsEstateTaxConcern(profile);
   const scored = CLASSIC_ARCHETYPES.map((spec) => {
     const equityDiff = Math.abs(spec.equity_pct - envelope.target_equity_pct);
     const bondDiff = Math.abs(spec.bond_pct - envelope.target_bond_pct);
@@ -605,6 +657,9 @@ export function matchClassicTemplates(
     const matchScore = Math.round(clamp(score, 40, 99));
 
     const reasons: string[] = [];
+    if (useUcitsRemap) {
+      reasons.push("已自动映射为爱尔兰/卢森堡 UCITS 标的以规避美国遗产税");
+    }
     if (equityDiff <= 15) {
       reasons.push(`股票仓位 ${spec.equity_pct}% 贴合客户目标（${envelope.target_equity_pct}%）`);
     }
@@ -620,8 +675,8 @@ export function matchClassicTemplates(
 
     return {
       id: spec.id,
-      name_zh: spec.name_zh,
-      name_en: spec.name_en,
+      name_zh: useUcitsRemap ? `${spec.name_zh}（UCITS 欧基版）` : spec.name_zh,
+      name_en: useUcitsRemap ? `${spec.name_en} (IE/LU UCITS)` : spec.name_en,
       origin: spec.origin,
       idea_zh: spec.idea_zh,
       idea_en: spec.idea_en,
@@ -630,7 +685,7 @@ export function matchClassicTemplates(
       equity_pct: spec.equity_pct,
       bond_pct: spec.bond_pct,
       other_pct: spec.other_pct,
-      holdings: spec.holdings,
+      holdings: useUcitsRemap ? remapHoldingsToUcits(spec.holdings) : spec.holdings,
     };
   });
 
@@ -688,13 +743,20 @@ export async function matchExistingPortfolios(
       let bondWeight = 0;
       let ilasCount = 0;
       let nonIlasCount = 0;
+      let usSitusCount = 0;
+      let nonUsNonIlasCount = 0;
       for (const [k, v] of allocEntries) {
         const w = rawSum > 1.001 ? Number(v) / rawSum : Number(v) / (rawSum || 1);
         normAlloc[k] = Math.round(w * 1000) / 10; // store %
         const meta = catalogLookup.get(k.toUpperCase());
         if (meta) {
-          if (isIlasFund(meta)) ilasCount++;
-          else nonIlasCount++;
+          if (isIlasFund(meta)) {
+            ilasCount++;
+          } else {
+            nonIlasCount++;
+            if (getFundDomicile(meta) === "US") usSitusCount++;
+            else nonUsNonIlasCount++;
+          }
           const ac = meta.asset_class || "";
           if (ac.includes("固") || ac.includes("债") || ac.includes("货币")) bondWeight += w * 100;
           else eqWeight += w * 100;
@@ -763,6 +825,15 @@ export async function matchExistingPortfolios(
           score -= 18;
           watchouts.push("含投连险平台标的（与纯非投连险架构隔离）");
         }
+        if (hasUsEstateTaxConcern(profile)) {
+          if (usSitusCount > 0) {
+            score -= 20;
+            watchouts.push("含美国本土注册 ETF（存在非美居民美股遗产税敞口，建议改配爱尔兰/卢森堡 UCITS 标的）");
+          } else if (nonUsNonIlasCount > 0 && ilasCount === 0) {
+            score += 12;
+            fitReasons.push("采用非美税籍（爱尔兰/卢森堡/香港）注册标的，规避美股遗产税敞口");
+          }
+        }
       }
 
       if (allocEntries.length <= 2) {
@@ -794,21 +865,172 @@ export async function matchExistingPortfolios(
 }
 
 export function classifyFundSleeve(row: QuantFundCatalogRow): "equity" | "bond" | "other" {
-  const ac = `${row.asset_class || ""} ${row.ilas_platform || ""}`.toLowerCase();
+  const ac = (row.asset_class || "").toLowerCase();
+  if (
+    ac.includes("多元") ||
+    ac.includes("混合") ||
+    ac.includes("平衡") ||
+    ac.includes("商品") ||
+    ac.includes("黄金") ||
+    ac.includes("multi") ||
+    ac.includes("balanced") ||
+    ac.includes("commodity") ||
+    ac.includes("gold")
+  ) {
+    return "other";
+  }
   if (
     ac.includes("固") ||
     ac.includes("债") ||
     ac.includes("货币") ||
+    ac.includes("票据") ||
     ac.includes("bond") ||
     ac.includes("fixed") ||
-    ac.includes("cash")
+    ac.includes("cash") ||
+    ac.includes("treasury") ||
+    ac.includes("t-bill")
   ) {
     return "bond";
   }
-  if (ac.includes("多元") || ac.includes("混合") || ac.includes("平衡") || ac.includes("商品") || ac.includes("黄金")) {
-    return "other";
+  if (ac.includes("股") || ac.includes("权益") || ac.includes("equity") || ac.includes("stock")) {
+    return "equity";
+  }
+  const nm = (row.name || "").toLowerCase();
+  if (
+    nm.includes("bond") ||
+    nm.includes("treasury") ||
+    nm.includes("t-bill") ||
+    nm.includes("fixed income") ||
+    nm.includes("债") ||
+    nm.includes("货币")
+  ) {
+    return "bond";
   }
   return "equity";
+}
+
+export type FundDomicile = "IE" | "LU" | "EU_UCITS" | "HK" | "CN" | "JP" | "US" | "OTHER";
+
+const IE_UCITS_CODES = new Set([
+  "IWDA",
+  "IWVG",
+  "IWVL",
+  "JREG",
+  "MXWO",
+  "VHYA",
+  "VHYD",
+  "VHYL",
+  "IB01",
+  "IB0D",
+  "IBTU",
+  "IBTA",
+  "IBTS",
+  "IDBT",
+  "CBU7",
+  "CBU0",
+  "IDTM",
+  "DTLA",
+  "IDTL",
+  "VDTA",
+  "VDTY",
+  "LQDA",
+  "LQDE",
+  "AGGU",
+  "IHYU",
+  "UYLX",
+  "I37MXN",
+  "ID27",
+  "IDTXX",
+  "IMMXX",
+  "VMSTX",
+  "CSPX",
+  "VUAA",
+  "SPYL",
+  "CNDX",
+  "EQAC",
+  "VWRA",
+  "VWRD",
+  "VUSD",
+  "IUSA",
+  "IDUS",
+  "EQQQ",
+  "EQQU",
+  "IUIT",
+]);
+
+const LU_UCITS_CODES = new Set(["CSH2", "PRIP", "PURC", "UHYC", "YIEL"]);
+
+export function getFundDomicile(row: Partial<QuantFundCatalogRow>): FundDomicile {
+  const isin = String(row.isin || "").trim().toUpperCase();
+  if (isin.startsWith("IE")) return "IE";
+  if (isin.startsWith("LU")) return "LU";
+  if (/^(FR|DE|GB|NL|CH|AT|IT|ES)/.test(isin)) return "EU_UCITS";
+  if (isin.startsWith("HK")) return "HK";
+  if (isin.startsWith("CN")) return "CN";
+  if (isin.startsWith("JP")) return "JP";
+  if (isin.startsWith("US")) return "US";
+  if (isin.length >= 2) return "OTHER";
+
+  const yt = String(row.yahoo_ticker || "").trim().toUpperCase();
+  const code = String(row.code || "").trim().toUpperCase();
+  const name = String(row.name || "");
+  const plat = String(row.ilas_platform || "");
+
+  // USHY is a US NYSE Arca iShares ETF unless explicitly suffixed with a European exchange
+  if ((yt === "USHY" || code === "USHY") && !/\.(L|DE|PA|AS|MI|SW|F|MU|LU)$/.test(yt)) {
+    return "US";
+  }
+
+  if (
+    IE_UCITS_CODES.has(code) ||
+    /\(ireland\)|\bicav\b/i.test(name) ||
+    (/\bucits\b/i.test(name) && /\b(ishares|vanguard|invesco|spdr|jpmorgan)\b/i.test(name))
+  ) {
+    return "IE";
+  }
+  if (
+    LU_UCITS_CODES.has(code) ||
+    /luxembourg|\bsicav\b/i.test(name) ||
+    (/\bucits\b/i.test(name) && /\b(amundi|lyxor|xtrackers|dws)\b/i.test(name))
+  ) {
+    return "LU";
+  }
+  if (/\.(L|DE|PA|AS|MI|SW|F|MU|LU)$/.test(yt) || /\bucits\b/i.test(name)) {
+    return "EU_UCITS";
+  }
+  if (row.cn_code || /A股|中国分红|中国QDII|港股通/.test(plat)) {
+    return "CN";
+  }
+  if (yt.endsWith(".HK") || code.endsWith(".HK")) {
+    return "HK";
+  }
+  if (yt.endsWith(".T")) {
+    return "JP";
+  }
+  if (!isIlasFund(row)) {
+    return "US";
+  }
+  return "OTHER";
+}
+
+export function isIrelandOrLuxembourgFund(row: Partial<QuantFundCatalogRow>): boolean {
+  const dom = getFundDomicile(row);
+  return dom === "IE" || dom === "LU" || dom === "EU_UCITS";
+}
+
+export function isEuropeanCategoryFund(row: Partial<QuantFundCatalogRow>): boolean {
+  if (!isIlasFund(row) && isIrelandOrLuxembourgFund(row)) return true;
+  if (Array.isArray(row.tags) && row.tags.some((t) => /欧洲|UCITS|爱尔兰|卢森堡/i.test(t))) return true;
+  return /欧洲|europe/i.test(row.name || "");
+}
+
+export function hasUsEstateTaxConcern(profile?: Partial<ClientAdvisoryProfile> | null): boolean {
+  if (!profile) return false;
+  if (profile.product_scope === "eu_ucits") return true;
+  const text = `${profile.extra_notes || ""} ${profile.notes || ""}`.toLowerCase();
+  return /遗产税|继承税|美股税|6万.*免税|60,?000|us[\s-]*situs|u\.s\.[\s-]*situs|estate\s*tax|inheritance\s*tax|爱尔兰(基金|etf|籍|注册|ucits)?|卢森堡(基金|etf|sicav|籍|注册|ucits)?|欧洲基金|欧基|\bucits\b/i.test(
+    text
+  );
 }
 
 export function isIlasFund(row: { ilas_platform?: string | null; aia_code?: string | null }): boolean {
@@ -863,7 +1085,7 @@ export function resolveBasketUniverseMode(
 
   const scope = profile.product_scope || "all";
   if (scope === "aia_tmp2") return "ilas";
-  if (scope === "global_etf" || scope === "cn_hk_dividend" || scope === "non_ilas") {
+  if (scope === "eu_ucits" || scope === "global_etf" || scope === "cn_hk_dividend" || scope === "non_ilas") {
     return "non_ilas";
   }
   return profile.ilp_planned ? "ilas" : "non_ilas";
@@ -873,6 +1095,7 @@ function matchesProductScope(row: QuantFundCatalogRow, scope: ProductScope): boo
   const plat = row.ilas_platform || "";
   if (scope === "aia_tmp2") return isIlasFund(row);
   if (scope === "non_ilas") return !isIlasFund(row);
+  if (scope === "eu_ucits") return !isIlasFund(row) && isIrelandOrLuxembourgFund(row);
   if (scope === "global_etf") {
     return [
       "非投连险-美股分红型ETF",
@@ -898,52 +1121,116 @@ function matchesProductScope(row: QuantFundCatalogRow, scope: ProductScope): boo
 }
 
 const CORE_FUND_CODES = new Set([
-  "SPY",
-  "VOO",
-  "VTI",
-  "VT",
-  "ACWI",
-  "CSPX",
-  "IWDA",
-  "VWRA",
-  "VEA",
-  "AGG",
-  "BND",
-  "BNDX",
-  "BIL",
-  "SGOV",
-  "SHY",
-  "BSV",
-  "IEF",
-  "CSH2",
-  "B01",
-  "M11",
-  "M13",
-  "CG9",
-  "F16",
-  "W06",
+  // Broad Global / Developed / US Market-Cap Core Equities
+  "SPY", "VOO", "IVV", "VTI", "VT", "ACWI",
+  "CSPX", "VUAA", "SPYL", "VUSD", "IUSA", "IDUS",
+  "IWDA", "VWRA", "VWRD", "MXWO", "JREG", "IXUS",
+  "A22", "M01", "CG1",
+  // Broad Global / Developed / US Dividend & Equity-Income Core Equities
+  "VHYA", "VHYD", "VHYL", "VYMI", "VIGI",
+  "SCHD", "VYM", "VIG", "HDV", "SPYD", "DGRO", "NOBL", "DVY", "SDY",
+  "I17", "Z17", "Z37", "J16", "R51", "Z51",
+  // Broad Sovereign / IG Aggregate / 100% IG Corporate / Short IG / Money Market
+  "AGG", "BND", "BNDX", "SCHZ", "SPAB", "IUSB", "FBND", "AGGU",
+  "VDTA", "VDTY", "CBU7", "CBU0", "IDTM", "IEF",
+  "LQDA", "LQDE", "PURC", "PRIP", "VCIT", "IGSB", "SCHJ", "VSCSX",
+  "BIL", "SGOV", "IB01", "IB0D", "IBTU", "IBTA", "IBTS", "IDBT", "CSH2",
+  "SCHO", "SPTS", "BSV", "VBIRX", "VSBSX", "VSGBX", "VUSB", "JPST", "MINT", "EMNT",
+  "BUBIX", "BSBSX", "FSHBX", "FJRLX", "FLTB", "PAIAX", "PSHAX", "TSDUX", "BOXX",
+  "VTIP", "SCHP", "9096.HK",
+  "B01", "M11", "M13", "N08", "CG9", "Z29", "Z39", "W06", "Z36", "Z66", "E05", "W04", "A05",
+  // Broad Core Balanced / Allocation (60/40, 80/20, 30/70, Target Date Index)
+  "AOA", "AOR", "AOK", "IRTR", "ITDB", "ITDC", "ITDD", "ITDE", "ITDF", "ITDG", "ITDH", "ITDI", "ITDJ",
+  "R03", "Z33",
 ]);
 
+const HARD_SATELLITE_CODES = new Set([
+  // High-Yield / Sub-IG / Opportunistic / Flexible / Convertible / Preferred / CEF
+  "F16", "Z12", "Z32",
+  "G16", "Z16", "Z26", "I28", "M10", "Z13", "P08", "Z08", "R52", "Z52", "U06", "ZU6", "X15", "Z15", "Z25",
+  "C03", "C09", "Z69", "J07", "NB1", "Z05", "I27", "L51", "ZL1", "Q02", "Y02", "Y22", "Z11", "Z22",
+  "N01", "PC4", "ZP4",
+  "P07", "Z07", "Z27", "D18", "Z18", "Z28", "J20", "Z20", "Z30", "W07", "Z77", "A32", "Z06", "V07",
+  "A15", "GG", "I23", "N06", "N07", "L52",
+  "V02", "Z01", "Z21", "F15", "Z04", "Z24", "Q01",
+  "HYG", "HYGH", "JNK", "SJNK", "SCYB", "USHY", "UHYC", "YIEL", "IHYU", "NEMD",
+  "TFLR", "HFSI", "JFLX", "JPIE", "PSDM", "SDMZX", "BRTR", "FPNIX", "JCPB", "UYLX",
+  "BINC", "BTZ", "EFR", "FLC", "JPC", "PCN", "PTY", "VTEB",
+  "DIVO", "IDVO", "BDJ", "DNP", "UTF", "JEPI", "JEPQ", "R01", "Z31",
+  "DTLA", "IDTL", "TLT", "EDV",
+  "I37MXN", "ID27", "IDTXX", "IMMXX", "VMSTX",
+  "IWVL", "IWVG", "EFV", "IQLT", "MOAT",
+  "CNDX", "EQAC", "EQQQ", "EQQU", "IUIT", "QQQ",
+]);
+
+const UCITS_SHARE_TWINS: Record<string, string> = {
+  VHYD: "VHYA",
+  VHYA: "VHYD",
+  CSPX: "IUSA",
+  IUSA: "CSPX",
+  VUAA: "VUSD",
+  VUSD: "VUAA",
+  VWRA: "VWRD",
+  VWRD: "VWRA",
+  EQAC: "EQQQ",
+  EQQQ: "EQAC",
+  IB01: "IB0D",
+  IB0D: "IB01",
+  IBTA: "IBTS",
+  IBTS: "IBTA",
+  CBU0: "IDTM",
+  IDTM: "CBU0",
+  DTLA: "IDTL",
+  IDTL: "DTLA",
+  VDTA: "VDTY",
+  VDTY: "VDTA",
+  LQDA: "LQDE",
+  LQDE: "LQDA",
+  IWVL: "IWVG",
+  IWVG: "IWVL",
+  PRIP: "PURC",
+  PURC: "PRIP",
+};
+
 /**
- * 依据 Obsidian《基金配置框架》划分「核心 (Beta/压舱)」与「卫星 (Alpha/主题/分散)」。
+ * 依据《机构级核心—卫星配置标准》严格划分「核心 (广泛高质量 Beta 压舱)」与「卫星 (高收益/新兴市场/单一国别/主题因子)」：
+ * 高收益债、新兴市场、亚洲/中国/日本等单一区域、可转债/优先证券及行业红利主题资产一律强制归入卫星，优先覆盖任何历史标签。
  */
 export function inferFundRole(row: QuantFundCatalogRow): "core" | "satellite" {
-  const rawRole = (row.role || "").trim();
-  if (rawRole === "核心") return "core";
-  if (rawRole === "卫星") return "satellite";
+  const codeUp = (row.aia_code || row.code || "").trim().toUpperCase();
+  const codeBase = codeUp.replace(/\.[A-Z]+$/, "");
+  const text = `${row.name || ""} ${row.name_en || ""} ${row.ilas_platform || ""}`;
 
-  const codeUp = (row.code || row.aia_code || "").trim().toUpperCase();
-  if (CORE_FUND_CODES.has(codeUp)) return "core";
+  // 1. Hard Satellite Disqualifiers (ALWAYS override legacy row.role)
+  if (
+    HARD_SATELLITE_CODES.has(codeUp) ||
+    HARD_SATELLITE_CODES.has(codeBase) ||
+    String(row.currency || "").toUpperCase() === "MXN" ||
+    String(row.benchmark_code || "").toUpperCase() === "HYG"
+  ) {
+    return "satellite";
+  }
 
-  const text = `${row.name || ""} ${row.name_en || ""} ${row.ilas_platform || ""}`.toLowerCase();
   const isSatelliteKeyword =
-    /高收益|高息|新兴|科技|生物|医疗|医药|半导体|黄金|商品|原油|主题|优先|备兑|小盘|中国|港股|日本|亚洲|亚太|reit|high yield|emerging|tech|biotech|gold|commodity|preferred|covered|small|china|japan|asia/i.test(
+    /高收益|備兌|备兑|新兴|新興|亚洲|亞洲|亚太|亞太|太平洋|东盟|印度|南韓|韩国|台灣|台湾|拉丁美洲|巴西|東歐|东欧|澳洲|中國|中国|神州|大中華|大中华|港股|A股|沪深|中证|恒生|日本|歐洲.*股票|欧洲.*股票|歐洲遠見|歐洲動態|科技|纳斯达克|生物|醫療|医疗|健康|能源|環境|礦業|黃金|貴金屬|資源|消費|品牌|房地產|基建|可轉換|可转换|優先證券|优先证券|coco|小型|中小|20\+yr|20\+年|超长期|焦點|焦点|機會基金|優勢基金|high\s*yield|hi\s*yld|\bhy\b|covered\s*call|enhanced\s*dividend|superdividend|emerging|\bem\b|asian|asia|china|chinese|greater\s*china|taiwan|korea|india|asean|latin|brazil|japan|nikkei|topix|convertible|preferred|floating\s*rate|flexible|strategic\s*income|credit\s*allocation|multi-sector|yield\s*plus|nasdaq|technology|biotech|health|energy|gold|mining|resources|real\s*estate|reit|infrastructure|thematic|small[\s-]*cap|value\s*factor|basic\s*value|moat|mxn\s*hedged|tax-exempt/i.test(
       text
     );
   if (isSatelliteKeyword) return "satellite";
 
+  const isCash = row.asset_class === "货币基金" || /money\s*market|货币|現金|现金/i.test(text);
+  if (!isCash && /香港|hong\s*kong/i.test(text)) {
+    return "satellite";
+  }
+
+  // 2. Broad High-Quality Core Whitelist & Safe Core Keywords
+  if (CORE_FUND_CODES.has(codeUp) || CORE_FUND_CODES.has(codeBase)) return "core";
+
+  const rawRole = (row.role || "").trim();
+  if (rawRole === "核心") return "core";
+  if (rawRole === "卫星") return "satellite";
+
   const isCoreKeyword =
-    /全球|环球|全世界|标普|综合债|总债|国债|短期债|短债|极短期|货币|美元现金|核心|平衡|total bond|total stock|total world|aggregate|core|treasury|money market|balanced|s&p 500/i.test(
+    /全球综合债|环球债券|全球公司债|标普\s*500|全世界|全市场|短期国债|短期美债|美元短期债|极短期债|货币市场|美元现金|美股分红型ETF|美国红利|美国高股息|全球高股息|环球股票高息|环球收益股票|high\s*dividend\s*yield|dividend\s*appreciation|dividend\s*equity|s&p\s*500|ftse\s*all-world|msci\s*world|total\s*world|total\s*intl|total\s*stock|total\s*bond|aggregate\s*bond|treasury\s*bond|short[- ]term\s*(bond|treasury|corporate)|ultra[- ]short|money\s*market/i.test(
       text
     );
   if (isCoreKeyword) return "core";
@@ -967,7 +1254,7 @@ export function getFundHomogeneityCluster(row: QuantFundCatalogRow): string {
   if (sleeve === "bond") {
     if (
       row.benchmark_code === "BIL" ||
-      /货币|现金|t-bill|国库券|短债|短期债|极短期|short|ultra|bil|sgov|shy|bsv|csh2|boxx|m13|b01|w06/i.test(
+      /货币|现金|t-bill|国库券|短债|短期债|极短期|0-1yr|1-3yr|short|ultra|bil|sgov|shy|bsv|csh2|ib01|ib0d|ibtu|ibta|ibts|idbt|boxx|m13|b01|w06/i.test(
         text
       )
     ) {
@@ -979,16 +1266,16 @@ export function getFundHomogeneityCluster(row: QuantFundCatalogRow): string {
     }
     if (
       row.benchmark_code === "HYG" ||
-      /高收益|high yield|hyg|i28|g16|m10|z08|credit allocation/i.test(text)
+      /高收益|high yield|hyg|ihyu|i28|g16|m10|z08|credit allocation/i.test(text)
     ) {
       return "bond|HY_CREDIT";
     }
-    if (/长期|20y|tlt|long treasury/i.test(text)) return "bond|LONG_TREASURY";
+    if (/超长期|长期|20\+y|20y|tlt|dtla|idtl|long treasury/i.test(text)) return "bond|LONG_TREASURY";
     return "bond|IG_CORE";
   }
 
   // sleeve === "equity"
-  if (/科技|nasdaq|qqq|eqqq|生物|医疗|医药|半导体|biotech|tech|health|semiconductor|d05/i.test(text)) {
+  if (/科技|nasdaq|qqq|eqqq|eqac|cndx|iuit|生物|医疗|医药|半导体|biotech|tech|health|semiconductor|d05/i.test(text)) {
     return "equity|SECTOR_THEME";
   }
   if (/日本|japan|1306|topix|nikkei/i.test(text)) return "equity|JAPAN";
@@ -1007,7 +1294,7 @@ export function getFundHomogeneityCluster(row: QuantFundCatalogRow): string {
       ? "equity|US_DIV_VALUE"
       : "equity|GLOBAL_DIV_VALUE";
   }
-  if (/美股|标普|美国|s&p|spy|voo|vti|cspx|russell/i.test(text)) return "equity|US_BROAD";
+  if (/美股|标普|美国|s&p|spy|voo|vti|cspx|vuaa|spyl|vusd|iusa|russell/i.test(text)) return "equity|US_BROAD";
   if (/收益|高息|派息|income|covered|备兑/i.test(text)) return "equity|GLOBAL_INCOME";
   if (row.benchmark_code === "SPY") return "equity|US_BROAD";
   return "equity|GLOBAL_BROAD";
@@ -1088,8 +1375,9 @@ function scoreFundCandidate(
   if (row.tags.includes("推荐选择")) score += 6;
   score += clamp((computeHomogeneousQualityScore(row) - 55) * 0.35, -12, 18);
 
-  // Currency convenience slight bonus
+  // Currency convenience slight bonus; strongly penalize exotic MXN-hedged UCITS shares for non-MXN clients
   if (row.currency === preferredCurrency) score += 2.5;
+  if (row.currency === "MXN" && preferredCurrency !== "MXN") score -= 35;
 
   // Income tilt
   const wantIncome = mode === "income_boost" || (mode === "core" && envelope.income_focus);
@@ -1231,6 +1519,20 @@ function buildFundRationale(
   } else {
     partsZh.push("权益增长");
     partsEn.push("Equity");
+  }
+
+  if (!isIlasFund(row)) {
+    const dom = getFundDomicile(row);
+    if (dom === "IE") {
+      partsZh.push("爱尔兰UCITS(免美遗产税)");
+      partsEn.push("IE UCITS (Estate-Tax Exempt)");
+    } else if (dom === "LU") {
+      partsZh.push("卢森堡UCITS(免美遗产税)");
+      partsEn.push("LU UCITS (Estate-Tax Exempt)");
+    } else if (dom === "EU_UCITS") {
+      partsZh.push("欧洲UCITS(免美遗产税)");
+      partsEn.push("EU UCITS (Estate-Tax Exempt)");
+    }
   }
 
   const fee = row.fee_pct;
@@ -1383,7 +1685,8 @@ function pickDiverseFromPool(
       if (state.usedSlugs.has(row.slug)) continue;
 
       const codeKey = (row.code || row.slug).toUpperCase();
-      if (state.usedTwins.has(codeKey) || (row.twin_code && state.usedTwins.has(row.twin_code.toUpperCase()))) {
+      const implicitTwin = row.twin_code || UCITS_SHARE_TWINS[codeKey];
+      if (state.usedTwins.has(codeKey) || (implicitTwin && state.usedTwins.has(implicitTwin.toUpperCase()))) {
         continue;
       }
       const baseName = (row.name || "").split("(")[0].split("（")[0].slice(0, 8);
@@ -1406,7 +1709,7 @@ function pickDiverseFromPool(
       state.usedSlugs.add(row.slug);
       state.usedClusters.add(cluster);
       state.usedTwins.add(codeKey);
-      if (row.twin_code) state.usedTwins.add(row.twin_code.toUpperCase());
+      if (implicitTwin) state.usedTwins.add(implicitTwin.toUpperCase());
       if (baseName) state.usedNameKeys.add(baseName);
       if (mgr) state.managerCounts.set(mgr, (state.managerCounts.get(mgr) || 0) + 1);
     }
@@ -1639,6 +1942,7 @@ function buildSingleBasket(
   return {
     key,
     universe_mode: universeMode,
+    us_estate_tax_shield: universeMode === "non_ilas" && hasUsEstateTaxConcern(profile),
     title_zh: titleZh,
     title_en: titleEn,
     subtitle_zh: subtitleZh,
@@ -1657,15 +1961,19 @@ export function buildCustomFundBaskets(
   const universeMode = resolveBasketUniverseMode(profile);
   const wantIlas = universeMode === "ilas";
   const universeRows = catalogRows.filter((r) => isIlasFund(r) === wantIlas);
+  const requireEuUcits = !wantIlas && hasUsEstateTaxConcern(profile);
+  const effectiveUniverse = requireEuUcits
+    ? universeRows.filter((r) => isIrelandOrLuxembourgFund(r))
+    : universeRows;
 
-  const recommendedOnly = universeRows.filter((r) => !r.tags.includes("非推荐选择"));
+  const recommendedOnly = effectiveUniverse.filter((r) => !r.tags.includes("非推荐选择"));
   const scope = profile.product_scope || "all";
   let scoped = recommendedOnly.filter((r) => matchesProductScope(r, scope));
   if (scoped.length < 3) {
-    scoped = universeRows.filter((r) => matchesProductScope(r, scope));
+    scoped = effectiveUniverse.filter((r) => matchesProductScope(r, scope));
   }
   if (scoped.length < 3) {
-    scoped = recommendedOnly.length > 0 ? recommendedOnly : universeRows;
+    scoped = recommendedOnly.length > 0 ? recommendedOnly : effectiveUniverse;
   }
 
   const backedCount = scoped.filter((r) => r.data_tier === "A" || r.data_tier === "B").length;
@@ -1676,10 +1984,18 @@ export function buildCustomFundBaskets(
     envelope,
     "core",
     "core",
-    "方案一 · 核心+卫星量化优选组合",
-    "Plan A · Core-Satellite Quant Allocation",
-    "遵循核心 ≥70%（Beta压舱）/ 卫星 ≤30%（Alpha分散）原则，同质赛道优中选低费高α标",
-    "Core ≥70% / Satellite ≤30% discipline with lowest-fee & highest-alpha deduplication",
+    requireEuUcits
+      ? "方案一 · 欧基核心+卫星优选组合（爱尔兰/卢森堡免美遗产税）"
+      : "方案一 · 核心+卫星量化优选组合",
+    requireEuUcits
+      ? "Plan A · IE/LU UCITS Core-Satellite (US Estate-Tax Exempt)"
+      : "Plan A · Core-Satellite Quant Allocation",
+    requireEuUcits
+      ? "全仓采用爱尔兰/卢森堡注册欧洲 UCITS 基金，规避非美居民 6 万美元以上美股遗产税敞口，遵循核心 ≥70% 纪律"
+      : "遵循核心 ≥70%（Beta压舱）/ 卫星 ≤30%（Alpha分散）原则，同质赛道优中选低费高α标",
+    requireEuUcits
+      ? "100% Ireland/Luxembourg domiciled UCITS ETFs shielding non-US residents from US-situs estate tax"
+      : "Core ≥70% / Satellite ≤30% discipline with lowest-fee & highest-alpha deduplication",
     new Set()
   );
 
@@ -1693,8 +2009,12 @@ export function buildCustomFundBaskets(
     envelope,
     "alternative",
     useDefensiveAlt ? "defensive" : "income_boost",
-    useDefensiveAlt ? "方案二 · 低波稳健防御备选" : "方案二 · 高息现金流增强备选",
-    useDefensiveAlt ? "Plan B · Low-Vol Defensive Alt" : "Plan B · Income & Dividend Enhanced",
+    useDefensiveAlt
+      ? `方案二 · 低波稳健防御备选${requireEuUcits ? "（欧基免遗产税）" : ""}`
+      : `方案二 · 高息现金流增强备选${requireEuUcits ? "（欧基免遗产税）" : ""}`,
+    useDefensiveAlt
+      ? `Plan B · Low-Vol Defensive Alt${requireEuUcits ? " (IE/LU UCITS)" : ""}`
+      : `Plan B · Income & Dividend Enhanced${requireEuUcits ? " (IE/LU UCITS)" : ""}`,
     useDefensiveAlt
       ? "加厚核心固收压舱仓位，严控卫星比例，在市场回撤期进一步压缩净值下行"
       : "在核心底仓上提高高股息与现金派息比例，兼顾长期增长与可支配现金分红",
@@ -1731,14 +2051,18 @@ export function buildTacticalCandidatePool(
   const universeMode = resolveBasketUniverseMode(profile, currentHoldings, catalogRows);
   const wantIlas = universeMode === "ilas";
   const universeRows = catalogRows.filter((r) => isIlasFund(r) === wantIlas);
+  const requireEuUcits = !wantIlas && hasUsEstateTaxConcern(profile);
+  const effectiveUniverse = requireEuUcits
+    ? universeRows.filter((r) => isIrelandOrLuxembourgFund(r))
+    : universeRows;
 
-  const recommendedOnly = universeRows.filter((r) => !r.tags.includes("非推荐选择"));
+  const recommendedOnly = effectiveUniverse.filter((r) => !r.tags.includes("非推荐选择"));
   let scoped = recommendedOnly.filter((r) => matchesProductScope(r, scope));
   if (scoped.length < 4) {
-    scoped = universeRows.filter((r) => matchesProductScope(r, scope));
+    scoped = effectiveUniverse.filter((r) => matchesProductScope(r, scope));
   }
   if (scoped.length < 4) {
-    scoped = recommendedOnly.length > 0 ? recommendedOnly : universeRows;
+    scoped = recommendedOnly.length > 0 ? recommendedOnly : effectiveUniverse;
   }
 
   const currentIds = new Set<string>();
@@ -1791,6 +2115,8 @@ export function buildTacticalCandidatePool(
     slug: r.slug,
     lab_id: r.code && r.code !== "—" ? r.code : r.slug,
     code: r.code || r.slug,
+    isin: r.isin ?? null,
+    yahoo_ticker: r.yahoo_ticker ?? null,
     name: r.name,
     asset_class: r.asset_class,
     sleeve: classifyFundSleeve(r),

@@ -95,12 +95,14 @@ const GOALS = [
 const SCOPES = [
   { id: 'all', zh: '非投连险全市场基金 / ETF（纯平台外）', en: 'All Non-ILAS Funds & ETFs (Off-Platform)' },
   { id: 'aia_tmp2', zh: 'AIA 卓达智悦2 投连险池（纯投连险）', en: 'AIA TMP2 ILAS Pool (Pure ILAS)' },
+  { id: 'eu_ucits', zh: '非投连险 · 欧洲基金（爱尔兰/卢森堡 UCITS，免美遗产税）', en: 'Non-ILAS · European UCITS (IE/LU, US Estate-Tax Exempt)' },
   { id: 'global_etf', zh: '非投连险 · 全球 / 美日低费 ETF', en: 'Non-ILAS · Global ETFs' },
   { id: 'cn_hk_dividend', zh: '非投连险 · 中港通红利与 A 股 ETF', en: 'Non-ILAS · CN / HK Dividend ETFs' },
   { id: 'bonds_income', zh: '债券与高息防御专场（按投连险开关隔离）', en: 'Bonds & Income (Isolated by ILP toggle)' },
 ];
 
 const QUICK_NOTES_TAGS = [
+  { zh: '关注美国遗产税风险（非美居民6万美元免税额上限），倾向采用卢森堡或爱尔兰欧洲UCITS基金', en: 'Concerned about US estate tax ($60k NRA exemption); prefer Luxembourg or Ireland European UCITS funds' },
   { zh: '3年内有刚性大额支出（子女海外留学/购房首付）', en: 'Large planned expense in 3 years (tuition/property downpayment)' },
   { zh: '已有足额保单/分红险，本专户聚焦纯流动性资产', en: 'Already holds annuity/insurance, focus on liquid assets' },
   { zh: '担忧美股估值高企，倾向锁定当前美元高息固收', en: 'Concerned with elevated US PE, prefer locking in current USD yields' },
@@ -195,14 +197,14 @@ const AdvisoryView = ({
     setProductScope(nextScope);
     if (nextScope === 'aia_tmp2') {
       setIlpPlanned(true);
-    } else if (nextScope === 'all' || nextScope === 'global_etf' || nextScope === 'cn_hk_dividend') {
+    } else if (nextScope === 'all' || nextScope === 'eu_ucits' || nextScope === 'global_etf' || nextScope === 'cn_hk_dividend') {
       setIlpPlanned(false);
     }
   };
 
   const handleIlpToggle = (checked) => {
     setIlpPlanned(checked);
-    if (checked && (productScope === 'all' || productScope === 'global_etf' || productScope === 'cn_hk_dividend')) {
+    if (checked && (productScope === 'all' || productScope === 'eu_ucits' || productScope === 'global_etf' || productScope === 'cn_hk_dividend')) {
       setProductScope('aia_tmp2');
     } else if (!checked && productScope === 'aia_tmp2') {
       setProductScope('all');
@@ -1161,6 +1163,20 @@ const AdvisoryView = ({
                           ? (isEn ? 'Pure ILAS' : '纯投连险 · AIA')
                           : (isEn ? 'Pure Non-ILAS' : '纯非投连险')}
                       </span>
+                      {basket.us_estate_tax_shield && (
+                        <span
+                          style={{
+                            fontSize: '0.68rem',
+                            padding: '2px 6px',
+                            borderRadius: '4px',
+                            background: 'rgba(16, 185, 129, 0.14)',
+                            color: 'var(--success)',
+                            fontWeight: 700,
+                          }}
+                        >
+                          {isEn ? 'IE/LU UCITS · Estate-Tax Exempt' : '爱尔兰/卢森堡 UCITS · 免美遗产税'}
+                        </span>
+                      )}
                       {basket.metrics?.core_pct != null && (
                         <span style={{ fontSize: '0.68rem', padding: '2px 6px', borderRadius: '4px', background: 'var(--surface-subtle)', color: 'var(--text-secondary)', fontFamily: 'var(--font-mono)' }}>
                           {isEn ? `Core ${basket.metrics.core_pct}% / Sat ${basket.metrics.satellite_pct}%` : `核心 ${basket.metrics.core_pct}% / 卫星 ${basket.metrics.satellite_pct}%`}
@@ -1219,8 +1235,8 @@ const AdvisoryView = ({
                       <thead>
                         <tr style={{ borderBottom: '1px solid var(--border-subtle)', color: 'var(--text-muted)' }}>
                           <th style={{ textAlign: 'left', padding: '6px 4px' }}>{isEn ? 'Fund' : '标的代码 / 名称'}</th>
-                          <th style={{ textAlign: 'center', padding: '6px 4px' }}>{isEn ? 'Grade' : '量化'}</th>
-                          <th style={{ textAlign: 'right', padding: '6px 4px' }}>{isEn ? 'Weight' : '权重'}</th>
+                          <th style={{ textAlign: 'center', padding: '6px 8px', whiteSpace: 'nowrap', width: '56px' }}>{isEn ? 'Grade' : '量化'}</th>
+                          <th style={{ textAlign: 'right', padding: '6px 4px', whiteSpace: 'nowrap', width: '56px' }}>{isEn ? 'Weight' : '权重'}</th>
                         </tr>
                       </thead>
                       <tbody>

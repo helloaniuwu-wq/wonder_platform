@@ -13,6 +13,7 @@ export function useFundQuant({ activeTab, currentUser }) {
   const [detailSlug, setDetailSlug] = useState(null);
   const [compareSlugs, setCompareSlugs] = useState([]);
   const [compareOpen, setCompareOpen] = useState(false);
+  const [labBasketIds, setLabBasketIds] = useState([]);
 
   const canAccessQuant = Boolean(currentUser && PREMIUM_ROLES.has(currentUser.role));
 
@@ -90,6 +91,12 @@ export function useFundQuant({ activeTab, currentUser }) {
     });
   };
 
+  const toggleLabBasketId = (rawId) => {
+    const id = String(rawId || '').trim().toUpperCase();
+    if (!id) return;
+    setLabBasketIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+  };
+
   return {
     health,
     funds,
@@ -104,6 +111,9 @@ export function useFundQuant({ activeTab, currentUser }) {
     toggleCompareSlug,
     compareOpen,
     setCompareOpen,
+    labBasketIds,
+    setLabBasketIds,
+    toggleLabBasketId,
     refreshFunds,
     refreshHealth,
   };

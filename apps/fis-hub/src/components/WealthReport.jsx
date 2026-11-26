@@ -26,6 +26,8 @@ import {
   Compass,
 } from 'lucide-react';
 import { authHeaders } from '../utils/auth';
+import XRayReportSection from './XRayReportSection';
+import { computePortfolioXRay } from '../utils/portfolioXRay';
 
 // ── 可编辑文本块（定义在外部，确保焦点与 DOM 稳定性）──────────────────────────
 const EditableText = ({ fieldKey, tag = 'p', style, className, children, editMode, editableFields, onBlur }) => {
@@ -217,6 +219,8 @@ const WealthReportContent = ({
   labMcSettings,
   labBaseCurrency,
   stressTestData,
+  xrayData = null,
+  quantFunds = [],
   ilpEnabled,
   ilpConfig,
   insurancePlan,
@@ -1149,6 +1153,19 @@ const WealthReportContent = ({
               </div>
             </div>
           </section>
+
+          <XRayReportSection
+            xrayData={xrayData}
+            localXRay={computePortfolioXRay({
+              holdings: Object.entries(mcTargetPortfolio.allocations || {})
+                .filter(([, w]) => Number(w) > 0)
+                .map(([isin, weight]) => ({ isin, weight: Number(weight) })),
+              quantFunds,
+              totalNav: Number(labMcSettings?.capital) || 0,
+            })}
+            currencySymbol={sym}
+            sectionTitle="底层穿透 X-Ray（工具结构 · 双风格箱 · 合并重仓 · SOP 体检）"
+          />
 
           {/* ══ 第六章：首期执行清单、顾问陪伴机制与合规声明 ══ */}
           <section className="ips-chapter" style={{ marginBottom: 0 }}>

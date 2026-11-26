@@ -136,10 +136,11 @@ def writeback_to_vault(
         f = fund_map.get(m.slug)
         if not f:
             continue
-        md_target = quant_dir / f"{f.slug}.md"
-        _assert_allowed_vault_path(vault_fund_dir, md_target)
-        atomic_write_text(md_target, render_quant_markdown(f, m))
-        written_md += 1
+        if f.is_vault_native:
+            md_target = quant_dir / f"{f.slug}.md"
+            _assert_allowed_vault_path(vault_fund_dir, md_target)
+            atomic_write_text(md_target, render_quant_markdown(f, m))
+            written_md += 1
         summary_items.append(
             {
                 "slug": f.slug,

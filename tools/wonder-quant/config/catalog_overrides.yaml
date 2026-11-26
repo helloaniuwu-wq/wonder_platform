@@ -62,56 +62,152 @@ slug_overrides:
   # ── 欧洲 UCITS / 伦敦 / 法兰克福 / 巴黎 / 墨西哥对冲 ETF 交易所后缀 ──
   BD_CBU7:
     yahoo_ticker: CBU7.L
+    isin: IE00B3VWN393
+    name: "iShares $ Treasury Bond 3-7yr UCITS ETF (Acc)"
+    manager: "BlackRock (iShares)"
+    asset_class: 固定收益
+    ilas_platform: 非投连险-债券基金比较
     currency: USD
+    fee_pct: 0.07
+    role: 核心
+    is_distributing: false
+    benchmark_code: AGG
+    tags:
+      - 爱尔兰UCITS
+      - LSE美元
+      - 免美遗产税
+      - 累积型(Acc)
+      - 中期美债
+      - IBKR:LSEETF
+    commentary: "对应美股 IEI，平衡票息与久期弹性的 3-7 年中端美债累积型 ETF，底层美债利息 0% 预扣税且免美国遗产税。"
   BD_CSH2:
     yahoo_ticker: CSH2.L
+    isin: LU1230136894
     currency: GBP
   BD_IB01:
     yahoo_ticker: IB01.L
+    isin: IE00BGSF1X88
+    name: "iShares $ Treasury Bond 0-1yr UCITS ETF (Acc)"
+    manager: "BlackRock (iShares)"
+    asset_class: 固定收益
+    ilas_platform: 非投连险-债券基金比较
     currency: USD
+    fee_pct: 0.07
+    role: 核心
+    twin_code: IB0D
+    is_distributing: false
+    benchmark_code: BIL
+    tags:
+      - 爱尔兰UCITS
+      - LSE美元
+      - 免美遗产税
+      - 累积型(Acc)
+      - 短债/现金管理
+      - 超短美债
+      - IBKR:LSEETF
+    commentary: "对应美股 SGOV / BIL，0-1 年超短期限美债累积版（IB0D/IBTU 的累积版），货币基金替代品，底层美债利息 0% 预扣税且免美国遗产税。"
   BD_IWDA:
     yahoo_ticker: IWDA.L
-    currency: USD
+    isin: IE00B4L5Y983
+    name: "iShares Core MSCI World UCITS ETF (Acc)"
+    manager: "BlackRock (iShares)"
     asset_class: 股票
+    ilas_platform: 非投连险-国际股票
+    currency: USD
+    fee_pct: 0.20
+    role: 核心
+    is_distributing: false
     benchmark_code: VT
+    tags:
+      - 爱尔兰UCITS
+      - LSE美元
+      - 免美遗产税
+      - 累积型(Acc)
+      - 全球发达市场
+      - IBKR:LSEETF
+    commentary: "对应美股 URTH，覆盖全球 23 个发达国家市场（美股约占 70%），股息自动再投资；爱尔兰注册免美国遗产税，美股股息预扣税 15%。"
   BD_IWVG:
     yahoo_ticker: IWVG.L
+    isin: IE00BP3QZB59
     currency: USD
     asset_class: 股票
     benchmark_code: VT
   BD_IWVL:
     yahoo_ticker: IWVL.L
+    isin: IE00BP3QZB59
     currency: USD
     asset_class: 股票
     benchmark_code: VT
   BD_JREG:
     yahoo_ticker: JREG.L
+    isin: IE00BF4G6Y48
     currency: USD
     asset_class: 股票
     benchmark_code: VT
   BD_MXWO:
     yahoo_ticker: MXWO.L
+    isin: IE00B60SX394
     currency: USD
     asset_class: 股票
     benchmark_code: VT
   BD_VHYA:
     yahoo_ticker: VHYA.L
-    currency: USD
+    isin: IE00BK5BR626
+    name: "Vanguard FTSE All-World High Dividend Yield UCITS ETF (Acc)"
+    manager: "Vanguard"
     asset_class: 股票
+    ilas_platform: 非投连险-国际股票
+    currency: USD
+    fee_pct: 0.29
+    role: 核心
+    twin_code: VHYD
+    is_distributing: false
     benchmark_code: VT
+    tags:
+      - 爱尔兰UCITS
+      - LSE美元
+      - 免美遗产税
+      - 累积型(Acc)
+      - 高股息/红利
+      - IBKR:LSEETF
+    commentary: "全球高股息价值股累积型组合（VHYD/VHYL 的累积版），适合偏好防御与高自由现金流的配置；爱尔兰注册免美国遗产税。"
   BD_VHYD:
     yahoo_ticker: VHYD.L
-    currency: USD
+    isin: IE00B8GKDB10
+    name: "Vanguard FTSE All-World High Dividend Yield UCITS ETF (Dist · VHYD/VHYL)"
+    manager: "Vanguard"
     asset_class: 股票
+    ilas_platform: 非投连险-国际股票
+    currency: USD
+    fee_pct: 0.29
+    role: 核心
+    twin_code: VHYA
+    is_distributing: true
     benchmark_code: VT
+    tags:
+      - 爱尔兰UCITS
+      - LSE美元
+      - 免美遗产税
+      - 分派型(Dist)
+      - 每季派息
+      - 高股息/红利
+      - IBKR:LSEETF
+      - VHYL
+    commentary: "每季派息（VHYA 的分派版；LSE 美元交易代码 VHYD，英镑代码 VHYL），覆盖全球高股息红利股；爱尔兰注册免美国遗产税。"
   BD_PRIP:
     yahoo_ticker: PRIP.DE
+    isin: LU1287023003
+    twin_code: PURC
+    is_distributing: true
     currency: EUR
   BD_PURC:
     yahoo_ticker: PURC.DE
+    isin: LU1287023185
+    twin_code: PRIP
     currency: EUR
   BD_UHYC:
     yahoo_ticker: UHYC.DE
+    isin: LU1435356149
     currency: EUR
     benchmark_code: HYG
   BD_USHY:
@@ -120,9 +216,12 @@ slug_overrides:
     benchmark_code: HYG
   BD_UYLX:
     yahoo_ticker: UYLX.L
-    currency: USD
+    isin: IE0006LBEDV2
+    currency: GBP
+    is_distributing: true
   BD_YIEL:
     yahoo_ticker: YIEL.PA
+    isin: LU1681040496
     currency: EUR
     benchmark_code: HYG
   BD_I37MXN:
@@ -163,14 +262,23 @@ slug_overrides:
     benchmark_code: sh510300
 
   # ── 美股上市日本 ETF（区别于东京 .T 上市 ETF）──
+  JP_1489:
+    fee_pct: null
+    is_distributing: true
+  JP_1592:
+    fee_pct: null
   JP_DFJ:
     yahoo_ticker: DFJ
     currency: USD
     benchmark_code: 1306.T
+    fee_pct: null
+    is_distributing: true
   JP_SCJ:
     yahoo_ticker: SCJ
     currency: USD
     benchmark_code: 1306.T
+    fee_pct: null
+    is_distributing: true
 
   # ── 欧洲 UCITS / 港版基金 ISIN → Yahoo/Morningstar 代码自动映射（已实测验证）──
   A05_F:

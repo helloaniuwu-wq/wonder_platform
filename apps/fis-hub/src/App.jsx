@@ -142,6 +142,7 @@ function App() {
   const [divLoading, setDivLoading] = useState(false);
   const [taxRate, setTaxRate] = useState(0.0);
   const [dripMode, setDripMode] = useState(false);
+  const [labXRayData, setLabXRayData] = useState(null);
 
   // ── Auth State ──────────────────────────────────────────────────────────────
   const [currentUser, setCurrentUser] = useState(() => authStorage.getUser());
@@ -197,6 +198,14 @@ function App() {
     scenarioName,
     setScenarioName,
     scenarioSaving,
+    activeScenarioId,
+    activeScenarioName,
+    saveMode,
+    setSaveMode,
+    saveTargetId,
+    setSaveTargetId,
+    openSaveScenarioDialog,
+    clearActiveScenario,
     ilpEnabled,
     setIlpEnabled,
     ilpConfig,
@@ -235,20 +244,31 @@ function App() {
     toggleCompareSlug: toggleQuantCompareSlug,
     compareOpen: quantCompareOpen,
     setCompareOpen: setQuantCompareOpen,
+    labBasketIds,
+    setLabBasketIds,
+    toggleLabBasketId,
     refreshFunds: refreshQuantFunds,
   } = useFundQuant({ activeTab, currentUser });
 
-  const handleSendFundsToLab = (ids) => {
+  const handleSendFundsToLab = (ids, { replace = true, navigate = true } = {}) => {
     if (!ids || ids.length === 0) return;
-    handleAddMultipleLabIsins(ids, ids.length >= 2);
-    if (ids.length >= 2) {
+    if (replace) clearActiveScenario();
+    handleAddMultipleLabIsins(ids, replace);
+    if (replace && ids.length === 1) {
+      const singleKey = String(ids[0]).trim().toUpperCase();
+      setLabMode('custom');
+      setLabCustomWeights({ [singleKey]: 100 });
+    } else if (ids.length >= 2 || !replace) {
       setLabMode('auto');
     }
-    setActiveTab('lab');
+    if (navigate) {
+      setActiveTab('lab');
+    }
   };
 
   const handleAdvisorySendToLab = (items, title, profile) => {
     if (!items || items.length === 0) return;
+    clearActiveScenario();
     setActiveAdvisoryClientInfo({
       clientName: profile?.client_name || title || '客户配置方案',
       goal: profile?.primary_goal || 'balanced',
@@ -697,9 +717,27 @@ function App() {
       weight: parseFloat(weight).toFixed(3),
       manual_price: ''
     }));
+    const clientName = activeAdvisoryClientInfo?.clientName || clientInfo?.name || '';
+    const goal = activeAdvisoryClientInfo?.goal || clientInfo?.goals?.[0] || '';
+    const isIncomeGoal =
+      goal === 'income' ||
+      goal === 'retirement' ||
+      Number(labMcSettings?.withdrawal || 0) > 0;
+    const inheritedName = clientName
+      ? `${clientName} · ${clientInfo?.basket_title || '实验室优化组合'}`
+      : 'Optimized Strategy';
     setNewPf({
       ...newPf,
-      name: 'Optimized Strategy',
+      name: inheritedName,
+      budget: Number(labMcSettings?.capital || newPf.budget || 500000),
+      base_currency: labBaseCurrency || newPf.base_currency || 'USD',
+      dividend_strategy: isIncomeGoal ? 'CASH' : newPf.dividend_strategy,
+      wrapper_type: ilpEnabled ? 'AIA_TMP2' : newPf.wrapper_type,
+      drift_tolerance_pct: newPf.drift_tolerance_pct ?? 5,
+      max_drawdown_pct: Number(clientInfo?.target_envelope?.max_drawdown_pct || newPf.max_drawdown_pct || 15),
+      ilp_gender: ilpConfig?.gender || newPf.ilp_gender || 'male',
+      ilp_age: Number(ilpConfig?.age || clientInfo?.age || newPf.ilp_age || 35),
+      ilp_smoker: Boolean(ilpConfig?.smoker ?? newPf.ilp_smoker),
       is_public: false,
       allocations: allocArray
     });
@@ -838,7 +876,7 @@ function App() {
         portfolios={portfolios} setPortfolios={setPortfolios} activeId={activeId} setActiveId={setActiveId}
         setShowModal={setShowModal}
         setDeleteCandidate={setDeleteCandidate} setShowDeleteModal={setShowDeleteModal}
-        savedScenarios={savedScenarios} handleLoadScenario={handleLoadScenario} handleDeleteScenario={handleDeleteScenario} handleRenameScenario={handleRenameScenario}
+        savedScenarios={savedScenarios} activeScenarioId={activeScenarioId} handleLoadScenario={handleLoadScenario} handleDeleteScenario={handleDeleteScenario} handleRenameScenario={handleRenameScenario}
         currentUser={currentUser} canEditPortfolio={canEditPortfolio}
         mobileDrawerOpen={mobileDrawerOpen}
         setMobileDrawerOpen={setMobileDrawerOpen}
@@ -905,7 +943,13 @@ function App() {
         {activeTab === 'help' ? (
           <HelpManualView />
         ) : activeTab === 'admin' ? (
-          <AdminPanel currentUser={currentUser} />
+          <AdminPanel
+            currentUser={currentUser}
+            onOpenFundDetail={(slug) => {
+              setQuantDetailSlug(slug);
+              setActiveTab('funds');
+            }}
+          />
         ) : activeTab === 'advisor' ? (
           <AdvisorClientsPanel 
             currentUser={currentUser} 
@@ -947,8 +991,12 @@ function App() {
               toggleCompareSlug={toggleQuantCompareSlug}
               compareOpen={quantCompareOpen}
               setCompareOpen={setQuantCompareOpen}
+              labBasketIds={labBasketIds}
+              setLabBasketIds={setLabBasketIds}
+              toggleLabBasketId={toggleLabBasketId}
               refreshFunds={refreshQuantFunds}
               onAddFundsToLab={handleSendFundsToLab}
+              currentUser={currentUser}
             />
           </FeatureLock>
         ) : activeTab === 'lab' ? (
@@ -974,6 +1022,12 @@ function App() {
               scenarioName={scenarioName} setScenarioName={setScenarioName}
               scenarioSaving={scenarioSaving}
               savedScenarios={savedScenarios}
+              activeScenarioId={activeScenarioId}
+              activeScenarioName={activeScenarioName}
+              saveMode={saveMode} setSaveMode={setSaveMode}
+              saveTargetId={saveTargetId} setSaveTargetId={setSaveTargetId}
+              openSaveScenarioDialog={openSaveScenarioDialog}
+              clearActiveScenario={clearActiveScenario}
               handleNewBlankStrategy={handleNewBlankStrategy}
               handleLoadScenario={handleLoadScenario}
               handleDeleteScenario={handleDeleteScenario}
@@ -990,6 +1044,7 @@ function App() {
               ilpEnabled={ilpEnabled} setIlpEnabled={setIlpEnabled}
               ilpConfig={ilpConfig} setIlpConfig={setIlpConfig}
               onOpenIlpEnrollmentModal={() => setIlpEnrollmentModalOpen(true)}
+              onXRayDataChange={setLabXRayData}
             />
           </FeatureLock>
         ) : activeTab === 'portfolios' && activeId ? (
@@ -1142,6 +1197,8 @@ function App() {
           labData={labData} labIsins={labIsins} labMcSettings={labMcSettings}
           labBaseCurrency={labBaseCurrency}
           stressTestData={stressTestData}
+          xrayData={labXRayData}
+          quantFunds={quantFunds}
           ilpEnabled={ilpEnabled} ilpConfig={ilpConfig}
           insuranceEnabled={insuranceEnabled} insurancePlan={insurancePlan}
           clientInfo={clientInfo}
@@ -1158,6 +1215,8 @@ function App() {
           labMcSettings={labMcSettings}
           labBaseCurrency={labBaseCurrency}
           stressTestData={stressTestData}
+          xrayData={labXRayData}
+          quantFunds={quantFunds}
           insuranceEnabled={insuranceEnabled}
           insurancePlan={insurancePlan}
           clientInfo={clientInfo}

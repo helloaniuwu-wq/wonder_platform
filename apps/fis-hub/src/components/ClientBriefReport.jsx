@@ -20,6 +20,8 @@ import {
   Layers,
   AlertTriangle,
 } from 'lucide-react';
+import XRayReportSection from './XRayReportSection';
+import { computePortfolioXRay } from '../utils/portfolioXRay';
 
 const CURRENCY_SYMBOL_MAP = {
   USD: '$',
@@ -142,6 +144,8 @@ export default function ClientBriefReport({
   labMcSettings,
   labBaseCurrency = 'USD',
   stressTestData = null,
+  xrayData = null,
+  quantFunds = [],
   insuranceEnabled = false,
   insurancePlan = null,
   clientInfo = null,
@@ -812,6 +816,19 @@ export default function ClientBriefReport({
               </div>
             )}
           </section>
+
+          <XRayReportSection
+            xrayData={xrayData}
+            localXRay={computePortfolioXRay({
+              holdings: Object.entries(targetPf.allocations || {})
+                .filter(([, w]) => Number(w) > 0)
+                .map(([isin, weight]) => ({ isin, weight: Number(weight) })),
+              quantFunds,
+              totalNav: capital,
+            })}
+            currencySymbol={currencySymbol(currency)}
+            sectionTitle="底层穿透 X-Ray（工具结构 · 双风格箱 · 合并重仓 · SOP 体检）"
+          />
 
           {/* Compliance Signoff Footer */}
           <footer

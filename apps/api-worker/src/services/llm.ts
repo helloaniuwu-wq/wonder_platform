@@ -1,5 +1,11 @@
 import type { Env } from "../types";
-import { isIlasFund, resolveBasketUniverseMode, type TacticalCandidateFund } from "./advisoryEngine";
+import {
+  hasUsEstateTaxConcern,
+  isIlasFund,
+  isIrelandOrLuxembourgFund,
+  resolveBasketUniverseMode,
+  type TacticalCandidateFund,
+} from "./advisoryEngine";
 
 export type ModelPreference =
   | "deepseek-pro"
@@ -899,6 +905,7 @@ export function extractAndNormalizeTacticalJson(
         ? rec.universe_mode
         : resolveBasketUniverseMode(profile || {}, baseHoldings);
     const basketIsIlas = basketUniverseMode === "ilas";
+    const requireEuUcits = !basketIsIlas && hasUsEstateTaxConcern(profile || {});
 
     const combined: CombinedEntry[] = baseHoldings.map((h, i) => {
       const keys = baseKeysPerHolding[i];
@@ -942,8 +949,9 @@ export function extractAndNormalizeTacticalJson(
       if (!key || baseKeySet.has(key)) continue;
       const cand = candLookup.get(key);
       if (!cand || seenAddedSlugs.has(cand.slug)) continue;
-      // 硬约束：严禁跨平台混配（投连险与非投连险互不越界）
+      // 硬约束：严禁跨平台混配（投连险与非投连险互不越界）；若关注美国遗产税则非投连险仅限 IE/LU UCITS
       if (isIlasFund(cand) !== basketIsIlas) continue;
+      if (requireEuUcits && !isIrelandOrLuxembourgFund(cand)) continue;
       const rawW = Number(item?.adjusted_weight_pct);
       if (!Number.isFinite(rawW) || rawW <= 0) continue;
       seenAddedSlugs.add(cand.slug);

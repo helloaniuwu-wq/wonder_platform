@@ -12,7 +12,13 @@ import yaml
 from wonder_quant import __version__
 from wonder_quant.catalog import load_catalog
 from wonder_quant.config import load_settings, now_hkt
-from wonder_quant.d1_client import pack_benchmark_series, pack_fund_series, pack_fx_series
+from wonder_quant.d1_client import (
+    _end_date_from_delta,
+    pack_benchmark_series,
+    pack_fund_series,
+    pack_fx_series,
+)
+from wonder_quant.fetchers.yahoo import sanitize_yahoo_series_df
 from wonder_quant.models import FundMetrics, PipelineRunSummary
 from wonder_quant.pipeline import BM_COLS, FX_COLS, NAV_COLS, _stitch_aia_official_onto_proxy
 from wonder_quant.storage import read_parquet_or_empty
@@ -88,10 +94,12 @@ def _parse_vault_extra(funds_dir: Path) -> dict[str, dict]:
         slug = md.stem.replace("_F", "").lower()
         code_raw = _str(fm.get("fund_codes")) or ""
         first_code = re.split(r"[（(\s|/]+", code_raw)[0].strip().upper()
+        dur_val = _num(fm.get("duration"))
+        yld_val = _num(fm.get("yield_pct"))
         payload = {
             "top_holdings_json": th_json,
-            "duration": _num(fm.get("duration")),
-            "yield_pct": _num(fm.get("yield_pct")),
+            "duration": dur_val if (dur_val is not None and -5.0 <= dur_val <= 40.0) else None,
+            "yield_pct": yld_val if (yld_val is not None and 0.0 < yld_val <= 25.0) else None,
             "avg_rating": _str(fm.get("avg_rating")),
             "credit_quality": _str(fm.get("credit_quality")),
             "morningstar_url": _str(fm.get("morningstar_url")),
@@ -120,7 +128,10 @@ def _ensure_wq_funds_columns(cur: sqlite3.Cursor) -> None:
 
 def main() -> int:
     settings = load_settings()
-    sqlite_path = find_local_d1_sqlite(settings.home_dir / "wrangler-state")
+    if len(sys.argv) > 1 and sys.argv[1].endswith(".sqlite"):
+        sqlite_path = Path(sys.argv[1])
+    else:
+        sqlite_path = find_local_d1_sqlite(settings.home_dir / "wrangler-state")
     print(f"Target local D1 SQLite: {sqlite_path}")
 
     funds = load_catalog(settings.vault_fund_dir)
@@ -145,13 +156,47 @@ def main() -> int:
         commentary = f.commentary or ex.get("strategy_note")
         cur.execute(
             """
-            INSERT OR REPLACE INTO wq_funds (
+            INSERT INTO wq_funds (
               slug, code, aia_code, isin, yahoo_ticker, cn_code, name, name_en, manager,
               asset_class, ilas_platform, currency, risk_class, morningstar_stars, fee_pct,
               role, fit_plans_json, tags_json, commentary, twin_code, is_distributing,
               benchmark_code, primary_source, data_tier, is_trackable, status, vault_last_updated, synced_at,
               top_holdings_json, duration, yield_pct, avg_rating, credit_quality, morningstar_url
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(slug) DO UPDATE SET
+              code = excluded.code,
+              aia_code = excluded.aia_code,
+              isin = COALESCE(excluded.isin, wq_funds.isin),
+              yahoo_ticker = COALESCE(excluded.yahoo_ticker, wq_funds.yahoo_ticker),
+              cn_code = COALESCE(excluded.cn_code, wq_funds.cn_code),
+              name = excluded.name,
+              name_en = COALESCE(excluded.name_en, wq_funds.name_en),
+              manager = COALESCE(excluded.manager, wq_funds.manager),
+              asset_class = excluded.asset_class,
+              ilas_platform = excluded.ilas_platform,
+              currency = excluded.currency,
+              risk_class = COALESCE(excluded.risk_class, wq_funds.risk_class),
+              morningstar_stars = COALESCE(excluded.morningstar_stars, wq_funds.morningstar_stars),
+              fee_pct = excluded.fee_pct,
+              role = COALESCE(excluded.role, wq_funds.role),
+              fit_plans_json = excluded.fit_plans_json,
+              tags_json = excluded.tags_json,
+              commentary = COALESCE(excluded.commentary, wq_funds.commentary),
+              twin_code = COALESCE(excluded.twin_code, wq_funds.twin_code),
+              is_distributing = excluded.is_distributing,
+              benchmark_code = excluded.benchmark_code,
+              primary_source = excluded.primary_source,
+              data_tier = excluded.data_tier,
+              is_trackable = excluded.is_trackable,
+              status = excluded.status,
+              vault_last_updated = COALESCE(excluded.vault_last_updated, wq_funds.vault_last_updated),
+              synced_at = excluded.synced_at,
+              top_holdings_json = COALESCE(excluded.top_holdings_json, wq_funds.top_holdings_json),
+              duration = COALESCE(excluded.duration, wq_funds.duration),
+              yield_pct = COALESCE(excluded.yield_pct, wq_funds.yield_pct),
+              avg_rating = COALESCE(excluded.avg_rating, wq_funds.avg_rating),
+              credit_quality = COALESCE(excluded.credit_quality, wq_funds.credit_quality),
+              morningstar_url = COALESCE(excluded.morningstar_url, wq_funds.morningstar_url)
             """,
             (
                 f.slug, f.code, f.aia_code, f.isin, f.yahoo_ticker, f.cn_code, f.name, f.name_en, f.manager,
@@ -174,7 +219,9 @@ def main() -> int:
                 continue
             f = fund_map[slug_str]
             stitched = _stitch_aia_official_onto_proxy(grp)
-            payload, digest = pack_fund_series(stitched, "market_etf", f.primary_source)
+            cleaned = sanitize_yahoo_series_df(stitched, ticker=f.yahoo_ticker or f.code or slug_str)
+            payload, digest = pack_fund_series(cleaned, "market_etf", f.primary_source)
+            end_dt = _end_date_from_delta(payload.get("d0"), payload.get("dd", []))
             cur.execute(
                 """
                 INSERT OR REPLACE INTO wq_fund_series (
@@ -184,9 +231,9 @@ def main() -> int:
                 """,
                 (
                     slug_str, f.currency, payload["t"], payload["s"],
-                    payload["d"][0] if payload["d"] else None,
-                    payload["d"][-1] if payload["d"] else None,
-                    len(payload["d"]),
+                    payload.get("d0"),
+                    end_dt,
+                    len(payload["n"]),
                     json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
                     digest, now_iso,
                 ),
@@ -198,6 +245,7 @@ def main() -> int:
     if not fx_df.empty:
         for pair, grp in fx_df.groupby("pair"):
             payload, digest, latest = pack_fx_series(grp.reset_index(drop=True))
+            end_dt = _end_date_from_delta(payload.get("d0"), payload.get("dd", []))
             cur.execute(
                 """
                 INSERT OR REPLACE INTO wq_fx_series (
@@ -206,8 +254,8 @@ def main() -> int:
                 """,
                 (
                     str(pair),
-                    payload["d"][0] if payload["d"] else None,
-                    payload["d"][-1] if payload["d"] else None,
+                    payload.get("d0"),
+                    end_dt,
                     latest,
                     json.dumps(payload, separators=(",", ":")),
                     digest, "yfinance", now_iso,
@@ -221,6 +269,7 @@ def main() -> int:
         for code, grp in bm_df.groupby("code"):
             ccy = str(grp["currency"].iloc[-1])
             payload, digest = pack_benchmark_series(grp.reset_index(drop=True))
+            end_dt = _end_date_from_delta(payload.get("d0"), payload.get("dd", []))
             cur.execute(
                 """
                 INSERT OR REPLACE INTO wq_benchmark_series (
@@ -229,8 +278,8 @@ def main() -> int:
                 """,
                 (
                     str(code), ccy,
-                    payload["d"][0] if payload["d"] else None,
-                    payload["d"][-1] if payload["d"] else None,
+                    payload.get("d0"),
+                    end_dt,
                     json.dumps(payload, separators=(",", ":")),
                     digest, now_iso,
                 ),

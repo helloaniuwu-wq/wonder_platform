@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { 
   Users, UserCheck, Shield, Award, User, RefreshCw, 
-  Search, CheckCircle2, Ban, SlidersHorizontal, Briefcase 
+  Search, CheckCircle2, Ban, SlidersHorizontal, Briefcase,
+  BookOpen, Download, Copy, ExternalLink
 } from 'lucide-react';
 import { authHeaders } from '../utils/auth';
 
@@ -14,7 +15,16 @@ const ROLE_META = {
   free:    { label: '普通用户', color: 'var(--text-muted)', bg: 'var(--surface-subtle)' },
 };
 
-export default function AdminPanel({ currentUser }) {
+const QUEUE_STATUS_META = {
+  queued:      { label: '待分析', color: '#8b5cf6', bg: 'rgba(139, 92, 246, 0.12)' },
+  watching:    { label: '观察中', color: 'var(--info)', bg: 'rgba(59, 130, 246, 0.12)' },
+  in_progress: { label: '分析中', color: 'var(--warning)', bg: 'var(--warning-bg)' },
+  completed:   { label: '已完成', color: 'var(--success)', bg: 'var(--success-bg)' },
+  dismissed:   { label: '暂不分析', color: 'var(--text-muted)', bg: 'var(--surface-subtle)' },
+};
+
+export default function AdminPanel({ currentUser, onOpenFundDetail }) {
+  const [adminTab, setAdminTab] = useState('users'); // 'users' | 'fund_queue'
   const [users, setUsers] = useState([]);
   const [stats, setStats] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -24,6 +34,14 @@ export default function AdminPanel({ currentUser }) {
   const [savingId, setSavingId] = useState(null);
   const [filterRole, setFilterRole] = useState('all');
   const [search, setSearch] = useState('');
+
+  // Fund Research Queue state
+  const [queueItems, setQueueItems] = useState([]);
+  const [queueSummary, setQueueSummary] = useState(null);
+  const [queueLoading, setQueueLoading] = useState(false);
+  const [queueStatusFilter, setQueueStatusFilter] = useState('all');
+  const [queueSearch, setQueueSearch] = useState('');
+  const [editingNotes, setEditingNotes] = useState({});
 
   // loading 初始即为 true，首次加载无需再同步 setLoading(true)；
   // 手动刷新走 fetchUsers（先置 loading 再加载）。
@@ -69,6 +87,89 @@ export default function AdminPanel({ currentUser }) {
     loadUsers();
     loadStats();
   }, [loadUsers, loadStats]);
+
+  const loadFundQueue = useCallback(
+    () =>
+      fetch(`${API}/admin/fund-research-queue`, { headers: authHeaders() })
+        .then(async (res) => {
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          return res.json();
+        })
+        .then((data) => {
+          setQueueItems(Array.isArray(data.items) ? data.items : []);
+          setQueueSummary(data.summary || null);
+        })
+        .catch((e) => {
+          setError('无法加载基金观察分析队列：' + e.message);
+        })
+        .finally(() => {
+          setQueueLoading(false);
+        }),
+    []
+  );
+
+  const fetchFundQueue = useCallback(() => {
+    setQueueLoading(true);
+    return loadFundQueue();
+  }, [loadFundQueue]);
+
+  useEffect(() => {
+    if (adminTab === 'fund_queue') {
+      loadFundQueue();
+    }
+  }, [adminTab, loadFundQueue]);
+
+  const handleQueueUpdate = async (slug, patch) => {
+    setSavingId(slug);
+    try {
+      const res = await fetch(`${API}/admin/fund-research-queue/${encodeURIComponent(slug)}`, {
+        method: 'PUT',
+        headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+        body: JSON.stringify(patch),
+      });
+      if (!res.ok) throw new Error('更新失败');
+      showSuccessFeedback(`已更新 ${slug} 队列状态`);
+      await fetchFundQueue();
+    } catch (e) {
+      alert(e.message);
+    } finally {
+      setSavingId(null);
+    }
+  };
+
+  const handleExportQueueMarkdown = async () => {
+    try {
+      const res = await fetch(`${API}/admin/fund-research-queue/export?format=markdown`, { headers: authHeaders() });
+      if (!res.ok) throw new Error('导出失败');
+      const md = await res.text();
+      await navigator.clipboard?.writeText(md).catch(() => {});
+      const blob = new Blob([md], { type: 'text/markdown;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `基金分析线索-${new Date().toISOString().slice(0, 10)}.md`;
+      a.click();
+      URL.revokeObjectURL(url);
+      showSuccessFeedback('已导出 Obsidian 线索 Markdown（并复制到剪贴板）');
+    } catch (e) {
+      alert(e.message);
+    }
+  };
+
+  const handleCopyAgentPrompt = async () => {
+    const active = queueItems.filter((x) => ['queued', 'watching', 'in_progress'].includes(x.status));
+    if (active.length === 0) {
+      alert('当前没有待分析队列项');
+      return;
+    }
+    const lines = active.map((x) => {
+      const notes = (x.requesters || []).map((r) => r.note).filter(Boolean).join('；');
+      return `- ${x.slug} (${x.code} ${x.fund_name}) [${x.priority}, ${x.request_count}人关注]${notes ? ` 关注焦点: ${notes}` : ''}`;
+    });
+    const prompt = `请使用 fund-analysis-sop (SOP v2.0) 依次分析以下 FIS 观察队列基金，完成后执行 check_fund_contract.py、sync_fund_to_library.py 与 wq publish-sop：\n${lines.join('\n')}`;
+    await navigator.clipboard?.writeText(prompt).catch(() => {});
+    showSuccessFeedback(`已复制 ${active.length} 只基金的 Agent SOP v2.0 调度指令`);
+  };
 
   const showSuccessFeedback = (msg) => {
     setActionSuccess(msg);
@@ -205,29 +306,221 @@ export default function AdminPanel({ currentUser }) {
           </p>
         </div>
 
-        <button
-          onClick={() => { fetchUsers(); fetchStats(); }}
-          disabled={loading || statsLoading}
-          style={{
-            display: 'inline-flex',
-            alignItems: 'center',
-            gap: 6,
-            padding: '9px 16px',
-            borderRadius: 'var(--card-radius, 6px)',
-            background: 'var(--surface-card)',
-            border: '1px solid var(--border-subtle)',
-            color: 'var(--text-secondary)',
-            cursor: 'pointer',
-            fontSize: 13,
-            fontWeight: 500,
-            transition: 'all 0.2s'
-          }}
-          title="刷新所有用户及统计数据"
-        >
-          <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
-          <span>刷新</span>
-        </button>
+        <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+          <div className="lab-segmented">
+            <button type="button" aria-pressed={adminTab === 'users'} onClick={() => setAdminTab('users')}>
+              👥 用户与权限管理
+            </button>
+            <button type="button" aria-pressed={adminTab === 'fund_queue'} onClick={() => setAdminTab('fund_queue')}>
+              🔍 基金观察分析队列 {queueSummary ? `(${queueSummary.queued_count + queueSummary.watching_count + queueSummary.in_progress_count})` : ''}
+            </button>
+          </div>
+          <button
+            onClick={() => {
+              if (adminTab === 'fund_queue') {
+                fetchFundQueue();
+              } else {
+                fetchUsers();
+                fetchStats();
+              }
+            }}
+            disabled={loading || statsLoading || queueLoading}
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 6,
+              padding: '9px 16px',
+              borderRadius: 'var(--card-radius, 6px)',
+              background: 'var(--surface-card)',
+              border: '1px solid var(--border-subtle)',
+              color: 'var(--text-secondary)',
+              cursor: 'pointer',
+              fontSize: 13,
+              fontWeight: 500,
+              transition: 'all 0.2s'
+            }}
+            title="刷新数据"
+          >
+            <RefreshCw size={14} className={loading || queueLoading ? 'animate-spin' : ''} />
+            <span>刷新</span>
+          </button>
+        </div>
       </div>
+
+      {adminTab === 'fund_queue' ? (
+        <div>
+          {queueSummary && (
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 12, marginBottom: 20 }}>
+              {[
+                { label: '全库可追踪基金', value: queueSummary.total_funds, color: 'var(--text-primary)' },
+                { label: 'SOP 深度覆盖', value: `${queueSummary.sop_covered_count} (${queueSummary.coverage_pct}%)`, color: 'var(--success)' },
+                { label: '待分析 / 观察', value: queueSummary.queued_count + queueSummary.watching_count, color: '#8b5cf6' },
+                { label: '分析进行中', value: queueSummary.in_progress_count, color: 'var(--warning)' },
+              ].map((c) => (
+                <div key={c.label} style={{ background: 'var(--surface-card)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--card-radius, 6px)', padding: '14px 16px' }}>
+                  <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 6 }}>{c.label}</div>
+                  <div style={{ fontSize: 22, fontWeight: 700, fontFamily: 'var(--font-mono)', color: c.color }}>{c.value}</div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, marginBottom: 16, alignItems: 'center' }}>
+            <div className="lab-segmented">
+              {[
+                { id: 'all', label: '全部' },
+                { id: 'queued', label: '待分析' },
+                { id: 'watching', label: '观察中' },
+                { id: 'in_progress', label: '分析中' },
+                { id: 'completed', label: '已完成' },
+                { id: 'dismissed', label: '暂不分析' },
+              ].map((st) => (
+                <button key={st.id} type="button" aria-pressed={queueStatusFilter === st.id} onClick={() => setQueueStatusFilter(st.id)}>
+                  {st.label}
+                </button>
+              ))}
+            </div>
+
+            <input
+              type="text"
+              value={queueSearch}
+              onChange={(e) => setQueueSearch(e.target.value)}
+              placeholder="搜代码 / 名称 / 备注…"
+              className="atelier-input"
+              style={{ flex: '1 1 200px', maxWidth: 260 }}
+            />
+
+            <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              <button type="button" onClick={handleCopyAgentPrompt} className="action-btn-secondary" style={{ fontSize: 12, padding: '7px 12px', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                <Copy size={13} /> 复制 Agent SOP 指令
+              </button>
+              <button type="button" onClick={handleExportQueueMarkdown} className="create-btn" style={{ fontSize: 12, padding: '7px 12px', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                <Download size={13} /> 导出 Obsidian 线索清单
+              </button>
+            </div>
+          </div>
+
+          {actionSuccess && (
+            <div style={{ padding: '10px 16px', background: 'var(--success-bg)', border: '1px solid var(--success)', borderRadius: 'var(--card-radius, 6px)', color: 'var(--success)', fontSize: 13, marginBottom: 16 }}>
+              {actionSuccess}
+            </div>
+          )}
+
+          <div style={{ background: 'var(--surface-card)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--card-radius, 6px)', overflow: 'hidden' }}>
+            <div style={{ overflowX: 'auto' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left' }}>
+                <thead>
+                  <tr style={{ borderBottom: '1px solid var(--border-subtle)', background: 'var(--surface-subtle)' }}>
+                    {['基金代码 / 名称', '关注热度与用户备注', '优先级', '调度状态', '管理员备注'].map((h) => (
+                      <th key={h} style={{ padding: '12px 14px', fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase' }}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {queueLoading ? (
+                    <tr><td colSpan={5} style={{ textAlign: 'center', padding: 40, color: 'var(--text-muted)' }}>加载队列中…</td></tr>
+                  ) : (() => {
+                    const visible = queueItems.filter((it) => {
+                      if (queueStatusFilter !== 'all' && it.status !== queueStatusFilter) return false;
+                      if (queueSearch.trim()) {
+                        const hay = `${it.slug} ${it.code} ${it.fund_name} ${it.admin_note} ${JSON.stringify(it.requesters || [])}`.toLowerCase();
+                        if (!hay.includes(queueSearch.toLowerCase())) return false;
+                      }
+                      return true;
+                    });
+                    if (visible.length === 0) {
+                      return <tr><td colSpan={5} style={{ textAlign: 'center', padding: 40, color: 'var(--text-muted)' }}>暂无观察队列记录</td></tr>;
+                    }
+                    return visible.map((it) => {
+                      const sm = QUEUE_STATUS_META[it.status] || QUEUE_STATUS_META.queued;
+                      const noteVal = editingNotes[it.slug] !== undefined ? editingNotes[it.slug] : (it.admin_note || '');
+                      return (
+                        <tr key={it.slug} style={{ borderBottom: '1px solid var(--border-subtle)' }}>
+                          <td style={tdStyle}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                              <button
+                                type="button"
+                                onClick={() => onOpenFundDetail?.(it.slug)}
+                                style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer', fontFamily: 'var(--font-mono)', fontWeight: 700, color: 'var(--accent-color)', display: 'inline-flex', alignItems: 'center', gap: 4 }}
+                              >
+                                {it.code} <ExternalLink size={11} />
+                              </button>
+                              {it.has_sop_report && (
+                                <span style={{ fontSize: 10, padding: '1px 5px', borderRadius: 4, background: 'rgba(16,185,129,0.12)', color: 'var(--success)', fontWeight: 700 }}>
+                                  <BookOpen size={10} /> {it.sop_medal}
+                                </span>
+                              )}
+                            </div>
+                            <div style={{ fontSize: 12, fontWeight: 600, marginTop: 2 }}>{it.fund_name}</div>
+                            <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{it.ilas_platform || '—'} · {it.asset_class}</div>
+                          </td>
+                          <td style={tdStyle}>
+                            <div style={{ fontWeight: 700, fontSize: 12, marginBottom: 4 }}>👥 {it.request_count} 人标记</div>
+                            {(it.requesters || []).map((req, ridx) => (
+                              <div key={ridx} style={{ fontSize: 11, color: 'var(--text-secondary)', lineHeight: 1.45 }}>
+                                <strong>{req.name || req.email}</strong>{req.note ? `：${req.note}` : ''}
+                              </div>
+                            ))}
+                          </td>
+                          <td style={tdStyle}>
+                            <select
+                              value={it.priority}
+                              disabled={savingId === it.slug}
+                              onChange={(e) => handleQueueUpdate(it.slug, { priority: e.target.value })}
+                              className="atelier-select"
+                              style={{ fontSize: 12, padding: '4px 8px' }}
+                            >
+                              <option value="P0_urgent">P0 紧急</option>
+                              <option value="P1_high">P1 高优</option>
+                              <option value="normal">普通</option>
+                            </select>
+                          </td>
+                          <td style={tdStyle}>
+                            <select
+                              value={it.status}
+                              disabled={savingId === it.slug}
+                              onChange={(e) => handleQueueUpdate(it.slug, { status: e.target.value })}
+                              style={{ padding: '4px 8px', borderRadius: 4, fontSize: 12, fontWeight: 600, background: sm.bg, color: sm.color, border: '1px solid var(--border-subtle)' }}
+                            >
+                              <option value="queued">待分析</option>
+                              <option value="watching">观察中</option>
+                              <option value="in_progress">分析中</option>
+                              <option value="completed">已完成</option>
+                              <option value="dismissed">暂不分析</option>
+                            </select>
+                          </td>
+                          <td style={tdStyle}>
+                            <div style={{ display: 'flex', gap: 6 }}>
+                              <input
+                                type="text"
+                                value={noteVal}
+                                onChange={(e) => setEditingNotes((prev) => ({ ...prev, [it.slug]: e.target.value }))}
+                                placeholder="调度备注…"
+                                className="atelier-input"
+                                style={{ fontSize: 12, padding: '4px 8px', minWidth: 140 }}
+                              />
+                              <button
+                                type="button"
+                                disabled={savingId === it.slug}
+                                onClick={() => handleQueueUpdate(it.slug, { admin_note: noteVal })}
+                                className="action-btn-secondary"
+                                style={{ fontSize: 11, padding: '4px 8px' }}
+                              >
+                                保存
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    });
+                  })()}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      ) : (
+        <>
 
       {/* ── 统计卡片 ── */}
       {!statsLoading && stats && (
@@ -620,6 +913,8 @@ export default function AdminPanel({ currentUser }) {
         <span>共检索到 {filteredUsers.length} 位用户</span>
         <span>管理员权限说明：不可修改自己的角色及封禁状态以防权限死锁</span>
       </div>
+        </>
+      )}
     </div>
   );
 }

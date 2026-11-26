@@ -10,6 +10,7 @@ const FundCatalogPickerModal = ({ open, funds = [], existingIds = [], onClose, o
   const { lang } = useLang();
   const [q, setQ] = useState('');
   const [platformGroup, setPlatformGroup] = useState('all');
+  const [domicile, setDomicile] = useState('all');
   const [assetClass, setAssetClass] = useState('all');
   const [selected, setSelected] = useState([]);
 
@@ -18,12 +19,13 @@ const FundCatalogPickerModal = ({ open, funds = [], existingIds = [], onClose, o
       filterAndSortFunds(funds, {
         q,
         platformGroup,
+        domicile,
         assetClass,
         excludeNonRec: false,
         sortKey: 'quant_score',
         sortOrder: 'desc',
       }).slice(0, 80),
-    [funds, q, platformGroup, assetClass]
+    [funds, q, platformGroup, domicile, assetClass]
   );
 
   if (!open) return null;
@@ -44,7 +46,7 @@ const FundCatalogPickerModal = ({ open, funds = [], existingIds = [], onClose, o
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <div>
             <h2 style={{ margin: 0, fontSize: '1.15rem' }}>
-              {lang === 'en' ? 'Pick from 309-Fund Library' : '从 309 只基金产品库选基'}
+              {lang === 'en' ? `Pick from ${funds.length || 330}-Fund Library` : `从 ${funds.length || 330} 只基金产品库选基`}
             </h2>
             <div style={{ fontSize: '0.76rem', color: 'var(--text-secondary)', marginTop: '2px' }}>
               {lang === 'en'
@@ -71,9 +73,16 @@ const FundCatalogPickerModal = ({ open, funds = [], existingIds = [], onClose, o
           <select value={platformGroup} onChange={(e) => setPlatformGroup(e.target.value)} className="atelier-select" style={{ width: 'auto' }}>
             <option value="all">{lang === 'en' ? 'All Platforms' : '全部平台'}</option>
             <option value="aia">{lang === 'en' ? 'AIA ILAS (TMP2)' : 'AIA 卓达智悦2'}</option>
+            <option value="eu_ucits">{lang === 'en' ? 'Europe / UCITS (IE/LU)' : '欧洲基金 (IE/LU UCITS)'}</option>
             <option value="us_intl">{lang === 'en' ? 'US / Intl / JP ETFs' : '美股 / 国际 / 日本 ETF'}</option>
             <option value="cn_hk">{lang === 'en' ? 'CN / HK Connect ETFs' : 'A股 / 港股通 ETF'}</option>
             <option value="bonds">{lang === 'en' ? 'Bond Funds' : '债券基金'}</option>
+          </select>
+          <select value={domicile} onChange={(e) => setDomicile(e.target.value)} className="atelier-select" style={{ width: 'auto' }}>
+            <option value="all">{lang === 'en' ? 'All Domiciles' : '全部税籍'}</option>
+            <option value="ie">{lang === 'en' ? 'Ireland (IE)' : '爱尔兰 (IE)'}</option>
+            <option value="lu">{lang === 'en' ? 'Luxembourg (LU)' : '卢森堡 (LU)'}</option>
+            <option value="non_us">{lang === 'en' ? 'Estate-Tax Exempt' : '免美遗产税'}</option>
           </select>
           <select value={assetClass} onChange={(e) => setAssetClass(e.target.value)} className="atelier-select" style={{ width: 'auto' }}>
             <option value="all">{lang === 'en' ? 'All Asset Classes' : '全部大类'}</option>

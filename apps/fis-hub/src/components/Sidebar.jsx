@@ -11,7 +11,7 @@ const Sidebar = ({
   portfolios, setPortfolios, activeId, setActiveId,
   setShowModal,
   setDeleteCandidate, setShowDeleteModal,
-  savedScenarios, handleLoadScenario, handleDeleteScenario, handleRenameScenario,
+  savedScenarios, activeScenarioId, handleLoadScenario, handleDeleteScenario, handleRenameScenario,
   currentUser, canEditPortfolio,
   onIlpSaved,
   mobileDrawerOpen = false,
@@ -272,12 +272,14 @@ const Sidebar = ({
               }}>
                 <div style={{ fontSize: '0.78rem' }}>{t('sidebar.noScenarios')}</div>
               </div>
-            ) : savedScenarios.map(sc => (
+            ) : savedScenarios.map(sc => {
+              const isActiveScenario = activeScenarioId != null && Number(sc.id) === Number(activeScenarioId);
+              return (
               <div
                 key={sc.id}
                 style={{
-                  background: 'var(--surface-card)',
-                  border: '1px solid var(--border-subtle)',
+                  background: isActiveScenario ? 'rgba(var(--accent-color-rgb), 0.08)' : 'var(--surface-card)',
+                  border: `1px solid ${isActiveScenario ? 'var(--accent-color)' : 'var(--border-subtle)'}`,
                   borderRadius: 'var(--card-radius)',
                   padding: '12px',
                   marginBottom: '8px',
@@ -286,7 +288,7 @@ const Sidebar = ({
                   position: 'relative',
                 }}
                 onMouseEnter={e => e.currentTarget.style.borderColor = 'var(--accent-color)'}
-                onMouseLeave={e => e.currentTarget.style.borderColor = 'var(--border-subtle)'}
+                onMouseLeave={e => e.currentTarget.style.borderColor = isActiveScenario ? 'var(--accent-color)' : 'var(--border-subtle)'}
                 onClick={() => { handleLoadScenario(sc.id); closeDrawer(); }}
               >
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '4px' }}>
@@ -402,7 +404,8 @@ const Sidebar = ({
                   </button>
                 </div>
               </div>
-            ))}
+              );
+            })}
           </nav>
         )}
 

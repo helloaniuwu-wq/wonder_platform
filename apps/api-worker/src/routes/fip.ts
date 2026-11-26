@@ -788,6 +788,33 @@ fipRouter.get("/lab/scenarios", async (c) => {
   );
 });
 
+function mergeScenarioSettings(body: any, existingSettings: Record<string, any> = {}): Record<string, any> {
+  const merged: Record<string, any> = {};
+  for (const [k, v] of Object.entries(existingSettings || {})) {
+    if (k.startsWith("_")) merged[k] = v;
+  }
+  const hasMcInput = body.mc_settings !== undefined || body.settings !== undefined;
+  const srcMc = hasMcInput ? body.mc_settings || body.settings || {} : existingSettings || {};
+  for (const [k, v] of Object.entries(srcMc)) {
+    if (!k.startsWith("_")) merged[k] = v;
+  }
+  if (body.ilp_enabled !== undefined && body.ilp_enabled !== null) {
+    merged._ilp_enabled = Boolean(body.ilp_enabled);
+    merged._ilp_config = body.ilp_enabled ? (body.ilp_config ?? null) : null;
+  }
+  if (body.insurance_enabled !== undefined && body.insurance_enabled !== null) {
+    merged._ins_enabled = Boolean(body.insurance_enabled);
+    merged._ins_plan = body.insurance_enabled ? (body.insurance_plan ?? null) : null;
+    merged._ins_alpha_low = body.insurance_alpha_low ?? null;
+    merged._ins_alpha_high = body.insurance_alpha_high ?? null;
+  }
+  if (body.base_currency !== undefined) merged._base_currency = String(body.base_currency || "USD");
+  if (body.days_back !== undefined) merged._days_back = Number(body.days_back || 1825);
+  if (body.max_weight !== undefined) merged._max_weight = Number(body.max_weight || 0.35);
+  if (body.lab_mode !== undefined) merged._lab_mode = String(body.lab_mode || "custom");
+  return merged;
+}
+
 fipRouter.get("/lab/scenarios/:id", async (c) => {
   const user = await requireUser(c);
   const id = parseInt(c.req.param("id"), 10);
@@ -824,13 +851,19 @@ fipRouter.get("/lab/scenarios/:id", async (c) => {
     insurance_plan: settingsRaw._ins_plan ?? null,
     insurance_alpha_low: settingsRaw._ins_alpha_low ?? null,
     insurance_alpha_high: settingsRaw._ins_alpha_high ?? null,
+    base_currency: settingsRaw._base_currency ?? null,
+    days_back: settingsRaw._days_back ?? null,
+    max_weight: settingsRaw._max_weight ?? null,
+    lab_mode: settingsRaw._lab_mode ?? null,
   });
 });
 
 fipRouter.put("/lab/scenarios/:id", async (c) => {
   const user = await requireUser(c);
   const id = parseInt(c.req.param("id"), 10);
-  const existing = await c.env.DB.prepare("SELECT user_id FROM lab_scenarios WHERE id = ?").bind(id).first<{ user_id: string | null }>();
+  const existing = await c.env.DB.prepare("SELECT id, name, user_id, settings_json FROM lab_scenarios WHERE id = ?")
+    .bind(id)
+    .first<{ id: number; name: string; user_id: string | null; settings_json?: string | null }>();
   if (!existing) throw new HttpError(404, "Scenario not found");
   if (user.role !== "admin" && existing.user_id !== user.id) {
     throw new HttpError(403, "無權修改他人的策略方案");
@@ -838,10 +871,12 @@ fipRouter.put("/lab/scenarios/:id", async (c) => {
   const body = await c.req.json<any>();
   const updates: string[] = [];
   const values: unknown[] = [];
+  let updatedName = existing.name;
 
   if (body.name !== undefined) {
     const newName = String(body.name || "").trim();
     if (!newName) throw new HttpError(400, "Name is required");
+    updatedName = newName;
     updates.push("name = ?");
     values.push(newName);
   }
@@ -853,17 +888,49 @@ fipRouter.put("/lab/scenarios/:id", async (c) => {
     updates.push("weights_json = ?");
     values.push(JSON.stringify(body.custom_weights || body.weights));
   }
-  if (body.mc_settings !== undefined || body.settings !== undefined) {
+
+  const hasSettingsFields =
+    body.mc_settings !== undefined ||
+    body.settings !== undefined ||
+    body.ilp_enabled !== undefined ||
+    body.insurance_enabled !== undefined ||
+    body.base_currency !== undefined ||
+    body.days_back !== undefined ||
+    body.max_weight !== undefined ||
+    body.lab_mode !== undefined;
+
+  if (hasSettingsFields) {
+    let existingSettings: Record<string, any> = {};
+    try {
+      existingSettings = JSON.parse(existing.settings_json || "{}") || {};
+    } catch {
+      existingSettings = {};
+    }
     updates.push("settings_json = ?");
-    values.push(JSON.stringify(body.mc_settings || body.settings));
+    values.push(JSON.stringify(mergeScenarioSettings(body, existingSettings)));
   }
   if (body.summary !== undefined) {
     updates.push("summary_json = ?");
     values.push(JSON.stringify(body.summary));
   }
   if (body.chart_data !== undefined || body.chart !== undefined) {
+    const rawChart = body.chart_data !== undefined ? body.chart_data : body.chart;
     updates.push("chart_json = ?");
-    values.push(JSON.stringify(body.chart_data || body.chart));
+    values.push(JSON.stringify(Array.isArray(rawChart) ? rawChart : []));
+  }
+
+  const isContentUpdate =
+    body.assets !== undefined ||
+    body.custom_weights !== undefined ||
+    body.weights !== undefined ||
+    hasSettingsFields ||
+    body.summary !== undefined ||
+    body.chart_data !== undefined ||
+    body.chart !== undefined;
+
+  if (isContentUpdate) {
+    updates.push("created_at = ?");
+    values.push(new Date().toISOString());
   }
 
   if (updates.length > 0) {
@@ -872,7 +939,12 @@ fipRouter.put("/lab/scenarios/:id", async (c) => {
       .bind(...values)
       .run();
   }
-  return c.json({ success: true, id, message: "方案名称已更新" });
+  return c.json({
+    success: true,
+    id,
+    name: updatedName,
+    message: isContentUpdate ? "方案已更新保存" : "方案名称已更新",
+  });
 });
 
 fipRouter.post("/lab/scenarios/save", async (c) => {
@@ -881,19 +953,7 @@ fipRouter.post("/lab/scenarios/save", async (c) => {
   const name = String(body.name || "未命名方案").trim();
   const now = new Date().toISOString();
 
-  const rawSettings = body.mc_settings || body.settings || {};
-  const settingsExt: Record<string, any> = { ...rawSettings };
-  if (body.ilp_enabled !== undefined && body.ilp_enabled !== null) {
-    settingsExt._ilp_enabled = body.ilp_enabled;
-    settingsExt._ilp_config = body.ilp_config ?? null;
-  }
-  if (body.insurance_enabled !== undefined && body.insurance_enabled !== null) {
-    settingsExt._ins_enabled = body.insurance_enabled;
-    settingsExt._ins_plan = body.insurance_plan ?? null;
-    settingsExt._ins_alpha_low = body.insurance_alpha_low ?? null;
-    settingsExt._ins_alpha_high = body.insurance_alpha_high ?? null;
-  }
-
+  const settingsExt = mergeScenarioSettings(body, {});
   const weights = body.custom_weights || body.weights || {};
   const chartData = body.chart_data || body.chart || [];
 

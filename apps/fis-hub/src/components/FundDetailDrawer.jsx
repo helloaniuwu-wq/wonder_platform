@@ -3,22 +3,29 @@ import {
   ComposedChart, Line, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine,
 } from 'recharts';
 import {
-  X, Plus, GitCompare, AlertTriangle, Layers, ExternalLink, Info, ArrowLeft, ChevronLeft, ChevronRight, RefreshCw,
+  X, Plus, Check, Zap, GitCompare, AlertTriangle, Layers, ExternalLink, Info, ArrowLeft, ChevronLeft, ChevronRight, RefreshCw, BookOpen, BookmarkPlus, BookmarkCheck,
 } from 'lucide-react';
 import { authHeaders } from '../utils/auth';
-import { fmtNum, fmtPct, fmtSignedPct, gradeMeta, tierMeta } from '../utils/fundQuantUtils';
+import { fmtNum, fmtPct, fmtSignedPct, gradeMeta, inferFundRole, resolveFundTwins, tierMeta } from '../utils/fundQuantUtils';
 import { buildFundExternalLinks } from '../utils/fundLinks';
 import { useLang } from '../i18n/langCore';
+import FundSopReportView from './FundSopReportView';
 
 const FundDetailDrawer = ({
   slug,
+  allFunds = [],
+  onSelectSlug,
   onClose,
   onAddToLab,
+  inLabBasket = false,
+  labBasketCount = 0,
+  onSendLabBasket,
   onToggleCompare,
   inCompare,
   onPrev,
   onNext,
   positionLabel,
+  onRefreshCatalog,
 }) => {
   const { lang } = useLang();
   const [range, setRange] = useState('3y');
@@ -26,8 +33,19 @@ const FundDetailDrawer = ({
   const [profile, setProfile] = useState(null);
   const [navData, setNavData] = useState(null);
   const [holdingsData, setHoldingsData] = useState(null);
+  const [sopData, setSopData] = useState(null);
+  const [drawerTab, setDrawerTab] = useState('quant');
+  const [showRequestBox, setShowRequestBox] = useState(false);
+  const [requestNote, setRequestNote] = useState('');
+  const [requestBusy, setRequestBusy] = useState(false);
   const [loading, setLoading] = useState(false);
   const [refreshingHoldings, setRefreshingHoldings] = useState(false);
+  const [prevSlug, setPrevSlug] = useState(slug);
+  if (slug !== prevSlug) {
+    setPrevSlug(slug);
+    setDrawerTab('quant');
+    setShowRequestBox(false);
+  }
 
   const handleRefreshHoldings = async () => {
     if (!slug || refreshingHoldings) return;
@@ -60,15 +78,21 @@ const FundDetailDrawer = ({
     const loadProfile = async () => {
       setLoading(true);
       try {
-        const [pRes, nRes, hRes] = await Promise.all([
+        const [pRes, nRes, hRes, sRes] = await Promise.all([
           fetch(`/api/quant/funds/${encodeURIComponent(slug)}`, { headers: authHeaders() }),
           fetch(`/api/quant/funds/${encodeURIComponent(slug)}/nav?range=${range}&currency=${currency}`, { headers: authHeaders() }),
           fetch(`/api/quant/funds/${encodeURIComponent(slug)}/holdings`, { headers: authHeaders() }),
+          fetch(`/api/quant/funds/${encodeURIComponent(slug)}/sop-report`, { headers: authHeaders() }),
         ]);
         if (!active) return;
         if (pRes.ok) setProfile(await pRes.json());
         if (nRes.ok) setNavData(await nRes.json());
         if (hRes.ok) setHoldingsData(await hRes.json());
+        if (sRes.ok) {
+          const sJson = await sRes.json();
+          setSopData(sJson);
+          setRequestNote(sJson?.queue_entry?.my_note || '');
+        }
       } finally {
         if (active) setLoading(false);
       }
@@ -77,12 +101,61 @@ const FundDetailDrawer = ({
     return () => { active = false; };
   }, [slug, range, currency]);
 
-  if (!slug) return null;
+  const handleSubmitResearchRequest = async () => {
+    if (!slug || requestBusy) return;
+    setRequestBusy(true);
+    try {
+      const res = await fetch(`/api/quant/funds/${encodeURIComponent(slug)}/research-request`, {
+        method: 'POST',
+        headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ note: requestNote }),
+      });
+      if (res.ok) {
+        const qEntry = await res.json();
+        setSopData((prev) => ({ ...(prev || { has_report: false, slug }), queue_entry: qEntry }));
+        setShowRequestBox(false);
+        onRefreshCatalog?.();
+      }
+    } finally {
+      setRequestBusy(false);
+    }
+  };
+
+  const handleCancelResearchRequest = async () => {
+    if (!slug || requestBusy) return;
+    setRequestBusy(true);
+    try {
+      const res = await fetch(`/api/quant/funds/${encodeURIComponent(slug)}/research-request`, {
+        method: 'DELETE',
+        headers: authHeaders(),
+      });
+      if (res.ok) {
+        const dRes = await res.json();
+        setSopData((prev) => ({
+          ...(prev || { has_report: false, slug }),
+          queue_entry: dRes.request_count > 0 ? { ...(prev?.queue_entry || {}), ...dRes } : null,
+        }));
+        onRefreshCatalog?.();
+      }
+    } finally {
+      setRequestBusy(false);
+    }
+  };
 
   const fund = profile?.fund;
-  const twin = profile?.twin;
+  const twins = React.useMemo(() => {
+    if (Array.isArray(profile?.twins) && profile.twins.length > 0) return profile.twins;
+    if (fund) {
+      const localTwins = resolveFundTwins(fund, allFunds);
+      if (localTwins.length > 0) return localTwins;
+    }
+    return profile?.twin ? [profile.twin] : [];
+  }, [profile, fund, allFunds]);
+
+  if (!slug) return null;
   const gMeta = gradeMeta(fund?.quant_grade);
   const tMeta = tierMeta(fund?.data_tier, lang);
+  const roleKind = fund ? inferFundRole(fund) : 'satellite';
   const points = navData?.points || [];
   const externalLinks = buildFundExternalLinks(fund, lang);
   const fallbackSummary = fund
@@ -90,7 +163,7 @@ const FundDetailDrawer = ({
         fund.manager ? `${fund.manager}管理` : null,
         fund.ilas_platform ? `归属平台：${fund.ilas_platform}` : null,
         fund.asset_class ? `资产类别：${fund.asset_class}` : null,
-        fund.role ? `组合角色：${fund.role}` : null,
+        `组合角色：${roleKind === 'core' ? '核心 (广泛高质量 Beta)' : '卫星 (高收益/新兴/主题)'}`,
         fund.risk_class ? `风险等级：${fund.risk_class}` : null,
         fund.fit_plans?.length ? `适用计划：${fund.fit_plans.join(' / ')}` : null,
       ]
@@ -158,12 +231,36 @@ const FundDetailDrawer = ({
         <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' }}>
           <button
             type="button"
-            className="create-btn"
-            style={{ padding: '7px 14px', fontSize: '0.82rem' }}
+            className={inLabBasket ? 'action-btn-secondary' : 'create-btn'}
+            style={{
+              padding: '7px 14px',
+              fontSize: '0.82rem',
+              ...(inLabBasket
+                ? {
+                    borderColor: 'var(--success)',
+                    color: 'var(--success)',
+                    background: 'rgba(16, 185, 129, 0.12)',
+                    fontWeight: 700,
+                  }
+                : {}),
+            }}
             onClick={() => onAddToLab(fund?.code || slug)}
           >
-            <Plus size={14} /> {lang === 'en' ? 'Add to Strategy Lab' : '加入策略实验室'}
+            {inLabBasket ? <Check size={14} /> : <Plus size={14} />}
+            {inLabBasket
+              ? (lang === 'en' ? 'Selected (Click to Remove)' : '已选入待测篮（点击移出）')
+              : (lang === 'en' ? 'Select for Lab' : '选入实验室待测篮')}
           </button>
+          {labBasketCount > 0 && onSendLabBasket && (
+            <button
+              type="button"
+              className="create-btn"
+              style={{ padding: '7px 14px', fontSize: '0.82rem' }}
+              onClick={onSendLabBasket}
+            >
+              <Zap size={14} /> {lang === 'en' ? `Go to Lab (${labBasketCount})` : `前往实验室 (${labBasketCount})`}
+            </button>
+          )}
           <button
             type="button"
             className="action-btn-secondary"
@@ -189,6 +286,34 @@ const FundDetailDrawer = ({
               AIA {fund.aia_code}
             </span>
           )}
+          {fund && (
+            <span
+              style={{
+                fontSize: '0.72rem',
+                padding: '2px 8px',
+                borderRadius: '4px',
+                background: roleKind === 'core' ? 'rgba(16,185,129,0.12)' : 'var(--surface-subtle)',
+                color: roleKind === 'core' ? 'var(--success)' : 'var(--text-secondary)',
+                fontWeight: 700,
+              }}
+            >
+              {roleKind === 'core' ? (lang === 'en' ? 'Core Asset' : '核心资产 (Core)') : (lang === 'en' ? 'Satellite Asset' : '卫星资产 (Satellite)')}
+            </span>
+          )}
+          {fund && (
+            <span
+              style={{
+                fontSize: '0.72rem',
+                padding: '2px 8px',
+                borderRadius: '4px',
+                background: fund.is_distributing ? 'rgba(59,130,246,0.12)' : 'var(--surface-subtle)',
+                color: fund.is_distributing ? 'var(--info)' : 'var(--text-secondary)',
+                fontWeight: 600,
+              }}
+            >
+              {fund.is_distributing ? (lang === 'en' ? 'Distributing (Dist)' : '分派型 (Dist)') : (lang === 'en' ? 'Accumulating (Acc)' : '累积型 (Acc)')}
+            </span>
+          )}
           <span style={{ fontSize: '0.72rem', padding: '2px 8px', borderRadius: '4px', background: gMeta.bg, color: gMeta.color, fontWeight: 700 }}>
             {lang === 'en' ? `Grade ${gMeta.label}` : `量化评级 ${gMeta.label}`}
           </span>
@@ -197,6 +322,43 @@ const FundDetailDrawer = ({
           </span>
         </div>
         <h2 style={{ margin: 0, fontSize: '1.35rem', lineHeight: 1.35 }}>{fund?.name || slug}</h2>
+        {twins.length > 0 && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', marginTop: '10px', padding: '8px 12px', borderRadius: '6px', background: 'rgba(168,85,247,0.08)', border: '1px solid rgba(168,85,247,0.22)' }}>
+            <Layers size={14} style={{ color: '#a855f7', flexShrink: 0 }} />
+            <span style={{ fontSize: '0.78rem', fontWeight: 700, color: 'var(--text-primary)' }}>
+              {fund?.is_distributing
+                ? (lang === 'en' ? 'Corresponding Accumulating Share Class:' : '对应累积型平台代码：')
+                : (lang === 'en' ? 'Corresponding Distributing Share Class:' : '对应分派型平台代码：')}
+            </span>
+            {twins.map((tw) => (
+              <button
+                key={tw.slug}
+                type="button"
+                onClick={() => onSelectSlug?.(tw.slug)}
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '5px',
+                  padding: '3px 10px',
+                  borderRadius: '999px',
+                  background: 'var(--surface-card)',
+                  border: '1px solid rgba(168,85,247,0.45)',
+                  color: '#a855f7',
+                  fontFamily: 'var(--font-mono)',
+                  fontSize: '0.76rem',
+                  fontWeight: 700,
+                  cursor: onSelectSlug ? 'pointer' : 'default',
+                }}
+              >
+                <span>{tw.aia_code || tw.code}</span>
+                <span style={{ fontWeight: 500, fontFamily: 'inherit', color: 'var(--text-secondary)' }}>
+                  ({tw.is_distributing ? (lang === 'en' ? 'Dist' : '分派') : (lang === 'en' ? 'Acc' : '累积')} · {tw.currency})
+                </span>
+                <span>→</span>
+              </button>
+            ))}
+          </div>
+        )}
         <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginTop: '6px', display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
           <span>{fund?.ilas_platform || '—'}</span>
           <span>·</span>
@@ -215,7 +377,69 @@ const FundDetailDrawer = ({
         )}
       </div>
 
-      {/* Two-Column Full-Width Layout */}
+      {/* Two-Column Full-Width Layout or Full SOP Report View */}
+      {sopData?.has_report && (
+        <div className="glass-card" style={{ padding: '10px 16px', marginBottom: 0, display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '10px' }}>
+          <div className="lab-segmented">
+            <button type="button" aria-pressed={drawerTab === 'quant'} onClick={() => setDrawerTab('quant')}>
+              📊 {lang === 'en' ? 'Quant & Holdings' : '量化体检与持仓'}
+            </button>
+            <button type="button" aria-pressed={drawerTab === 'sop'} onClick={() => setDrawerTab('sop')}>
+              📘 {lang === 'en' ? `SOP Deep Analysis (${sopData.medal_rating})` : `SOP 深度分析 (${sopData.medal_rating})`}
+            </button>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.76rem', color: 'var(--text-muted)' }}>
+            <span>报告日：{sopData.report_date} · 估值水位：{sopData.valuation_zone}</span>
+            <button
+              type="button"
+              onClick={() => setShowRequestBox((v) => !v)}
+              className="action-btn-secondary"
+              style={{ padding: '4px 10px', fontSize: '0.74rem' }}
+            >
+              <RefreshCw size={12} /> 申请重检更新
+            </button>
+          </div>
+        </div>
+      )}
+
+      {showRequestBox && (
+        <div className="glass-card" style={{ padding: '14px 18px', marginBottom: 0, borderColor: 'var(--accent-color)', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+          <div style={{ fontSize: '0.84rem', fontWeight: 700 }}>
+            {sopData?.has_report ? '🔄 申请刷新 SOP 深度分析' : '🔭 标记加入观察分析列表（供管理员后台 SOP 调度）'}
+          </div>
+          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+            <input
+              type="text"
+              value={requestNote}
+              onChange={(e) => setRequestNote(e.target.value)}
+              placeholder="可选：填写关注重点（如：分红可持续性 / 久期风险 / 同类替代比较）…"
+              className="atelier-input"
+              style={{ flex: '1 1 280px' }}
+            />
+            <button
+              type="button"
+              disabled={requestBusy}
+              onClick={handleSubmitResearchRequest}
+              className="create-btn"
+              style={{ padding: '7px 14px', fontSize: '0.8rem' }}
+            >
+              {requestBusy ? '提交中…' : '确认加入观察队列'}
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowRequestBox(false)}
+              className="action-btn-secondary"
+              style={{ padding: '7px 12px', fontSize: '0.8rem' }}
+            >
+              取消
+            </button>
+          </div>
+        </div>
+      )}
+
+      {drawerTab === 'sop' && sopData?.has_report ? (
+        <FundSopReportView sopData={sopData} />
+      ) : (
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(420px, 1fr))', gap: '18px', alignItems: 'start' }}>
         {/* Left Column: Chart + Drawdown + Quantitative Metrics */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: '18px', minWidth: 0 }}>
@@ -223,16 +447,16 @@ const FundDetailDrawer = ({
             {/* Chart controls */}
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
               <div className="lab-segmented">
-                {['6m', '1y', '3y', '5y', 'max'].map((r) => (
+                {['6m', '1y', '3y', '5y', '10y', 'max'].map((r) => (
                   <button key={r} type="button" aria-pressed={range === r} onClick={() => setRange(r)}>
                     {r.toUpperCase()}
                   </button>
                 ))}
               </div>
               <div className="lab-segmented">
-                {['NATIVE', 'USD', 'HKD', 'CNY'].map((c) => (
+                {['NATIVE', ...['USD', 'HKD', 'CNY'].filter((c) => c !== fund?.currency)].map((c) => (
                   <button key={c} type="button" aria-pressed={currency === c} onClick={() => setCurrency(c)}>
-                    {c === 'NATIVE' ? (fund?.currency || '原币') : c}
+                    {c === 'NATIVE' ? (fund?.currency ? `${fund.currency}（原币）` : '原币') : c}
                   </button>
                 ))}
               </div>
@@ -322,8 +546,97 @@ const FundDetailDrawer = ({
           </div>
         </div>
 
-        {/* Right Column: Overview + External Links + Top 10 Holdings + Twin */}
+        {/* Right Column: SOP Status + Overview + External Links + Top 10 Holdings + Twin */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: '18px', minWidth: 0 }}>
+          {fund && (
+            sopData?.has_report ? (
+              <div
+                className="glass-card"
+                style={{
+                  padding: '16px 20px',
+                  marginBottom: 0,
+                  borderColor: 'rgba(217, 119, 6, 0.45)',
+                  background: 'rgba(217, 119, 6, 0.05)',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '8px',
+                }}
+              >
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontWeight: 700, fontSize: '0.9rem', color: '#d97706' }}>
+                    <BookOpen size={15} />
+                    SOP v{sopData.sop_version} 深度分析已就绪 · {sopData.medal_rating}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setDrawerTab('sop')}
+                    className="create-btn"
+                    style={{ padding: '5px 12px', fontSize: '0.78rem' }}
+                  >
+                    阅读完整深度分析 →
+                  </button>
+                </div>
+                <div style={{ fontSize: '0.82rem', color: 'var(--text-primary)', lineHeight: 1.5 }}>{sopData.one_liner}</div>
+                <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', fontFamily: 'var(--font-mono)' }}>
+                  估值：{sopData.valuation_zone}
+                  {sopData.valuation_pct_5y != null ? ` (${sopData.valuation_pct_5y}% 5Y)` : ''}
+                  {' · '}分红率：{sopData.dividend_yield_ttm != null ? `${sopData.dividend_yield_ttm}%` : '—'}
+                  {' · '}10Y利差：{sopData.dividend_spread_rf != null ? `${sopData.dividend_spread_rf >= 0 ? '+' : ''}${sopData.dividend_spread_rf}%` : '—'}
+                </div>
+              </div>
+            ) : (
+              <div
+                className="glass-card"
+                style={{
+                  padding: '15px 18px',
+                  marginBottom: 0,
+                  borderColor: sopData?.queue_entry?.requested_by_me ? 'rgba(139, 92, 246, 0.45)' : 'var(--border-subtle)',
+                  background: sopData?.queue_entry?.requested_by_me ? 'rgba(139, 92, 246, 0.06)' : 'var(--surface-subtle)',
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  flexWrap: 'wrap',
+                  gap: '10px',
+                }}
+              >
+                <div style={{ minWidth: '200px', flex: 1 }}>
+                  <div style={{ fontSize: '0.86rem', fontWeight: 700, color: 'var(--text-primary)', marginBottom: '3px' }}>
+                    {sopData?.queue_entry?.requested_by_me
+                      ? `👀 已在观察分析列表（状态：${sopData.queue_entry.status} · 共 ${sopData.queue_entry.request_count} 人关注）`
+                      : '🔭 该基金尚未进行 SOP 深度分析'}
+                  </div>
+                  <div style={{ fontSize: '0.76rem', color: 'var(--text-muted)' }}>
+                    {sopData?.queue_entry?.my_note
+                      ? `我的关注备注：${sopData.queue_entry.my_note}`
+                      : '可一键标记加入观察分析列表，供管理员在后台统一调度深度研究。'}
+                  </div>
+                </div>
+                <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+                  <button
+                    type="button"
+                    disabled={requestBusy}
+                    onClick={() => setShowRequestBox((v) => !v)}
+                    className={sopData?.queue_entry?.requested_by_me ? 'action-btn-secondary' : 'create-btn'}
+                    style={{ padding: '6px 12px', fontSize: '0.78rem', display: 'inline-flex', alignItems: 'center', gap: '5px' }}
+                  >
+                    {sopData?.queue_entry?.requested_by_me ? <BookmarkCheck size={14} /> : <BookmarkPlus size={14} />}
+                    {sopData?.queue_entry?.requested_by_me ? '修改关注备注' : '标记加入观察分析列表'}
+                  </button>
+                  {sopData?.queue_entry?.requested_by_me && (
+                    <button
+                      type="button"
+                      disabled={requestBusy}
+                      onClick={handleCancelResearchRequest}
+                      className="action-btn-secondary"
+                      style={{ padding: '6px 10px', fontSize: '0.76rem', color: 'var(--text-muted)' }}
+                    >
+                      移出
+                    </button>
+                  )}
+                </div>
+              </div>
+            )
+          )}
           {fund && (
             <div className="glass-card" style={{ padding: '18px 20px', marginBottom: 0, display: 'flex', flexDirection: 'column', gap: '12px' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
@@ -503,22 +816,61 @@ const FundDetailDrawer = ({
             </div>
           )}
 
-          {twin && (
+          {twins.length > 0 && (
             <div className="glass-card" style={{ padding: '16px 20px', marginBottom: 0, fontSize: '0.84rem' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontWeight: 700, marginBottom: '8px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontWeight: 700, marginBottom: '10px' }}>
                 <Layers size={15} style={{ color: 'var(--accent-secondary)' }} />
-                {lang === 'en' ? 'Twin Share Class Comparison' : '孪生份额对照（累积 ↔ 分派）'}
+                {lang === 'en' ? 'Twin Share Class Comparison (Acc ↔ Dist)' : '孪生份额对照（累积 ↔ 分派）'}
               </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px', color: 'var(--text-secondary)' }}>
-                <span><strong>{twin.code}</strong> · {twin.name}</span>
-                <span style={{ fontFamily: 'var(--font-mono)' }}>
-                  3Y Ann: {fmtSignedPct(twin.ret_3y_ann)} · Sharpe: {fmtNum(twin.sharpe_3y)} · Div: {fmtPct(twin.div_yield_ttm)}
-                </span>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                {twins.map((tw) => (
+                  <div
+                    key={tw.slug}
+                    style={{
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'center',
+                      flexWrap: 'wrap',
+                      gap: '8px',
+                      padding: '8px 10px',
+                      borderRadius: '6px',
+                      background: 'var(--surface-subtle)',
+                      border: '1px solid var(--border-subtle)',
+                      color: 'var(--text-secondary)',
+                    }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap', minWidth: 0 }}>
+                      <strong style={{ fontFamily: 'var(--font-mono)', color: 'var(--accent-color)' }}>
+                        {tw.aia_code || tw.code}
+                      </strong>
+                      <span style={{ fontSize: '0.7rem', padding: '1px 5px', borderRadius: '3px', background: tw.is_distributing ? 'rgba(59,130,246,0.12)' : 'rgba(16,185,129,0.12)', color: tw.is_distributing ? 'var(--info)' : 'var(--success)' }}>
+                        {tw.is_distributing ? (lang === 'en' ? 'Dist' : '分派') : (lang === 'en' ? 'Acc' : '累积')} · {tw.currency}
+                      </span>
+                      <span style={{ fontSize: '0.8rem', color: 'var(--text-primary)' }}>{tw.name}</span>
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                      <span style={{ fontFamily: 'var(--font-mono)', fontSize: '0.76rem' }}>
+                        3Y: {fmtSignedPct(tw.ret_3y_ann)} · Sharpe: {fmtNum(tw.sharpe_3y)} · Div: {fmtPct(tw.div_yield_ttm)}
+                      </span>
+                      {onSelectSlug && (
+                        <button
+                          type="button"
+                          onClick={() => onSelectSlug(tw.slug)}
+                          className="action-btn-secondary"
+                          style={{ padding: '3px 9px', fontSize: '0.74rem' }}
+                        >
+                          {lang === 'en' ? 'View →' : '查看该份额 →'}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                ))}
               </div>
             </div>
           )}
         </div>
       </div>
+      )}
     </div>
   );
 };

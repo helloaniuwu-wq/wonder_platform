@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 
 from wonder_quant.config import now_hkt
+from wonder_quant.fetchers.yahoo import sanitize_yahoo_series_df
 from wonder_quant.models import DataTier, FundMetrics, FundRecord
 
 TRADING_DAYS_PER_YEAR = 252.0
@@ -122,6 +123,9 @@ def _compute_single_fund_metrics(
     work["dt"] = pd.to_datetime(work["nav_date"])
     work = work.dropna(subset=["dt", "nav", "adj_nav"]).sort_values("dt").drop_duplicates(subset=["dt"], keep="last")
     work = work[(work["nav"] > 0) & (work["adj_nav"] > 0)].reset_index(drop=True)
+    if len(work) >= 3:
+        work = sanitize_yahoo_series_df(work, ticker=fund.yahoo_ticker or fund.code or fund.slug)
+        work["dt"] = pd.to_datetime(work["nav_date"])
 
     obs_days = len(work)
     if obs_days == 0:
@@ -248,9 +252,24 @@ def _compute_single_fund_metrics(
     one_year_ago = dates.iloc[-1] - timedelta(days=365)
     ttm_div_sum = float(divs[dates >= one_year_ago].sum())
     if ttm_div_sum > 0 and latest_nav > 0:
-        div_yield_ttm = min(0.30, ttm_div_sum / latest_nav)
-    elif fund.snapshot_yield_pct is not None and fund.snapshot_yield_pct > 0:
-        div_yield_ttm = min(0.30, fund.snapshot_yield_pct / 100.0)
+        raw_div_yield = ttm_div_sum / latest_nav
+        if raw_div_yield > 0.18:
+            anomalies.append(f"div_yield_capped:{raw_div_yield:.4f}")
+        div_yield_ttm = min(0.18, raw_div_yield)
+    elif fund.primary_source == "tencent_hfq" and len(nav) >= 2 and (dates.iloc[-1] - dates.iloc[0]).days >= 300:
+        # Tencent hfq omits explicit dividend events; infer realized 1Y distribution yield from adj_nav / nav drift
+        idx_1y = min(max(int(dates.searchsorted(one_year_ago, side="left")), 0), len(nav) - 2)
+        p0, p1 = float(nav.iloc[idx_1y]), float(nav.iloc[-1])
+        a0, a1 = float(adj.iloc[idx_1y]), float(adj.iloc[-1])
+        if p0 > 0 and p1 > 0 and a0 > 0 and a1 > 0:
+            price_ratio = p1 / p0
+            adj_ratio = a1 / a0
+            implied_yield = (adj_ratio / price_ratio) - 1.0
+            div_yield_ttm = min(0.18, implied_yield) if implied_yield > 0.002 else 0.0
+        else:
+            div_yield_ttm = 0.0
+    elif fund.snapshot_yield_pct is not None and 0 < fund.snapshot_yield_pct <= 25.0:
+        div_yield_ttm = min(0.18, fund.snapshot_yield_pct / 100.0)
     else:
         div_yield_ttm = 0.0
 

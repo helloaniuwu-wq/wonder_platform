@@ -1,5 +1,5 @@
 import React from 'react';
-import { lookupCOI, normalizeIlpGender } from '../utils/ilpConfigCalc';
+import { getEnrollmentBonusRate, lookupCOI, normalizeIlpGender } from '../utils/ilpConfigCalc';
 
 // ════════════════════════════════════════════════════════════════════════
 //  ILP 保障与传承可视化卡片（Nordic Gallery Minimal Edition）
@@ -22,7 +22,11 @@ const ILPSummaryCard = ({
   const cv = currentCV || 0;
   const coverRatio = sumAssured > 0 ? Math.min(cv / sumAssured * 100, 100) : 0;
   const excessProtection = Math.max(0, sumAssured - cv);
-  const enrollBonus = ilpConfig.totalPremium * (ilpConfig.enrollmentRate || 0);
+  const effectiveEnrollRate =
+    ilpConfig.enrollmentRate !== null && ilpConfig.enrollmentRate !== undefined
+      ? ilpConfig.enrollmentRate
+      : getEnrollmentBonusRate(ilpConfig.totalPremium);
+  const enrollBonus = ilpConfig.totalPremium * effectiveEnrollRate;
   const month = currentMonth || 0;
   const loyaltyProg = Math.min(month / 60 * 100, 100);
 

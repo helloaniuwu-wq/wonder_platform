@@ -34,7 +34,8 @@ class Settings(BaseSettings):
     risk_free_rate: float = Field(default=0.04)
     anomaly_daily_move_threshold: float = Field(default=0.15)
     failure_rate_alert_threshold: float = Field(default=0.20)
-    history_years: int = Field(default=5)
+    history_years: int = Field(default=15)
+    incremental_days: int = Field(default=40)
     host_id: str = Field(default_factory=lambda: socket.gethostname().lower())
 
     # Credentials loaded from D:\WonderQuant\.env (unprefixed standard names)

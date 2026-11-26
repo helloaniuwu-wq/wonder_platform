@@ -56,6 +56,10 @@ export function useStrategyLab({ activeTab, currentUser }) {
   const [saveDialogOpen, setSaveDialogOpen] = useState(false);
   const [scenarioName, setScenarioName] = useState('');
   const [scenarioSaving, setScenarioSaving] = useState(false);
+  const [activeScenarioId, setActiveScenarioId] = useState(null);
+  const [activeScenarioName, setActiveScenarioName] = useState('');
+  const [saveMode, setSaveMode] = useState('new'); // 'update' | 'new'
+  const [saveTargetId, setSaveTargetId] = useState(null);
 
   // ── ILP 投连险 State ────────────────────────────────────────────────────
   const [ilpEnabled, setIlpEnabled] = useState(false);
@@ -259,55 +263,103 @@ export function useStrategyLab({ activeTab, currentUser }) {
     }
   }, [activeTab, currentUser, fetchSavedScenarios]);
 
+  const clearActiveScenario = useCallback(() => {
+    setActiveScenarioId(null);
+    setActiveScenarioName('');
+  }, []);
+
+  const openSaveScenarioDialog = (preferredMode = null) => {
+    if (!Array.isArray(labIsins) || labIsins.length === 0) {
+      alert('请先添加至少一项资产后再保存方案。');
+      return;
+    }
+    const activeMatch =
+      activeScenarioId != null
+        ? savedScenarios.find((s) => Number(s.id) === Number(activeScenarioId))
+        : null;
+    if ((preferredMode === 'update' && savedScenarios.length > 0) || (preferredMode == null && activeMatch)) {
+      const target = activeMatch || savedScenarios[0];
+      setSaveMode('update');
+      setSaveTargetId(target.id);
+      setScenarioName(target.name || activeScenarioName || '');
+    } else {
+      setSaveMode('new');
+      setSaveTargetId(savedScenarios[0]?.id ?? null);
+      if (!scenarioName.trim() && clientInfo?.name) {
+        setScenarioName(`${clientInfo.name} · ${clientInfo.basket_title || '配置方案'}`);
+      }
+    }
+    setSaveDialogOpen(true);
+  };
+
   const handleSaveScenario = async () => {
-    if (!labData || !scenarioName.trim()) return;
+    const trimmedName = scenarioName.trim();
+    if (!Array.isArray(labIsins) || labIsins.length === 0 || !trimmedName) return;
     setScenarioSaving(true);
     try {
-      // Build a lean summary from current labData
-      const target = labData[labData.mc_target_label];
-      const mc = labData.monte_carlo;
-      const optimizerWeightsPct = Object.fromEntries(
-        Object.entries(target?.allocations || {}).map(([isin, w]) => [isin, Number((w * 100).toFixed(2))])
-      );
+      const target = labData ? labData[labData.mc_target_label] : null;
+      const mc = labData?.monte_carlo;
+      const optimizerWeightsPct = target?.allocations
+        ? Object.fromEntries(
+            Object.entries(target.allocations).map(([isin, w]) => [isin, Number((w * 100).toFixed(2))])
+          )
+        : Object.fromEntries(
+            labIsins.map((id) => [id, Number((100 / Math.max(1, labIsins.length)).toFixed(2))])
+          );
+      const weightsPayload = labMode === 'auto' ? optimizerWeightsPct : labCustomWeights;
       const summary = {
-        expected_return: target?.expected_return,
-        volatility: target?.volatility,
-        sharpe_ratio: target?.sharpe_ratio,
-        dividend_yield: target?.dividend_yield,
-        irr_p50: mc?.irr?.p50,
-        irr_p10: mc?.irr?.p10,
-        irr_p90: mc?.irr?.p90,
-        success_rate: mc?.success_rate,
+        expected_return: target?.expected_return ?? labData?.expected_return ?? null,
+        volatility: target?.volatility ?? labData?.volatility ?? null,
+        sharpe_ratio: target?.sharpe_ratio ?? labData?.sharpe_ratio ?? null,
+        dividend_yield: target?.dividend_yield ?? labData?.dividend_yield ?? null,
+        irr_p50: mc?.irr?.p50 ?? null,
+        irr_p10: mc?.irr?.p10 ?? null,
+        irr_p90: mc?.irr?.p90 ?? null,
+        success_rate: mc?.success_rate ?? null,
         capital: labMcSettings.capital,
         withdrawal: labMcSettings.withdrawal,
         years: labMcSettings.years,
       };
-      const res = await fetch('/api/lab/scenarios/save', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...authHeaders() },
-        body: JSON.stringify({
-          name: scenarioName.trim(),
-          assets: labIsins,
-          // 自动模式下保存优化器给出的权重，加载后即可在自定义模式复现
-          custom_weights: labMode === 'auto' ? optimizerWeightsPct : labCustomWeights,
-          mc_settings: labMcSettings,
-          summary,
-          chart_data: mc?.chart || [],
-          // ── ILP 投连险配置 ──────────────────────────────────────────────
-          ilp_enabled: ilpEnabled,
-          ilp_config: ilpEnabled ? ilpConfig : null,
-          // ── 储蓄险配置 ──────────────────────────────────────────────────
-          insurance_enabled: insuranceEnabled,
-          insurance_plan: insuranceEnabled ? insurancePlan : null,
-          insurance_alpha_low: insuranceEnabled ? insuranceAlphaLow : null,
-          insurance_alpha_high: insuranceEnabled ? insuranceAlphaHigh : null,
-        }),
-      });
+      const payload = {
+        name: trimmedName,
+        assets: labIsins,
+        custom_weights: weightsPayload,
+        mc_settings: labMcSettings,
+        summary,
+        chart_data: mc?.chart || [],
+        base_currency: labBaseCurrency || 'USD',
+        days_back: labDaysBack,
+        max_weight: labMaxWeight,
+        lab_mode: labMode,
+        ilp_enabled: ilpEnabled,
+        ilp_config: ilpEnabled ? ilpConfig : null,
+        insurance_enabled: insuranceEnabled,
+        insurance_plan: insuranceEnabled ? insurancePlan : null,
+        insurance_alpha_low: insuranceEnabled ? insuranceAlphaLow : null,
+        insurance_alpha_high: insuranceEnabled ? insuranceAlphaHigh : null,
+      };
+
+      const isUpdate = saveMode === 'update' && saveTargetId != null;
+      const res = await fetch(
+        isUpdate ? `/api/lab/scenarios/${saveTargetId}` : '/api/lab/scenarios/save',
+        {
+          method: isUpdate ? 'PUT' : 'POST',
+          headers: { 'Content-Type': 'application/json', ...authHeaders() },
+          body: JSON.stringify(payload),
+        }
+      );
       if (!res.ok) throw new Error(await res.text());
+      const saved = await res.json().catch(() => ({}));
+      if (isUpdate) {
+        setActiveScenarioId(Number(saveTargetId));
+        setActiveScenarioName(trimmedName);
+      } else if (saved?.id != null) {
+        setActiveScenarioId(Number(saved.id));
+        setActiveScenarioName(saved.name || trimmedName);
+      }
       setSaveDialogOpen(false);
-      setScenarioName('');
-      fetchSavedScenarios(); // refresh list
-      alert('✅ 方案已保存！');
+      fetchSavedScenarios();
+      alert(isUpdate ? '✅ 方案已更新保存！' : '✅ 新方案已保存！');
     } catch (e) {
       alert('保存失败: ' + e.message);
     } finally {
@@ -371,6 +423,10 @@ export function useStrategyLab({ activeTab, currentUser }) {
       setLabCustomWeights(uiWeights);
       setLabMode('custom');
       setLabMcSettings(mergedMcSettings);
+      if (data.base_currency) setLabBaseCurrency(data.base_currency);
+      if (data.days_back) setLabDaysBack(Number(data.days_back));
+      setActiveScenarioId(Number(data.id));
+      setActiveScenarioName(data.name || '');
       // Restore chart data into labData structure
       setLabData(prev => ({
         ...(prev || {}),
@@ -425,6 +481,9 @@ export function useStrategyLab({ activeTab, currentUser }) {
   const handleDeleteScenario = async (id) => {
     if (!window.confirm('确认删除此方案？此操作不可撤销。')) return;
     await fetch(`/api/lab/scenarios/${id}`, { method: 'DELETE', headers: authHeaders() });
+    if (Number(id) === Number(activeScenarioId)) {
+      clearActiveScenario();
+    }
     fetchSavedScenarios();
   };
 
@@ -436,6 +495,9 @@ export function useStrategyLab({ activeTab, currentUser }) {
         body: JSON.stringify({ name: newName })
       });
       if (!res.ok) throw new Error("Rename failed");
+      if (Number(id) === Number(activeScenarioId)) {
+        setActiveScenarioName(String(newName || '').trim());
+      }
       fetchSavedScenarios();
     } catch (e) {
       alert('重命名失败: ' + e.message);
@@ -448,6 +510,8 @@ export function useStrategyLab({ activeTab, currentUser }) {
     setLabData(null);
     setLabError(null);
     setLabMode('custom');
+    clearActiveScenario();
+    setScenarioName('');
   };
   // ───────────────────────────────────────────────────────────────────────────
 
@@ -618,6 +682,14 @@ export function useStrategyLab({ activeTab, currentUser }) {
     scenarioName,
     setScenarioName,
     scenarioSaving,
+    activeScenarioId,
+    activeScenarioName,
+    saveMode,
+    setSaveMode,
+    saveTargetId,
+    setSaveTargetId,
+    openSaveScenarioDialog,
+    clearActiveScenario,
     setScenarioSaving,
     ilpEnabled,
     setIlpEnabled,
