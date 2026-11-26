@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { 
   Users, UserCheck, Shield, Award, User, RefreshCw, 
   Search, CheckCircle2, Ban, SlidersHorizontal, Briefcase,
-  BookOpen, Copy, ExternalLink, Sparkles, Edit, Send, MailCheck, AlertCircle, X
+  BookOpen, Copy, ExternalLink, Sparkles, Edit, Send, MailCheck, AlertCircle, X, Download
 } from 'lucide-react';
 import { authHeaders } from '../utils/auth';
 import {
