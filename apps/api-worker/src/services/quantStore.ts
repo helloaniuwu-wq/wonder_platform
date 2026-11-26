@@ -93,6 +93,9 @@ export interface QuantFundCatalogRow {
   sop_dividend_spread_rf?: number | null;
   sop_red_flag_top?: string | null;
   research_queue_status?: string | null;
+  research_priority?: string | null;
+  research_admin_note?: string | null;
+  research_notes?: string[];
   research_request_count?: number;
   research_requester_ids?: string[];
 }
@@ -194,6 +197,37 @@ function extractRequesterIds(raw: string | null | undefined): string[] {
   }
 }
 
+function extractRequesterNotes(raw: string | null | undefined, adminNote?: string | null): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  const pushUnique = (val: string) => {
+    const clean = val.trim();
+    if (clean && !seen.has(clean)) {
+      seen.add(clean);
+      out.push(clean);
+    }
+  };
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        for (const item of parsed) {
+          const note = item && item.note ? String(item.note).trim() : "";
+          if (!note) continue;
+          const who = item.name || item.email || "";
+          pushUnique(who ? `${who}：${note}` : note);
+        }
+      }
+    } catch {
+      // ignore invalid json
+    }
+  }
+  if (adminNote && String(adminNote).trim()) {
+    pushUnique(`管理员备注：${String(adminNote).trim()}`);
+  }
+  return out;
+}
+
 const GENERIC_HOLDING_STOPWORDS = new Set([
   "cash",
   "money market",
@@ -282,6 +316,8 @@ export async function loadQuantCatalog(db: D1Database): Promise<{
             sr.dividend_spread_rf AS sop_dividend_spread_rf,
             sr.red_flag_top AS sop_red_flag_top,
             rq.status AS research_queue_status,
+            rq.priority AS research_priority,
+            rq.admin_note AS research_admin_note,
             COALESCE(rq.request_count, 0) AS research_request_count,
             rq.requesters_json AS research_requesters_json
            FROM wq_funds f
@@ -315,6 +351,8 @@ export async function loadQuantCatalog(db: D1Database): Promise<{
             sr.valuation_zone AS sop_valuation_zone,
             sr.report_date AS sop_report_date,
             rq.status AS research_queue_status,
+            rq.priority AS research_priority,
+            rq.admin_note AS research_admin_note,
             COALESCE(rq.request_count, 0) AS research_request_count,
             rq.requesters_json AS research_requesters_json
            FROM wq_funds f
@@ -395,9 +433,15 @@ export async function loadQuantCatalog(db: D1Database): Promise<{
       r2_3y: r.r2_3y != null ? Number(r.r2_3y) : null,
       ir_3y: r.ir_3y != null ? Number(r.ir_3y) : null,
       div_yield_ttm:
-        r.div_yield_ttm != null && Number(r.div_yield_ttm) >= 0 && Number(r.div_yield_ttm) < 0.25
+        r.div_yield_ttm != null && Number(r.div_yield_ttm) > 0 && Number(r.div_yield_ttm) < 0.25
           ? Number(r.div_yield_ttm)
-          : null,
+          : r.sop_dividend_yield_ttm != null && Number(r.sop_dividend_yield_ttm) > 0 && Number(r.sop_dividend_yield_ttm) < 25
+            ? Number(r.sop_dividend_yield_ttm) / 100
+            : r.yield_pct != null && Number(r.yield_pct) > 0 && Number(r.yield_pct) < 25
+              ? Number(r.yield_pct) / 100
+              : r.div_yield_ttm != null && Number(r.div_yield_ttm) === 0
+                ? 0
+                : null,
       peer_rank_pct: r.peer_rank_pct != null ? Number(r.peer_rank_pct) : null,
       quant_score: r.quant_score != null ? Number(r.quant_score) : null,
       quant_grade: r.quant_grade || null,
@@ -413,6 +457,9 @@ export async function loadQuantCatalog(db: D1Database): Promise<{
       sop_dividend_spread_rf: r.sop_dividend_spread_rf != null ? Number(r.sop_dividend_spread_rf) : null,
       sop_red_flag_top: r.sop_red_flag_top || null,
       research_queue_status: r.research_queue_status || null,
+      research_priority: r.research_priority || null,
+      research_admin_note: r.research_admin_note || null,
+      research_notes: extractRequesterNotes(r.research_requesters_json, r.research_admin_note),
       research_request_count: Number(r.research_request_count || 0),
       research_requester_ids: extractRequesterIds(r.research_requesters_json),
     }));

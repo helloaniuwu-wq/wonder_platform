@@ -3,11 +3,12 @@ import {
   ComposedChart, Line, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine,
 } from 'recharts';
 import {
-  X, Plus, Check, Zap, GitCompare, AlertTriangle, Layers, ExternalLink, Info, ArrowLeft, ChevronLeft, ChevronRight, RefreshCw, BookOpen, BookmarkPlus, BookmarkCheck,
+  X, Plus, Check, Zap, GitCompare, AlertTriangle, Layers, ExternalLink, Info, ArrowLeft, ChevronLeft, ChevronRight, RefreshCw, BookOpen, BookmarkPlus, BookmarkCheck, Sparkles, Download,
 } from 'lucide-react';
 import { authHeaders } from '../utils/auth';
 import { fmtNum, fmtPct, fmtSignedPct, gradeMeta, inferFundRole, resolveFundTwins, tierMeta } from '../utils/fundQuantUtils';
 import { buildFundExternalLinks } from '../utils/fundLinks';
+import { buildSingleFundSopPrompt, copyAndDownloadSopPrompt } from '../utils/sopPromptBuilder';
 import { useLang } from '../i18n/langCore';
 import FundSopReportView from './FundSopReportView';
 
@@ -523,23 +524,78 @@ const FundDetailDrawer = ({
               </div>
             )}
 
-            {fund && (fund.duration != null || fund.yield_pct != null || fund.avg_rating || fund.credit_quality) && (
+            {fund && (
+              fund.duration != null ||
+              fund.yield_pct != null ||
+              fund.avg_rating ||
+              fund.credit_quality ||
+              sopData?.valuation_summary?.duration_yrs != null ||
+              sopData?.valuation_summary?.ytm_pct != null ||
+              sopData?.valuation_summary?.pe_current != null ||
+              sopData?.valuation_summary?.erp_current_pct != null
+            ) && (
               <div style={{ background: 'var(--surface-subtle)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--card-radius)', padding: '12px 14px' }}>
                 <div style={{ fontSize: '0.78rem', fontWeight: 700, color: 'var(--text-primary)', marginBottom: '8px' }}>
-                  {lang === 'en' ? 'Fixed Income · Duration, YTM & Credit' : '债券久期、到期收益率 (YTM) 与信用质量'}
+                  {(fund.duration != null || fund.avg_rating || sopData?.valuation_summary?.duration_yrs != null)
+                    ? (lang === 'en' ? 'Fixed Income · Duration, YTM & Credit' : '债券久期、到期收益率 (YTM) 与信用质量')
+                    : (lang === 'en' ? 'Valuation & Yield Snapshot (SOP)' : '底层估值与股息利差速览 (SOP)')}
                 </div>
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: '8px' }}>
-                  {[
-                    { k: lang === 'en' ? 'Duration (Yrs)' : '久期 Duration', v: fund.duration != null ? `${Number(fund.duration).toFixed(2)} 年` : '—' },
-                    { k: lang === 'en' ? 'YTM / Yield' : 'YTM / 参考收益率', v: fund.yield_pct != null ? `${Number(fund.yield_pct).toFixed(2)}%` : '—' },
-                    { k: lang === 'en' ? 'Avg Rating' : '平均信用评级', v: fund.avg_rating || '—' },
-                    { k: lang === 'en' ? 'Credit Quality' : '信用分布', v: fund.credit_quality || '—' },
-                  ].map((item) => (
-                    <div key={item.k} style={{ background: 'var(--bg-primary, rgba(0,0,0,0.03))', border: '1px solid var(--border-subtle)', borderRadius: '6px', padding: '8px 10px' }}>
-                      <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', marginBottom: '2px' }}>{item.k}</div>
-                      <div style={{ fontFamily: 'var(--font-mono)', fontSize: '0.82rem', fontWeight: 700 }}>{item.v}</div>
-                    </div>
-                  ))}
+                  {(fund.duration != null || fund.avg_rating || sopData?.valuation_summary?.duration_yrs != null) ? (
+                    [
+                      {
+                        k: lang === 'en' ? 'Duration (Yrs)' : '久期 Duration',
+                        v: (fund.duration ?? sopData?.valuation_summary?.duration_yrs) != null
+                          ? `${Number(fund.duration ?? sopData?.valuation_summary?.duration_yrs).toFixed(2)} 年`
+                          : '—',
+                      },
+                      {
+                        k: lang === 'en' ? 'YTM / Yield' : 'YTM / 参考收益率',
+                        v: (fund.yield_pct ?? sopData?.valuation_summary?.ytm_pct ?? sopData?.dividend_yield_ttm) != null
+                          ? `${Number(fund.yield_pct ?? sopData?.valuation_summary?.ytm_pct ?? sopData?.dividend_yield_ttm).toFixed(2)}%`
+                          : '—',
+                      },
+                      { k: lang === 'en' ? 'Avg Rating' : '平均信用评级', v: fund.avg_rating || '—' },
+                      { k: lang === 'en' ? 'Credit Quality' : '信用分布', v: fund.credit_quality || '—' },
+                    ].map((item) => (
+                      <div key={item.k} style={{ background: 'var(--bg-primary, rgba(0,0,0,0.03))', border: '1px solid var(--border-subtle)', borderRadius: '6px', padding: '8px 10px' }}>
+                        <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', marginBottom: '2px' }}>{item.k}</div>
+                        <div style={{ fontFamily: 'var(--font-mono)', fontSize: '0.82rem', fontWeight: 700 }}>{item.v}</div>
+                      </div>
+                    ))
+                  ) : (
+                    [
+                      {
+                        k: lang === 'en' ? 'Current PE / 5Y Pct' : '当前 PE / 5Y分位',
+                        v: sopData?.valuation_summary?.pe_current != null
+                          ? `${Number(sopData.valuation_summary.pe_current).toFixed(2)}x${sopData?.valuation_pct_5y != null ? ` (${sopData.valuation_pct_5y}%)` : ''}`
+                          : '—',
+                      },
+                      {
+                        k: lang === 'en' ? 'TTM Div Yield' : 'TTM 股息率',
+                        v: (sopData?.dividend_yield_ttm ?? (fund.div_yield_ttm != null ? fund.div_yield_ttm * 100 : null)) != null
+                          ? `${Number(sopData?.dividend_yield_ttm ?? (fund.div_yield_ttm * 100)).toFixed(2)}%`
+                          : '—',
+                      },
+                      {
+                        k: lang === 'en' ? 'Spread vs 10Y RF' : '较10Y无风险利差',
+                        v: sopData?.dividend_spread_rf != null
+                          ? `${sopData.dividend_spread_rf >= 0 ? '+' : ''}${Number(sopData.dividend_spread_rf).toFixed(2)}%`
+                          : '—',
+                      },
+                      {
+                        k: lang === 'en' ? 'ERP (Equity Risk Prem)' : '隐含股权风险溢价 ERP',
+                        v: sopData?.valuation_summary?.erp_current_pct != null
+                          ? `${Number(sopData.valuation_summary.erp_current_pct).toFixed(2)}%`
+                          : '—',
+                      },
+                    ].map((item) => (
+                      <div key={item.k} style={{ background: 'var(--bg-primary, rgba(0,0,0,0.03))', border: '1px solid var(--border-subtle)', borderRadius: '6px', padding: '8px 10px' }}>
+                        <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', marginBottom: '2px' }}>{item.k}</div>
+                        <div style={{ fontFamily: 'var(--font-mono)', fontSize: '0.82rem', fontWeight: 700 }}>{item.v}</div>
+                      </div>
+                    ))
+                  )}
                 </div>
               </div>
             )}
@@ -583,6 +639,11 @@ const FundDetailDrawer = ({
                   {' · '}分红率：{sopData.dividend_yield_ttm != null ? `${sopData.dividend_yield_ttm}%` : '—'}
                   {' · '}10Y利差：{sopData.dividend_spread_rf != null ? `${sopData.dividend_spread_rf >= 0 ? '+' : ''}${sopData.dividend_spread_rf}%` : '—'}
                 </div>
+                {sopData.red_flag_top && (
+                  <div style={{ fontSize: '0.75rem', color: 'var(--danger, #dc2626)', lineHeight: 1.45, marginTop: '2px' }}>
+                    ⚠️ 首要红旗：{sopData.red_flag_top}
+                  </div>
+                )}
               </div>
             ) : (
               <div
@@ -606,12 +667,49 @@ const FundDetailDrawer = ({
                       : '🔭 该基金尚未进行 SOP 深度分析'}
                   </div>
                   <div style={{ fontSize: '0.76rem', color: 'var(--text-muted)' }}>
-                    {sopData?.queue_entry?.my_note
-                      ? `我的关注备注：${sopData.queue_entry.my_note}`
-                      : '可一键标记加入观察分析列表，供管理员在后台统一调度深度研究。'}
+                    {Array.isArray(sopData?.queue_entry?.notes) && sopData.queue_entry.notes.length > 0
+                      ? `关注事项汇总：${sopData.queue_entry.notes.join(' ｜ ')}`
+                      : sopData?.queue_entry?.my_note
+                        ? `我的关注备注：${sopData.queue_entry.my_note}`
+                        : '可一键标记加入观察分析列表，或直接一键导出 SOP Prompt 交给大模型分析。'}
                   </div>
                 </div>
                 <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      const promptItem = {
+                        ...(fund || {}),
+                        slug: fund?.slug || slug,
+                        code: fund?.code || slug,
+                        fund_name: fund?.name || slug,
+                        priority: sopData?.queue_entry?.priority || 'normal',
+                        request_count: sopData?.queue_entry?.request_count || 1,
+                        requesters: sopData?.queue_entry?.requesters || [],
+                        notes: sopData?.queue_entry?.notes || [],
+                        my_note: requestNote.trim() || sopData?.queue_entry?.my_note || '',
+                        admin_note: sopData?.queue_entry?.admin_note || '',
+                      };
+                      const prompt = buildSingleFundSopPrompt(promptItem);
+                      const code = promptItem.code || slug;
+                      await copyAndDownloadSopPrompt(prompt, '', { download: false });
+                      alert(`已生成并复制 ${code} 的基金分析 SOP v2.0 Prompt 到剪贴板（可直接粘贴至大模型后台）`);
+                    }}
+                    className="action-btn-secondary"
+                    style={{
+                      padding: '6px 11px',
+                      fontSize: '0.76rem',
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: '5px',
+                      borderColor: 'rgba(217, 119, 6, 0.45)',
+                      color: '#d97706',
+                      fontWeight: 700,
+                    }}
+                    title="一键复制含关注事项的 SOP v2.0 Prompt 到剪贴板"
+                  >
+                    <Sparkles size={13} /> 复制 SOP Prompt
+                  </button>
                   <button
                     type="button"
                     disabled={requestBusy}

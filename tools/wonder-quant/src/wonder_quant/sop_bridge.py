@@ -10,10 +10,13 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+import numpy as np
+import pandas as pd
 import yaml
 
 from wonder_quant.config import Settings, now_hkt
-from wonder_quant.d1_client import D1Client
+from wonder_quant.d1_client import D1Client, pack_fund_series
+from wonder_quant.fetchers.yahoo import sanitize_yahoo_series_df
 
 API_WORKER_DIR = Path(__file__).resolve().parents[4] / "apps" / "api-worker"
 WRANGLER_DB_NAME = "wonder-db"
@@ -400,26 +403,56 @@ def publish_sop_to_d1(
         """
         d1.execute_statement(sql, insert_vals)
 
-        # Sync X-Ray profile & top holdings into wq_funds so Portfolio X-Ray can use verified SOP facts
-        if xray_profile or top_holdings_obj:
-            v_block = (xray_profile or {}).get("valuation") or {}
-            d1.execute_statement(
-                """
-                UPDATE wq_funds
-                SET xray_profile_json = COALESCE(?, xray_profile_json),
-                    top_holdings_json = COALESCE(?, top_holdings_json),
-                    duration = COALESCE(?, duration),
-                    yield_pct = COALESCE(?, yield_pct)
-                WHERE slug = ? COLLATE NOCASE
-                """,
-                [
-                    json.dumps(xray_profile, ensure_ascii=False) if xray_profile else None,
-                    json.dumps(top_holdings_obj, ensure_ascii=False) if top_holdings_obj else None,
-                    v_block.get("duration"),
-                    v_block.get("ytm") or payload.get("dividend_yield_ttm"),
-                    slug,
-                ],
-            )
+        # Sync X-Ray profile, top holdings, fee, ratings & commentary into wq_funds
+        v_block = (xray_profile or {}).get("valuation") or {}
+        f_meta = (xray_profile or {}).get("fund_metadata") or {}
+        sop_comm = (
+            f"【SOP v{payload['sop_version']} 深度分析 · {payload['medal_rating']}】{payload['one_liner']}"
+            + (f" ｜ 结构性风险：{payload['red_flag_top']}" if payload.get("red_flag_top") else "")
+            if payload.get("one_liner")
+            else None
+        )
+        d1.execute_statement(
+            """
+            UPDATE wq_funds
+            SET xray_profile_json = COALESCE(?, xray_profile_json),
+                top_holdings_json = COALESCE(?, top_holdings_json),
+                fee_pct = COALESCE(?, fee_pct),
+                morningstar_stars = COALESCE(?, morningstar_stars),
+                duration = COALESCE(?, duration),
+                yield_pct = COALESCE(?, yield_pct),
+                avg_rating = COALESCE(?, avg_rating),
+                credit_quality = COALESCE(?, credit_quality),
+                commentary = COALESCE(?, commentary),
+                vault_last_updated = COALESCE(?, vault_last_updated),
+                synced_at = ?
+            WHERE slug = ? COLLATE NOCASE
+            """,
+            [
+                json.dumps(xray_profile, ensure_ascii=False) if xray_profile else None,
+                json.dumps(top_holdings_obj, ensure_ascii=False) if top_holdings_obj else None,
+                f_meta.get("fee_pct"),
+                f_meta.get("morningstar_stars"),
+                f_meta.get("duration") if f_meta.get("duration") is not None else v_block.get("duration"),
+                f_meta.get("yield_pct") if f_meta.get("yield_pct") is not None else (v_block.get("ytm") or payload.get("dividend_yield_ttm")),
+                f_meta.get("avg_rating"),
+                f_meta.get("credit_quality"),
+                sop_comm,
+                payload["report_date"],
+                now_iso,
+                slug,
+            ],
+        )
+
+        series_pts, metrics_ok = _sync_series_and_metrics_from_sop(
+            d1=d1,
+            settings=settings,
+            slug=slug,
+            report_dir=report_dir,
+            a_meta=a_meta,
+            val_data=val_data,
+            now_iso=now_iso,
+        )
 
         # Mark queue item completed if present
         d1.execute_statement(
@@ -438,9 +471,226 @@ def publish_sop_to_d1(
         "slug": slug,
         "medal_rating": payload["medal_rating"],
         "valuation_zone": payload["valuation_zone"],
+        "series_points_synced": 0 if use_wrangler else series_pts,
+        "metrics_synced": False if use_wrangler else metrics_ok,
         "content_sha256": digest,
         "transport": "wrangler_oauth" if use_wrangler else "d1_rest_api",
     }
+
+
+def _sync_series_and_metrics_from_sop(
+    d1: D1Client,
+    settings: Settings,
+    slug: str,
+    report_dir: Path,
+    a_meta: dict[str, Any],
+    val_data: dict[str, Any],
+    now_iso: str,
+) -> tuple[int, bool]:
+    """Ensure wq_fund_series and wq_fund_metrics in D1 are fully populated for SOP-covered funds."""
+    fin_file = report_dir / ".review" / "latest_fund_fin.json"
+    if not fin_file.exists():
+        return 0, False
+    try:
+        fin_data = json.loads(fin_file.read_text(encoding="utf-8-sig"))
+    except Exception:
+        return 0, False
+
+    nav_rows = fin_data.get("nav_series") or []
+    if len(nav_rows) < 10:
+        return 0, False
+
+    df = pd.DataFrame(nav_rows)
+    if "date" in df.columns and "nav_date" not in df.columns:
+        df["nav_date"] = df["date"].astype(str).str.slice(0, 10)
+    df["nav"] = pd.to_numeric(df["nav"], errors="coerce")
+    df["adj_nav"] = pd.to_numeric(df.get("adj_nav", df["nav"]), errors="coerce").fillna(df["nav"])
+    df["dividend"] = pd.to_numeric(df.get("dividend", 0.0), errors="coerce").fillna(0.0)
+    df = df.dropna(subset=["nav_date", "adj_nav"]).sort_values("nav_date").drop_duplicates("nav_date", keep="last").reset_index(drop=True)
+    if len(df) < 10:
+        return 0, False
+
+    df = sanitize_yahoo_series_df(df)
+    cat = fin_data.get("catalog_entry") or {}
+    market = str(fin_data.get("market") or "OFFSHORE").upper()
+    ccy = str(cat.get("currency") or ("CNY" if market == "CN" else "USD")).upper()
+    default_stype = "market_etf" if str(a_meta.get("fund_type") or "") == "ETF" else "proxy_underlying"
+    default_src = str(df["source"].dropna().iloc[-1]) if "source" in df.columns and not df["source"].dropna().empty else "sop_v2"
+
+    packed_obj, series_sha = pack_fund_series(df, default_series_type=default_stype, default_source=default_src)
+    start_d = str(df["nav_date"].iloc[0])[:10]
+    end_d = str(df["nav_date"].iloc[-1])[:10]
+    obs_days = int(len(df))
+
+    d1.execute_statement(
+        """
+        INSERT OR REPLACE INTO wq_fund_series (
+          slug, currency, series_type, source, start_date, end_date, obs_days, series_json, content_sha256, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            slug,
+            ccy,
+            packed_obj.get("t") or default_stype,
+            packed_obj.get("s") or default_src,
+            start_d,
+            end_d,
+            obs_days,
+            json.dumps(packed_obj, separators=(",", ":")),
+            series_sha,
+            now_iso,
+        ],
+    )
+
+    try:
+        nav_pq = settings.cache_dir / "nav.parquet"
+        if nav_pq.exists():
+            pq_df = pd.read_parquet(nav_pq)
+            existing_cnt = int((pq_df["slug"].astype(str).str.upper() == slug.upper()).sum())
+            if obs_days > existing_cnt + 10:
+                add_df = pd.DataFrame({
+                    "slug": slug,
+                    "nav_date": df["nav_date"],
+                    "nav": df["nav"],
+                    "adj_nav": df["adj_nav"],
+                    "dividend": df["dividend"],
+                    "currency": ccy,
+                    "series_type": packed_obj.get("t") or default_stype,
+                    "source": packed_obj.get("s") or default_src,
+                })
+                merged = pd.concat([pq_df[pq_df["slug"].astype(str).str.upper() != slug.upper()], add_df], ignore_index=True)
+                merged.to_parquet(nav_pq, index=False)
+    except Exception:
+        pass
+
+    s = df.set_index(pd.to_datetime(df["nav_date"]))["adj_nav"].astype(float).sort_index()
+    latest_nav = float(df["nav"].iloc[-1])
+
+    def _ret_days(days_back: int, annualize: bool = False) -> float | None:
+        cutoff = s.index[-1] - pd.Timedelta(days=days_back)
+        if (s.index[-1] - s.index[0]).days < int(days_back * 0.75):
+            return None
+        sub = s[s.index >= cutoff]
+        if len(sub) < 3 or sub.iloc[0] <= 0:
+            return None
+        tot = float(sub.iloc[-1] / sub.iloc[0] - 1.0)
+        if not annualize:
+            return round(tot, 4)
+        yrs = max((sub.index[-1] - sub.index[0]).days / 365.25, 0.25)
+        return round(float((1.0 + tot) ** (1.0 / yrs) - 1.0), 4) if (1.0 + tot > 0) else round(tot, 4)
+
+    def _vol_mdd(days_back: int) -> tuple[float | None, float | None]:
+        cutoff = s.index[-1] - pd.Timedelta(days=days_back)
+        if (s.index[-1] - s.index[0]).days < int(days_back * 0.75):
+            return None, None
+        sub = s[s.index >= cutoff]
+        if len(sub) < 10:
+            return None, None
+        r = sub.pct_change().dropna()
+        vol = round(float(r.std(ddof=1) * np.sqrt(252.0)), 4) if len(r) > 2 else None
+        arr = sub.to_numpy(dtype=float)
+        rm = np.maximum.accumulate(arr)
+        mdd = round(float(np.min(arr / rm - 1.0)), 4)
+        return vol, mdd
+
+    yr_start = pd.Timestamp(year=s.index[-1].year, month=1, day=1)
+    before_yr = s[s.index < yr_start]
+    ret_ytd = round(float(s.iloc[-1] / before_yr.iloc[-1] - 1.0), 4) if not before_yr.empty else None
+    ret_1m = _ret_days(30, False)
+    ret_3m = _ret_days(91, False)
+    ret_6m = _ret_days(182, False)
+    ret_1y = _ret_days(365, False)
+    ret_3y_ann = _ret_days(365 * 3, True)
+    ret_5y_ann = _ret_days(365 * 5, True)
+    vol_1y, max_dd_1y = _vol_mdd(365)
+    vol_3y, max_dd_3y = _vol_mdd(365 * 3)
+    _, max_dd_5y = _vol_mdd(365 * 5)
+
+    perf = val_data.get("performance") or {}
+    w3 = perf.get("win_3y") or {}
+    bm_rel = perf.get("benchmark_rel_3y") or {}
+    rf_ann = 0.021 if market == "CN" else 0.042
+    sharpe_3y = w3.get("sharpe")
+    sortino_3y = w3.get("sortino")
+    calmar_3y = w3.get("calmar")
+    if ret_3y_ann is not None and vol_3y and vol_3y > 1e-4:
+        sharpe_3y = round((ret_3y_ann - rf_ann) / vol_3y, 3)
+    if ret_3y_ann is not None and max_dd_3y is not None and max_dd_3y < -1e-4:
+        calmar_3y = round(ret_3y_ann / abs(max_dd_3y), 3)
+
+    div_ttm_pct = a_meta.get("dividend_yield_ttm")
+    div_ratio = round(float(div_ttm_pct) / 100.0, 4) if div_ttm_pct is not None and float(div_ttm_pct) > 0 else 0.0
+
+    existing_m: dict[str, Any] = {}
+    try:
+        m_res = d1.execute_statement("SELECT * FROM wq_fund_metrics WHERE slug = ? COLLATE NOCASE", [slug])
+        m_rows = (m_res.get("result") or [{}])[0].get("results") or []
+        if m_rows:
+            existing_m = m_rows[0]
+    except Exception:
+        existing_m = {}
+
+    peer_rank_pct = existing_m.get("peer_rank_pct")
+    quant_score = existing_m.get("quant_score")
+    quant_grade = existing_m.get("quant_grade")
+    if quant_score is None:
+        p_score = float(a_meta.get("pillar_score") or 0.0)
+        base_q = 65.0 + p_score * 15.0 + (float(sharpe_3y or 0.0) * 6.0 if sharpe_3y and abs(float(sharpe_3y)) < 3 else 0.0)
+        quant_score = round(max(30.0, min(92.0, base_q)), 1)
+        quant_grade = "A" if quant_score >= 70 else ("B" if quant_score >= 55 else ("C" if quant_score >= 40 else "D"))
+    if peer_rank_pct is None:
+        peer_rank_pct = round(max(0.05, min(0.95, float(quant_score) / 100.0)), 3)
+
+    new_tier = "A" if (market == "CN" or existing_m.get("data_tier") == "A") else ("B" if obs_days >= 250 else "C")
+
+    d1.execute_statement(
+        """
+        INSERT OR REPLACE INTO wq_fund_metrics (
+          slug, as_of_date, valuation_date, latest_nav, latest_nav_currency,
+          ret_1m, ret_3m, ret_6m, ret_ytd, ret_1y, ret_3y_ann, ret_5y_ann,
+          vol_1y, vol_3y, max_dd_1y, max_dd_3y, max_dd_5y, dd_recovery_days,
+          sharpe_3y, sortino_3y, calmar_3y, beta_3y, alpha_3y, r2_3y, ir_3y,
+          div_yield_ttm, peer_rank_pct, quant_score, quant_grade, obs_days, data_tier, anomalies_json, computed_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            slug,
+            str(a_meta.get("data_as_of") or end_d),
+            end_d,
+            round(latest_nav, 4),
+            ccy,
+            ret_1m if ret_1m is not None else existing_m.get("ret_1m"),
+            ret_3m if ret_3m is not None else existing_m.get("ret_3m"),
+            ret_6m if ret_6m is not None else existing_m.get("ret_6m"),
+            ret_ytd if ret_ytd is not None else existing_m.get("ret_ytd"),
+            ret_1y if ret_1y is not None else existing_m.get("ret_1y"),
+            ret_3y_ann if ret_3y_ann is not None else existing_m.get("ret_3y_ann"),
+            ret_5y_ann if ret_5y_ann is not None else existing_m.get("ret_5y_ann"),
+            vol_1y if vol_1y is not None else existing_m.get("vol_1y"),
+            vol_3y if vol_3y is not None else existing_m.get("vol_3y"),
+            max_dd_1y if max_dd_1y is not None else existing_m.get("max_dd_1y"),
+            max_dd_3y if max_dd_3y is not None else existing_m.get("max_dd_3y"),
+            max_dd_5y if max_dd_5y is not None else existing_m.get("max_dd_5y"),
+            w3.get("dd_recovery_days") if w3.get("dd_recovery_days") is not None else existing_m.get("dd_recovery_days"),
+            sharpe_3y if sharpe_3y is not None else existing_m.get("sharpe_3y"),
+            sortino_3y if sortino_3y is not None else existing_m.get("sortino_3y"),
+            calmar_3y if calmar_3y is not None else existing_m.get("calmar_3y"),
+            bm_rel.get("beta") if bm_rel.get("beta") is not None else existing_m.get("beta_3y"),
+            bm_rel.get("alpha") if bm_rel.get("alpha") is not None else existing_m.get("alpha_3y"),
+            bm_rel.get("r2") if bm_rel.get("r2") is not None else existing_m.get("r2_3y"),
+            bm_rel.get("ir") if bm_rel.get("ir") is not None else existing_m.get("ir_3y"),
+            div_ratio if div_ratio > 0 else (existing_m.get("div_yield_ttm") or 0.0),
+            peer_rank_pct,
+            quant_score,
+            quant_grade,
+            obs_days,
+            new_tier,
+            existing_m.get("anomalies_json") or "[]",
+            now_iso,
+        ],
+    )
+    d1.execute_statement("UPDATE wq_funds SET data_tier = ? WHERE slug = ? COLLATE NOCASE", [new_tier, slug])
+    return obs_days, True
 
 
 def _build_xray_profile_from_sop(
@@ -480,15 +730,23 @@ def _build_xray_profile_from_sop(
         }
 
     top_holdings_obj: dict[str, Any] | None = None
-    if fin_file.exists():
+    th_file = report_dir / ".review" / "top_holdings.json"
+    if th_file.exists():
+        try:
+            top_holdings_obj = json.loads(th_file.read_text(encoding="utf-8-sig"))
+        except Exception:
+            top_holdings_obj = None
+
+    if top_holdings_obj is None and fin_file.exists():
         try:
             fin_data = json.loads(fin_file.read_text(encoding="utf-8-sig"))
-            em_top = (fin_data.get("eastmoney") or {}).get("top10_holdings") or []
+            em_block = fin_data.get("eastmoney") or {}
+            em_top = em_block.get("holdings") or em_block.get("top10_holdings") or []
             if isinstance(em_top, list) and em_top:
                 items = []
                 for h in em_top[:10]:
                     name = str(h.get("股票名称") or h.get("name") or h.get("股票简称") or "").strip()
-                    sym = str(h.get("股票代码") or h.get("symbol") or "").strip() or None
+                    sym = str(h.get("股票代码") or h.get("symbol") or h.get("code") or "").strip() or None
                     pct_raw = h.get("占净值比例") or h.get("weight_pct")
                     pct = float(pct_raw) if pct_raw not in (None, "") else None
                     if name or sym:

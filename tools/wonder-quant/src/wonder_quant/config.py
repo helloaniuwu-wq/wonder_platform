@@ -79,17 +79,48 @@ class Settings(BaseSettings):
             d.mkdir(parents=True, exist_ok=True)
 
 
+def _discover_wrangler_oauth_token() -> str:
+    """Fallback to local Wrangler CLI OAuth token if CF_API_TOKEN is not in .env."""
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return ""
+    candidates: list[Path] = []
+    appdata = os.environ.get("APPDATA")
+    if appdata:
+        candidates.append(Path(appdata) / "xdg.config" / ".wrangler" / "config" / "default.toml")
+    home = Path.home()
+    candidates.extend([
+        home / ".wrangler" / "config" / "default.toml",
+        home / ".config" / ".wrangler" / "config" / "default.toml",
+        home / "Library" / "Preferences" / ".wrangler" / "config" / "default.toml",
+    ])
+    for cfg in candidates:
+        if cfg.exists():
+            try:
+                import tomllib
+                data = tomllib.loads(cfg.read_text(encoding="utf-8"))
+                tok = str(data.get("oauth_token") or "").strip()
+                if tok:
+                    return tok
+            except Exception:
+                continue
+    return ""
+
+
 def load_settings(home_dir: Path | None = None) -> Settings:
     resolved_home = home_dir or Path(os.environ.get("WQ_HOME_DIR", r"D:\WonderQuant"))
     env_path = resolved_home / ".env"
     if env_path.exists():
         load_dotenv(env_path, override=False)
 
+    api_token = os.environ.get("CF_API_TOKEN", "").strip() or _discover_wrangler_oauth_token()
+    default_acct = "a03e9f93843398c2ba140ffcb2c2bcfb" if api_token else ""
+    account_id = os.environ.get("CF_ACCOUNT_ID", "").strip() or default_acct
+
     return Settings(
         home_dir=resolved_home,
-        cf_account_id=os.environ.get("CF_ACCOUNT_ID", ""),
+        cf_account_id=account_id,
         cf_d1_database_id=os.environ.get("CF_D1_DATABASE_ID", "b76be6c3-b0b7-4100-a417-dcbb0a08bf17"),
-        cf_api_token=os.environ.get("CF_API_TOKEN", ""),
+        cf_api_token=api_token,
         alert_webhook_url=os.environ.get("ALERT_WEBHOOK_URL", ""),
         lark_webhook_url=os.environ.get("LARK_WEBHOOK_URL", ""),
         https_proxy=os.environ.get("HTTPS_PROXY", ""),

@@ -2,9 +2,15 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { 
   Users, UserCheck, Shield, Award, User, RefreshCw, 
   Search, CheckCircle2, Ban, SlidersHorizontal, Briefcase,
-  BookOpen, Download, Copy, ExternalLink
+  BookOpen, Copy, ExternalLink, Sparkles
 } from 'lucide-react';
 import { authHeaders } from '../utils/auth';
+import {
+  buildSingleFundSopPrompt,
+  buildBatchFundSopPrompt,
+  copyAndDownloadSopPrompt,
+  extractWatchFocusList,
+} from '../utils/sopPromptBuilder';
 
 const API = '/api';
 
@@ -162,13 +168,21 @@ export default function AdminPanel({ currentUser, onOpenFundDetail }) {
       alert('当前没有待分析队列项');
       return;
     }
-    const lines = active.map((x) => {
-      const notes = (x.requesters || []).map((r) => r.note).filter(Boolean).join('；');
-      return `- ${x.slug} (${x.code} ${x.fund_name}) [${x.priority}, ${x.request_count}人关注]${notes ? ` 关注焦点: ${notes}` : ''}`;
-    });
-    const prompt = `请使用 fund-analysis-sop (SOP v2.0) 依次分析以下 FIS 观察队列基金，完成后执行 check_fund_contract.py、sync_fund_to_library.py 与 wq publish-sop：\n${lines.join('\n')}`;
-    await navigator.clipboard?.writeText(prompt).catch(() => {});
-    showSuccessFeedback(`已复制 ${active.length} 只基金的 Agent SOP v2.0 调度指令`);
+    const enriched = active.map((x) => ({
+      ...x,
+      admin_note: editingNotes[x.slug] !== undefined ? editingNotes[x.slug] : (x.admin_note || ''),
+    }));
+    const prompt = buildBatchFundSopPrompt(enriched);
+    await copyAndDownloadSopPrompt(prompt, '', { download: false });
+    showSuccessFeedback(`已生成并复制 ${active.length} 只待分析基金的 SOP v2.0 Prompt 到剪贴板（含关注事项）`);
+  };
+
+  const handleSingleFundPrompt = async (item, noteVal) => {
+    const prompt = buildSingleFundSopPrompt(item, { adminNoteOverride: noteVal });
+    const code = item.code || item.slug;
+    const focusList = extractWatchFocusList(item, { adminNoteOverride: noteVal });
+    await copyAndDownloadSopPrompt(prompt, '', { download: false });
+    showSuccessFeedback(`已生成并复制 ${code} 的 SOP 分析 Prompt 到剪贴板（已纳入 ${focusList.length} 条关注事项）`);
   };
 
   const showSuccessFeedback = (msg) => {
@@ -392,7 +406,7 @@ export default function AdminPanel({ currentUser, onOpenFundDetail }) {
 
             <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, flexWrap: 'wrap' }}>
               <button type="button" onClick={handleCopyAgentPrompt} className="action-btn-secondary" style={{ fontSize: 12, padding: '7px 12px', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-                <Copy size={13} /> 复制 Agent SOP 指令
+                <Sparkles size={13} /> 批量复制 SOP Prompt
               </button>
               <button type="button" onClick={handleExportQueueMarkdown} className="create-btn" style={{ fontSize: 12, padding: '7px 12px', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
                 <Download size={13} /> 导出 Obsidian 线索清单
@@ -411,14 +425,14 @@ export default function AdminPanel({ currentUser, onOpenFundDetail }) {
               <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left' }}>
                 <thead>
                   <tr style={{ borderBottom: '1px solid var(--border-subtle)', background: 'var(--surface-subtle)' }}>
-                    {['基金代码 / 名称', '关注热度与用户备注', '优先级', '调度状态', '管理员备注'].map((h) => (
+                    {['基金代码 / 名称', '关注热度与用户备注', '优先级', '调度状态', '管理员备注', '一键创立 / 导出 SOP Prompt'].map((h) => (
                       <th key={h} style={{ padding: '12px 14px', fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase' }}>{h}</th>
                     ))}
                   </tr>
                 </thead>
                 <tbody>
                   {queueLoading ? (
-                    <tr><td colSpan={5} style={{ textAlign: 'center', padding: 40, color: 'var(--text-muted)' }}>加载队列中…</td></tr>
+                    <tr><td colSpan={6} style={{ textAlign: 'center', padding: 40, color: 'var(--text-muted)' }}>加载队列中…</td></tr>
                   ) : (() => {
                     const visible = queueItems.filter((it) => {
                       if (queueStatusFilter !== 'all' && it.status !== queueStatusFilter) return false;
@@ -429,7 +443,7 @@ export default function AdminPanel({ currentUser, onOpenFundDetail }) {
                       return true;
                     });
                     if (visible.length === 0) {
-                      return <tr><td colSpan={5} style={{ textAlign: 'center', padding: 40, color: 'var(--text-muted)' }}>暂无观察队列记录</td></tr>;
+                      return <tr><td colSpan={6} style={{ textAlign: 'center', padding: 40, color: 'var(--text-muted)' }}>暂无观察队列记录</td></tr>;
                     }
                     return visible.map((it) => {
                       const sm = QUEUE_STATUS_META[it.status] || QUEUE_STATUS_META.queued;
@@ -509,6 +523,17 @@ export default function AdminPanel({ currentUser, onOpenFundDetail }) {
                                 保存
                               </button>
                             </div>
+                          </td>
+                          <td style={{ ...tdStyle, whiteSpace: 'nowrap' }}>
+                            <button
+                              type="button"
+                              onClick={() => handleSingleFundPrompt(it, noteVal)}
+                              className="create-btn"
+                              style={{ fontSize: 11, padding: '5px 10px', display: 'inline-flex', alignItems: 'center', gap: 5 }}
+                              title="一键生成含全部关注事项的基金分析 SOP Prompt 并复制到剪贴板"
+                            >
+                              <Copy size={12} /> 复制 SOP Prompt
+                            </button>
                           </td>
                         </tr>
                       );

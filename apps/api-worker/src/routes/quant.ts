@@ -979,6 +979,17 @@ quantRouter.get("/funds/:slug/sop-report", async (c) => {
 
   const requesters = safeParseJson<any[]>(queueRow?.requesters_json, []);
   const myEntry = requesters.find((r) => String(r?.user_id) === String(user.id)) || null;
+  const allNotes = requesters
+    .map((r) => {
+      const n = String(r?.note || "").trim();
+      if (!n) return "";
+      const who = String(r?.name || r?.email || "").trim();
+      return who ? `${who}：${n}` : n;
+    })
+    .filter(Boolean);
+  if (queueRow?.admin_note && String(queueRow.admin_note).trim()) {
+    allNotes.push(`管理员备注：${String(queueRow.admin_note).trim()}`);
+  }
   const queueSummary = queueRow
     ? {
         slug: queueRow.slug,
@@ -987,9 +998,16 @@ quantRouter.get("/funds/:slug/sop-report", async (c) => {
         request_count: Number(queueRow.request_count || requesters.length || 0),
         requested_by_me: Boolean(myEntry),
         my_note: myEntry?.note || "",
+        notes: allNotes,
+        requesters: requesters.map((r) => ({
+          name: r?.name || r?.email || "用户",
+          role: r?.role || "",
+          note: r?.note || "",
+          requested_at: r?.requested_at || null,
+        })),
         first_requested_at: queueRow.first_requested_at,
         last_requested_at: queueRow.last_requested_at,
-        admin_note: user.role === "admin" ? queueRow.admin_note || null : null,
+        admin_note: queueRow.admin_note || null,
       }
     : null;
 

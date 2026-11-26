@@ -1,8 +1,14 @@
 import React, { useMemo, useState } from 'react';
 import {
-  Search, RefreshCw, GitCompare, Plus, Check, X, ArrowUpDown, Database, Eye, Zap,
+  Search, RefreshCw, GitCompare, Plus, Check, X, ArrowUpDown, Database, Eye, Zap, Sparkles, Copy,
 } from 'lucide-react';
 import { useLang } from '../i18n/langCore';
+import {
+  buildSingleFundSopPrompt,
+  buildBatchFundSopPrompt,
+  copyAndDownloadSopPrompt,
+  extractWatchFocusList,
+} from '../utils/sopPromptBuilder';
 import {
   collectAvailableFundTags,
   collectAvailableManagers,
@@ -44,6 +50,27 @@ const FundQuantView = ({
 }) => {
   const { lang } = useLang();
   const [localLabBasketIds, setLocalLabBasketIds] = useState([]);
+  const [promptToast, setPromptToast] = useState('');
+
+  const showPromptToast = (msg) => {
+    setPromptToast(msg);
+    setTimeout(() => setPromptToast(''), 3200);
+  };
+
+  const handleExportSingleFundSopPrompt = async (fundRow) => {
+    const prompt = buildSingleFundSopPrompt(fundRow);
+    const code = fundRow.code || fundRow.slug;
+    const focusList = extractWatchFocusList(fundRow);
+    await copyAndDownloadSopPrompt(prompt, '', { download: false });
+    showPromptToast(`已生成并复制 ${code} 的 SOP 分析 Prompt 到剪贴板（含 ${focusList.length} 条关注事项）`);
+  };
+
+  const handleExportBatchQueuedSopPrompt = async (list) => {
+    if (!Array.isArray(list) || list.length === 0) return;
+    const prompt = buildBatchFundSopPrompt(list);
+    await copyAndDownloadSopPrompt(prompt, '', { download: false });
+    showPromptToast(`已批量生成并复制 ${list.length} 只待分析基金的 SOP Prompt 到剪贴板`);
+  };
   const labBasketIds = propLabBasketIds ?? localLabBasketIds;
   const setLabBasketIds = propSetLabBasketIds ?? setLocalLabBasketIds;
   const toggleLabBasketId =
@@ -508,6 +535,48 @@ const FundQuantView = ({
         </div>
       )}
 
+      {promptToast && (
+        <div className="glass-card" style={{ borderColor: 'var(--success)', background: 'var(--success-bg)', color: 'var(--success)', marginBottom: '14px', padding: '10px 16px', fontSize: '0.82rem', fontWeight: 600 }}>
+          {promptToast}
+        </div>
+      )}
+
+      {onlyQueued && rows.length > 0 && (
+        <div
+          className="glass-card"
+          style={{
+            marginBottom: '14px',
+            padding: '12px 16px',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            flexWrap: 'wrap',
+            gap: '10px',
+            borderColor: 'rgba(139, 92, 246, 0.45)',
+            background: 'rgba(139, 92, 246, 0.06)',
+          }}
+        >
+          <div>
+            <div style={{ fontSize: '0.86rem', fontWeight: 700, color: 'var(--text-primary)' }}>
+              👀 当前处于「观察待分析」基金队列（共 {rows.length} 只）
+            </div>
+            <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '2px' }}>
+              点击单只基金旁「复制Prompt」或右侧批量按钮，即可一键将包含全部关注事项的 SOP v2.0 大模型分析指令复制到剪贴板
+            </div>
+          </div>
+          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+            <button
+              type="button"
+              onClick={() => handleExportBatchQueuedSopPrompt(rows)}
+              className="create-btn"
+              style={{ padding: '6px 12px', fontSize: '0.76rem', display: 'inline-flex', alignItems: 'center', gap: '5px' }}
+            >
+              <Copy size={13} /> 批量复制 SOP Prompt
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Quant Screener Table */}
       <div className="glass-card" style={{ padding: 0, overflow: 'hidden' }}>
         <div className="table-container" style={{ maxHeight: '640px', overflowY: 'auto' }}>
@@ -618,18 +687,44 @@ const FundQuantView = ({
                               📘 {f.sop_medal || 'SOP'}{f.sop_valuation_zone ? ` · ${f.sop_valuation_zone}` : ''}
                             </span>
                           ) : ['queued', 'watching', 'in_progress'].includes(f.research_queue_status || '') ? (
-                            <span
-                              style={{
-                                fontSize: '0.64rem',
-                                padding: '1px 6px',
-                                borderRadius: '3px',
-                                background: 'rgba(139, 92, 246, 0.12)',
-                                color: '#8b5cf6',
-                                fontWeight: 700,
-                              }}
-                              title="已加入观察分析列表，等待管理员后台 SOP 调度"
-                            >
-                              👀 待分析 ({f.research_request_count || 1})
+                            <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+                              <span
+                                style={{
+                                  fontSize: '0.64rem',
+                                  padding: '1px 6px',
+                                  borderRadius: '3px',
+                                  background: 'rgba(139, 92, 246, 0.12)',
+                                  color: '#8b5cf6',
+                                  fontWeight: 700,
+                                }}
+                                title={
+                                  Array.isArray(f.research_notes) && f.research_notes.length > 0
+                                    ? `关注事项：${f.research_notes.join(' ｜ ')}`
+                                    : '已加入观察分析列表，等待管理员后台 SOP 调度'
+                                }
+                              >
+                                👀 待分析 ({f.research_request_count || 1})
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => handleExportSingleFundSopPrompt(f)}
+                                style={{
+                                  fontSize: '0.64rem',
+                                  padding: '1px 6px',
+                                  borderRadius: '3px',
+                                  background: 'rgba(217, 119, 6, 0.14)',
+                                  border: '1px solid rgba(217, 119, 6, 0.35)',
+                                  color: '#d97706',
+                                  fontWeight: 700,
+                                  cursor: 'pointer',
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  gap: '3px',
+                                }}
+                                title="一键复制含关注事项的基金分析 SOP Prompt 到剪贴板"
+                              >
+                                <Copy size={10} /> 复制Prompt
+                              </button>
                             </span>
                           ) : null}
                           {primaryTwin && (
@@ -718,6 +813,17 @@ const FundQuantView = ({
                           <button type="button" className="action-btn-secondary" style={{ padding: '4px 7px' }} title="Detail" onClick={() => setDetailSlug(f.slug)}>
                             <Eye size={13} />
                           </button>
+                          {['queued', 'watching', 'in_progress'].includes(f.research_queue_status || '') && (
+                            <button
+                              type="button"
+                              className="action-btn-secondary"
+                              style={{ padding: '4px 7px', color: '#8b5cf6', borderColor: 'rgba(139, 92, 246, 0.4)' }}
+                              title="一键复制该待分析基金的 SOP Prompt 到剪贴板（含关注事项）"
+                              onClick={() => handleExportSingleFundSopPrompt(f)}
+                            >
+                              <Copy size={13} />
+                            </button>
+                          )}
                           <button
                             type="button"
                             className="action-btn-secondary"

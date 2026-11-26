@@ -1,29 +1,41 @@
 import React, { useState, useEffect } from 'react';
+import {
+  CheckCircle2,
+  AlertTriangle,
+  KeyRound,
+  MailCheck,
+  Loader2,
+} from 'lucide-react';
 import { useLang } from '../i18n/langCore';
-
 
 const API = '/api';
 
 export function VerifyEmailOverlay({ token, onClose }) {
   const { t } = useLang();
-  // result 为空 = 验证中；没有 token 直接是失败结果（无需在 effect 里同步 setState）。
-  // 只存「服务端文案 / 兜底翻译 key」，翻译在渲染时做，这样切换语言不会重复请求验证接口。
   const [result, setResult] = useState(
     token ? null : { status: 'error', fallbackKey: 'auth.verifyFail' }
   );
   const status = result ? result.status : 'verifying';
-  const message = result ? (result.serverText || t(result.fallbackKey)) : '';
+  const message = result ? result.serverText || t(result.fallbackKey) : '';
 
   useEffect(() => {
     if (!token) return;
 
     fetch(`${API}/auth/verify-email?token=${token}`)
-      .then(r => r.json().then(data => ({ ok: r.ok, data })))
+      .then((r) => r.json().then((data) => ({ ok: r.ok, data })))
       .then(({ ok, data }) => {
         if (ok) {
-          setResult({ status: 'success', serverText: data.message, fallbackKey: 'auth.verifySuccess' });
+          setResult({
+            status: 'success',
+            serverText: data.message,
+            fallbackKey: 'auth.verifySuccess',
+          });
         } else {
-          setResult({ status: 'error', serverText: data.detail, fallbackKey: 'auth.verifyFail' });
+          setResult({
+            status: 'error',
+            serverText: data.detail,
+            fallbackKey: 'auth.verifyFail',
+          });
         }
       })
       .catch(() => {
@@ -34,14 +46,47 @@ export function VerifyEmailOverlay({ token, onClose }) {
   return (
     <div style={overlayStyle}>
       <div style={panelStyle}>
-        <div style={{ fontSize: 48, marginBottom: 20 }}>
-          {status === 'verifying' ? '⏳' : status === 'success' ? '✅' : '❌'}
+        <div
+          style={{
+            ...iconBadgeStyle,
+            margin: '0 auto 16px',
+            color:
+              status === 'success'
+                ? 'var(--success)'
+                : status === 'error'
+                  ? 'var(--danger)'
+                  : 'var(--accent-secondary)',
+            background:
+              status === 'success'
+                ? 'var(--success-bg)'
+                : status === 'error'
+                  ? 'var(--danger-bg)'
+                  : 'var(--warning-bg)',
+          }}
+        >
+          {status === 'verifying' ? (
+            <Loader2 size={22} className="animate-spin" />
+          ) : status === 'success' ? (
+            <MailCheck size={22} />
+          ) : (
+            <AlertTriangle size={22} />
+          )}
         </div>
-        <h2 style={{ color: '#fff', marginBottom: 12 }}>
-          {status === 'verifying' ? t('auth.verifying') : status === 'success' ? t('auth.verifySuccess') : t('auth.verifyFail')}
+
+        <div style={eyebrowStyle}>WONDER WISDOM · PORTFOLIO ATELIER</div>
+        <h2 style={headingStyle}>
+          {status === 'verifying'
+            ? t('auth.verifying')
+            : status === 'success'
+              ? t('auth.verifySuccess')
+              : t('auth.verifyFail')}
         </h2>
-        <p style={{ color: 'rgba(255,255,255,0.6)', marginBottom: 24 }}>{message}</p>
-        <button onClick={onClose} style={btnStyle}>{t('auth.verifyBtn')}</button>
+        <p style={{ color: 'var(--text-secondary)', fontSize: 13, lineHeight: 1.6, margin: '10px 0 22px' }}>
+          {message}
+        </p>
+        <button type="button" onClick={onClose} className="create-btn" style={{ width: '100%' }}>
+          {t('auth.verifyBtn')}
+        </button>
       </div>
     </div>
   );
@@ -57,8 +102,14 @@ export function ResetPasswordOverlay({ token, onClose }) {
 
   const handleReset = async (e) => {
     e.preventDefault();
-    if (pwd.length < 6) { setError(t('auth.errPwdMin')); return; }
-    if (pwd !== pwd2) { setError(t('auth.errPwdMatch')); return; }
+    if (pwd.length < 6) {
+      setError(t('auth.errPwdMin'));
+      return;
+    }
+    if (pwd !== pwd2) {
+      setError(t('auth.errPwdMatch'));
+      return;
+    }
 
     setLoading(true);
     setError('');
@@ -84,41 +135,97 @@ export function ResetPasswordOverlay({ token, onClose }) {
   return (
     <div style={overlayStyle}>
       <div style={panelStyle}>
-        <div style={{ fontSize: 48, marginBottom: 20 }}>🔐</div>
-        <h2 style={{ color: '#fff', marginBottom: 12 }}>{t('auth.resetTitle')}</h2>
-        
+        <div style={{ ...iconBadgeStyle, margin: '0 auto 16px' }}>
+          <KeyRound size={22} />
+        </div>
+        <div style={eyebrowStyle}>WONDER WISDOM · PORTFOLIO ATELIER</div>
+        <h2 style={{ ...headingStyle, marginBottom: 18 }}>{t('auth.resetTitle')}</h2>
+
         {success ? (
           <>
-            <p style={{ color: '#4ade80', marginBottom: 24 }}>{success}</p>
-            <button onClick={onClose} style={btnStyle}>{t('auth.resetBtn')}</button>
+            <div
+              style={{
+                padding: '12px 14px',
+                background: 'var(--success-bg)',
+                border: '1px solid var(--success)',
+                borderLeft: '3px solid var(--success)',
+                borderRadius: 'var(--card-radius, 6px)',
+                color: 'var(--success)',
+                fontSize: 13,
+                fontWeight: 600,
+                marginBottom: 20,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: 8,
+              }}
+            >
+              <CheckCircle2 size={16} />
+              <span>{success}</span>
+            </div>
+            <button type="button" onClick={onClose} className="create-btn" style={{ width: '100%' }}>
+              {t('auth.resetBtn')}
+            </button>
           </>
         ) : (
-          <form onSubmit={handleReset} style={{ width: '100%' }}>
-            <div style={{ marginBottom: 16, textAlign: 'left' }}>
+          <form onSubmit={handleReset} style={{ width: '100%', textAlign: 'left' }}>
+            <div style={{ marginBottom: 14 }}>
               <label style={labelStyle}>{t('auth.resetLabel')}</label>
-              <input 
-                type="password" 
-                value={pwd} 
-                onChange={e => setPwd(e.target.value)} 
-                style={inputStyle} 
+              <input
+                type="password"
+                value={pwd}
+                onChange={(e) => setPwd(e.target.value)}
+                className="atelier-input"
+                style={inputStyle}
                 placeholder={t('auth.resetPlaceholder')}
               />
             </div>
-            <div style={{ marginBottom: 20, textAlign: 'left' }}>
+            <div style={{ marginBottom: 18 }}>
               <label style={labelStyle}>{t('auth.resetConfirmLabel')}</label>
-              <input 
-                type="password" 
-                value={pwd2} 
-                onChange={e => setPwd2(e.target.value)} 
-                style={inputStyle} 
+              <input
+                type="password"
+                value={pwd2}
+                onChange={(e) => setPwd2(e.target.value)}
+                className="atelier-input"
+                style={inputStyle}
                 placeholder={t('auth.resetConfirmPlaceholder')}
               />
             </div>
-            {error && <p style={{ color: '#f87171', fontSize: 13, marginBottom: 16 }}>⚠️ {error}</p>}
-            <button type="submit" disabled={loading} style={btnStyle}>
+            {error && (
+              <div
+                style={{
+                  padding: '10px 12px',
+                  background: 'var(--danger-bg)',
+                  border: '1px solid var(--danger)',
+                  borderLeft: '3px solid var(--danger)',
+                  borderRadius: 'var(--card-radius, 6px)',
+                  color: 'var(--danger)',
+                  fontSize: 12.5,
+                  fontWeight: 600,
+                  marginBottom: 16,
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 8,
+                }}
+              >
+                <AlertTriangle size={15} />
+                <span>{error}</span>
+              </div>
+            )}
+            <button
+              type="submit"
+              disabled={loading}
+              className="create-btn"
+              style={{ width: '100%', padding: '12px 16px' }}
+            >
               {loading ? t('auth.resetSubmitting') : t('auth.resetSubmit')}
             </button>
-            <button type="button" onClick={onClose} style={{ ...btnStyle, background: 'transparent', border: '1px solid rgba(255,255,255,0.1)', marginTop: 12 }}>
+            <button
+              type="button"
+              onClick={onClose}
+              className="action-btn-secondary"
+              style={{ width: '100%', marginTop: 10, padding: '10px 16px' }}
+            >
               {t('common.cancel')}
             </button>
           </form>
@@ -129,26 +236,80 @@ export function ResetPasswordOverlay({ token, onClose }) {
 }
 
 const overlayStyle = {
-  position: 'fixed', inset: 0, zIndex: 10000,
-  background: 'rgba(0,0,0,0.8)', backdropFilter: 'blur(12px)',
-  display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20
+  position: 'fixed',
+  inset: 0,
+  zIndex: 10000,
+  background: 'rgba(20, 20, 19, 0.72)',
+  backdropFilter: 'blur(8px)',
+  WebkitBackdropFilter: 'blur(8px)',
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  padding: 20,
 };
 
 const panelStyle = {
-  background: 'linear-gradient(150deg, #0f172a, #1e293b)',
-  border: '1px solid rgba(99,102,241,0.25)',
-  borderRadius: 20, padding: 40, textAlign: 'center',
-  maxWidth: 400, width: '100%', boxShadow: '0 40px 100px rgba(0,0,0,0.5)'
+  background: 'var(--surface-elevated)',
+  border: '1px solid var(--border-strong)',
+  borderTop: '3px solid var(--accent-color)',
+  borderRadius: 'var(--card-radius, 6px)',
+  padding: '32px 28px',
+  textAlign: 'center',
+  maxWidth: 420,
+  width: '100%',
+  boxShadow: '0 24px 60px rgba(0, 0, 0, 0.28)',
 };
 
-const btnStyle = {
-  width: '100%', padding: 12, borderRadius: 10, border: 'none',
-  background: 'linear-gradient(135deg, #6366f1, #818cf8)',
-  color: '#fff', fontWeight: 700, cursor: 'pointer'
+const iconBadgeStyle = {
+  width: 46,
+  height: 46,
+  borderRadius: 'var(--card-radius, 6px)',
+  background: 'var(--warning-bg)',
+  border: '1px solid var(--border-strong)',
+  color: 'var(--accent-secondary)',
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
 };
 
-const labelStyle = { display: 'block', color: 'rgba(255,255,255,0.5)', fontSize: 12, marginBottom: 8 };
-const inputStyle = { 
-  width: '100%', padding: 12, background: 'rgba(255,255,255,0.05)', 
-  border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8, color: '#fff', outline: 'none' 
+const eyebrowStyle = {
+  fontFamily: 'var(--font-mono)',
+  fontSize: 10.5,
+  fontWeight: 700,
+  letterSpacing: '0.1em',
+  color: 'var(--accent-secondary)',
+  textTransform: 'uppercase',
+  marginBottom: 4,
+};
+
+const headingStyle = {
+  margin: 0,
+  fontFamily: 'var(--font-display)',
+  fontSize: '1.5rem',
+  fontWeight: 700,
+  color: 'var(--text-primary)',
+  letterSpacing: '-0.02em',
+};
+
+const labelStyle = {
+  display: 'block',
+  color: 'var(--text-secondary)',
+  fontSize: 11.5,
+  fontWeight: 700,
+  letterSpacing: '0.06em',
+  textTransform: 'uppercase',
+  marginBottom: 6,
+};
+
+const inputStyle = {
+  width: '100%',
+  height: 40,
+  padding: '9px 12px',
+  background: 'var(--surface-card)',
+  border: '1px solid var(--border-strong)',
+  borderRadius: 'var(--card-radius, 6px)',
+  color: 'var(--text-primary)',
+  fontSize: 13.5,
+  outline: 'none',
+  boxSizing: 'border-box',
 };
