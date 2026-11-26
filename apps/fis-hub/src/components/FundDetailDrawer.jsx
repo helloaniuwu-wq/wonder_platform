@@ -3,7 +3,7 @@ import {
   ComposedChart, Line, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine,
 } from 'recharts';
 import {
-  X, Plus, Check, Zap, GitCompare, AlertTriangle, Layers, ExternalLink, Info, ArrowLeft, ChevronLeft, ChevronRight, RefreshCw, BookOpen, BookmarkPlus, BookmarkCheck, Sparkles, Download,
+  X, Plus, Check, Zap, GitCompare, AlertTriangle, Layers, ExternalLink, Info, ArrowLeft, ChevronLeft, ChevronRight, RefreshCw, BookOpen, BookmarkPlus, BookmarkCheck, Sparkles, Download, Star,
 } from 'lucide-react';
 import { authHeaders } from '../utils/auth';
 import { fmtNum, fmtPct, fmtSignedPct, gradeMeta, inferFundRole, resolveFundTwins, tierMeta } from '../utils/fundQuantUtils';
@@ -11,6 +11,7 @@ import { buildFundExternalLinks } from '../utils/fundLinks';
 import { buildSingleFundSopPrompt, copyAndDownloadSopPrompt } from '../utils/sopPromptBuilder';
 import { useLang } from '../i18n/langCore';
 import FundSopReportView from './FundSopReportView';
+import AdminCorePickModal from './modals/AdminCorePickModal';
 
 const FundDetailDrawer = ({
   slug,
@@ -28,9 +29,12 @@ const FundDetailDrawer = ({
   onPrev,
   onNext,
   positionLabel,
+  currentUser,
   onRefreshCatalog,
 }) => {
   const { lang } = useLang();
+  const isAdmin = currentUser?.role === 'admin';
+  const [corePickModalOpen, setCorePickModalOpen] = useState(false);
   const [range, setRange] = useState('3y');
   const [currency, setCurrency] = useState('NATIVE');
   const [profile, setProfile] = useState(null);
@@ -48,6 +52,7 @@ const FundDetailDrawer = ({
     setPrevSlug(slug);
     setDrawerTab('quant');
     setShowRequestBox(false);
+    setCorePickModalOpen(false);
   }
 
   const handleRefreshHoldings = async () => {
@@ -252,6 +257,30 @@ const FundDetailDrawer = ({
         </div>
 
         <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' }}>
+          {isAdmin && fund && (
+            <button
+              type="button"
+              className="action-btn-secondary"
+              style={{
+                padding: '7px 14px',
+                fontSize: '0.82rem',
+                ...(fund.is_admin_core_pick
+                  ? {
+                      borderColor: 'rgba(245, 158, 11, 0.75)',
+                      color: '#d97706',
+                      background: 'rgba(245, 158, 11, 0.14)',
+                      fontWeight: 700,
+                    }
+                  : {}),
+              }}
+              onClick={() => setCorePickModalOpen(true)}
+            >
+              <Star size={14} style={{ fill: fund.is_admin_core_pick ? '#f59e0b' : 'none' }} />
+              {fund.is_admin_core_pick
+                ? (lang === 'en' ? 'Admin Core Pick' : '⭐ 管理员核心推荐')
+                : (lang === 'en' ? 'Set Core Pick' : '设为核心推荐')}
+            </button>
+          )}
           <button
             type="button"
             className={inLabBasket ? 'action-btn-secondary' : 'create-btn'}
@@ -391,6 +420,61 @@ const FundDetailDrawer = ({
           {fund?.fee_pct != null && <><span>·</span><span>ER {fund.fee_pct.toFixed(2)}%</span></>}
           {fund?.valuation_date && <><span>·</span><span>{lang === 'en' ? 'As of' : '估值日'} {fund.valuation_date}</span></>}
         </div>
+
+        {fund?.is_admin_core_pick && (
+          <div
+            style={{
+              marginTop: '12px',
+              padding: '10px 14px',
+              borderRadius: '8px',
+              background: 'rgba(245, 158, 11, 0.10)',
+              border: '1px solid rgba(245, 158, 11, 0.38)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              flexWrap: 'wrap',
+              gap: '10px',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+              <span style={{ fontSize: '0.8rem', fontWeight: 700, color: '#d97706', display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+                <Star size={14} style={{ fill: '#f59e0b', color: '#f59e0b' }} />
+                {lang === 'en' ? 'Admin Core Pick' : '管理员核心推荐'}
+              </span>
+              {Array.isArray(fund.admin_core_reasons) && fund.admin_core_reasons.map((reason) => (
+                <span
+                  key={reason}
+                  style={{
+                    fontSize: '0.72rem',
+                    padding: '2px 8px',
+                    borderRadius: '999px',
+                    background: 'rgba(245, 158, 11, 0.18)',
+                    border: '1px solid rgba(245, 158, 11, 0.4)',
+                    color: '#b45309',
+                    fontWeight: 700,
+                  }}
+                >
+                  {reason}
+                </span>
+              ))}
+              {fund.admin_core_note && (
+                <span style={{ fontSize: '0.78rem', color: 'var(--text-secondary)' }}>
+                  · {fund.admin_core_note}
+                </span>
+              )}
+            </div>
+            {isAdmin && (
+              <button
+                type="button"
+                onClick={() => setCorePickModalOpen(true)}
+                className="action-btn-secondary"
+                style={{ padding: '3px 10px', fontSize: '0.74rem', borderColor: 'rgba(245, 158, 11, 0.45)', color: '#d97706' }}
+              >
+                {lang === 'en' ? 'Edit Reasons' : '编辑理由'}
+              </button>
+            )}
+          </div>
+        )}
 
         {fund?.anomalies && fund.anomalies.length > 0 && (
           <div style={{ marginTop: '12px', padding: '10px 12px', borderRadius: '6px', background: 'var(--warning-bg)', border: '1px solid var(--warning)', color: 'var(--warning)', fontSize: '0.8rem', display: 'flex', gap: '8px', alignItems: 'center' }}>
@@ -990,6 +1074,32 @@ const FundDetailDrawer = ({
           )}
         </div>
       </div>
+      )}
+      {corePickModalOpen && fund && (
+        <AdminCorePickModal
+          key={`${fund.slug}-${fund.is_admin_core_pick ? '1' : '0'}`}
+          open={corePickModalOpen}
+          fund={fund}
+          onClose={() => setCorePickModalOpen(false)}
+          onSaved={(saved) => {
+            setProfile((prev) =>
+              prev && prev.fund
+                ? {
+                    ...prev,
+                    fund: {
+                      ...prev.fund,
+                      is_admin_core_pick: Boolean(saved?.is_admin_core_pick),
+                      admin_core_reasons: Array.isArray(saved?.admin_core_reasons) ? saved.admin_core_reasons : [],
+                      admin_core_note: saved?.admin_core_note ?? null,
+                      admin_core_updated_at: saved?.admin_core_updated_at ?? null,
+                      admin_core_updated_by: saved?.admin_core_updated_by ?? null,
+                    },
+                  }
+                : prev
+            );
+            onRefreshCatalog?.();
+          }}
+        />
       )}
     </div>
   );

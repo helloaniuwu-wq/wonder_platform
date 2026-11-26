@@ -1,6 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import {
-  Search, RefreshCw, GitCompare, Plus, Check, X, ArrowUpDown, Database, Eye, Zap, Sparkles, Copy,
+  Search, RefreshCw, GitCompare, Plus, Check, X, ArrowUpDown, Database, Eye, Zap, Sparkles, Copy, Star,
 } from 'lucide-react';
 import { useLang } from '../i18n/langCore';
 import {
@@ -27,6 +27,7 @@ import {
 } from '../utils/fundQuantUtils';
 import FundDetailDrawer from './FundDetailDrawer';
 import FundCompareModal from './modals/FundCompareModal';
+import AdminCorePickModal from './modals/AdminCorePickModal';
 
 const FundQuantView = ({
   funds = [],
@@ -52,8 +53,10 @@ const FundQuantView = ({
   onGoToCatalog = null,
 }) => {
   const { lang } = useLang();
+  const isAdmin = currentUser?.role === 'admin';
   const [localLabBasketIds, setLocalLabBasketIds] = useState([]);
   const [promptToast, setPromptToast] = useState('');
+  const [corePickModalFund, setCorePickModalFund] = useState(null);
 
   const showPromptToast = (msg) => {
     setPromptToast(msg);
@@ -103,6 +106,7 @@ const FundQuantView = ({
   const [excludeNonRec, setExcludeNonRec] = useState(true);
   const [onlySop, setOnlySop] = useState(false);
   const [onlyQueued, setOnlyQueued] = useState(false);
+  const [onlyAdminCore, setOnlyAdminCore] = useState(false);
   const [sortKey, setSortKey] = useState('quant_score');
   const [sortOrder, setSortOrder] = useState('desc');
 
@@ -137,7 +141,8 @@ const FundQuantView = ({
     grade !== 'ALL' ||
     !excludeNonRec ||
     onlySop ||
-    onlyQueued;
+    onlyQueued ||
+    onlyAdminCore;
 
   const resetFilters = () => {
     setQ('');
@@ -156,6 +161,7 @@ const FundQuantView = ({
     setExcludeNonRec(true);
     setOnlySop(false);
     setOnlyQueued(false);
+    setOnlyAdminCore(false);
   };
 
   // Pre-tag filtered subset so displayed tag counts always match exact click results
@@ -217,10 +223,11 @@ const FundQuantView = ({
       return tagFiltered.filter((f) => {
         if (onlySop && !f.has_sop_report) return false;
         if (onlyQueued && !['queued', 'watching', 'in_progress'].includes(f.research_queue_status || '')) return false;
+        if (onlyAdminCore && !f.is_admin_core_pick) return false;
         return true;
       });
     },
-    [baseFilteredFunds, selectedTags, sortKey, sortOrder, onlySop, onlyQueued]
+    [baseFilteredFunds, selectedTags, sortKey, sortOrder, onlySop, onlyQueued, onlyAdminCore]
   );
 
   const toggleSort = (key) => {
@@ -492,6 +499,23 @@ const FundQuantView = ({
             👀 {lang === 'en' ? `Watchlist Queue (${facets?.queued_research ?? 0})` : `观察待分析 (${facets?.queued_research ?? 0})`}
           </button>
 
+          <button
+            type="button"
+            onClick={() => setOnlyAdminCore((v) => !v)}
+            className={onlyAdminCore ? 'create-btn' : 'action-btn-secondary'}
+            style={{
+              padding: '4px 10px',
+              fontSize: '0.76rem',
+              ...(onlyAdminCore
+                ? {}
+                : { borderColor: 'rgba(245, 158, 11, 0.45)', color: '#d97706' }),
+            }}
+          >
+            ⭐ {lang === 'en'
+              ? `Admin Core Picks (${facets?.admin_core_picks ?? funds.filter((x) => x.is_admin_core_pick).length})`
+              : `管理员核心推荐 (${facets?.admin_core_picks ?? funds.filter((x) => x.is_admin_core_pick).length})`}
+          </button>
+
           {hasActiveFilters && (
             <button type="button" onClick={resetFilters} className="action-btn-secondary" style={{ padding: '4px 10px', fontSize: '0.76rem' }}>
               {lang === 'en' ? 'Reset' : '重置筛选'}
@@ -689,6 +713,36 @@ const FundQuantView = ({
                               {lang === 'en' ? 'Dis' : '派息'}
                             </span>
                           )}
+                          {f.is_admin_core_pick && (
+                            <span
+                              onClick={isAdmin ? () => setCorePickModalFund(f) : undefined}
+                              style={{
+                                fontSize: '0.64rem',
+                                padding: '1px 6px',
+                                borderRadius: '3px',
+                                background: 'rgba(245, 158, 11, 0.16)',
+                                border: '1px solid rgba(245, 158, 11, 0.45)',
+                                color: '#d97706',
+                                fontWeight: 700,
+                                cursor: isAdmin ? 'pointer' : 'default',
+                              }}
+                              title={
+                                [
+                                  Array.isArray(f.admin_core_reasons) && f.admin_core_reasons.length > 0
+                                    ? `推荐理由：${f.admin_core_reasons.join(' / ')}`
+                                    : '管理员核心推荐标的',
+                                  f.admin_core_note ? `备注：${f.admin_core_note}` : null,
+                                ]
+                                  .filter(Boolean)
+                                  .join(' ｜ ')
+                              }
+                            >
+                              ⭐ {lang === 'en' ? 'Core Pick' : '核心推荐'}
+                              {Array.isArray(f.admin_core_reasons) && f.admin_core_reasons.length > 0
+                                ? ` · ${f.admin_core_reasons.slice(0, 2).join(' · ')}${f.admin_core_reasons.length > 2 ? ` +${f.admin_core_reasons.length - 2}` : ''}`
+                                : ''}
+                            </span>
+                          )}
                           {f.has_sop_report ? (
                             <span
                               style={{
@@ -830,6 +884,30 @@ const FundQuantView = ({
                           <button type="button" className="action-btn-secondary" style={{ padding: '4px 7px' }} title="Detail" onClick={() => setDetailSlug(f.slug)}>
                             <Eye size={13} />
                           </button>
+                          {isAdmin && (
+                            <button
+                              type="button"
+                              className="action-btn-secondary"
+                              style={{
+                                padding: '4px 7px',
+                                ...(f.is_admin_core_pick
+                                  ? {
+                                      borderColor: 'rgba(245, 158, 11, 0.75)',
+                                      color: '#d97706',
+                                      background: 'rgba(245, 158, 11, 0.14)',
+                                    }
+                                  : {}),
+                              }}
+                              title={
+                                f.is_admin_core_pick
+                                  ? (lang === 'en' ? 'Edit Admin Core Pick & Reasons' : '编辑管理员核心推荐与打标理由')
+                                  : (lang === 'en' ? 'Mark as Admin Core Pick' : '收藏为管理员核心推荐')
+                              }
+                              onClick={() => setCorePickModalFund(f)}
+                            >
+                              <Star size={13} style={{ fill: f.is_admin_core_pick ? '#f59e0b' : 'none' }} />
+                            </button>
+                          )}
                           {['queued', 'watching', 'in_progress'].includes(f.research_queue_status || '') && (
                             <button
                               type="button"
@@ -1015,6 +1093,27 @@ const FundQuantView = ({
         onClose={() => setCompareOpen(false)}
         onSendBasketToLab={(ids) => onAddFundsToLab(ids, { replace: true, navigate: true })}
       />
+      {corePickModalFund && (
+        <AdminCorePickModal
+          key={corePickModalFund.slug}
+          open={Boolean(corePickModalFund)}
+          fund={corePickModalFund}
+          onClose={() => setCorePickModalFund(null)}
+          onSaved={(saved) => {
+            const codeLabel = corePickModalFund.code || corePickModalFund.slug;
+            if (saved?.is_admin_core_pick) {
+              const reasonStr =
+                Array.isArray(saved.admin_core_reasons) && saved.admin_core_reasons.length > 0
+                  ? `（${saved.admin_core_reasons.join(' / ')}）`
+                  : '';
+              showPromptToast(`⭐ 已将 ${codeLabel} 收藏为管理员核心推荐${reasonStr}`);
+            } else {
+              showPromptToast(`已将 ${codeLabel} 移出管理员核心推荐`);
+            }
+            refreshFunds?.();
+          }}
+        />
+      )}
     </div>
   );
 };

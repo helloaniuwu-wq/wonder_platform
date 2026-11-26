@@ -27,6 +27,7 @@ import {
   isIrelandOrLuxembourgFund,
   matchClassicTemplates,
   normalizeProfile,
+  resolveEffectiveFundRole,
 } from "./advisoryEngine";
 import { DEFAULT_MACRO_SNAPSHOT, formatMacroPromptBlock } from "./macroStore";
 import {
@@ -1718,5 +1719,124 @@ describe("Core-Satellite, Homogeneous Deduplication, Hard Caps & AI Fund Swappin
     expect(inferFundRole({ code: "I17", aia_code: "I17", name: "贝莱德系统分析环球股票高息基金", asset_class: "股票" } as any)).toBe("core");
     expect(inferFundRole({ code: "Z01", aia_code: "Z01", name: "惠理高息股票基金 (亚太)", asset_class: "股票" } as any)).toBe("satellite");
     expect(inferFundRole({ code: "DIVO", name: "Amplify CWP Enhanced Dividend Income ETF", asset_class: "股票" } as any)).toBe("satellite");
+  });
+
+  it("prioritizes admin core picks as first-tier selections with elevated weights while respecting isolation & tax rules", () => {
+    const mockCatalog = [
+      // Equity Core 1: Admin Core Pick (slightly lower quant_score than rival EQ_RIVAL, still should win & get higher weight)
+      {
+        slug: "EU_CSPX", code: "CSPX", isin: "IE00B5BMR087", yahoo_ticker: "CSPX.L",
+        name: "iShares Core S&P 500 UCITS ETF (Acc)", asset_class: "股票", ilas_platform: "非投连险-国际股票",
+        currency: "USD", fee_pct: 0.07, data_tier: "A", quant_score: 82, quant_grade: "B",
+        ret_3y_ann: 0.14, vol_3y: 0.15, sharpe_3y: 0.9, r2_3y: 0.99, beta_3y: 1.0,
+        is_distributing: false, tags: [], is_admin_core_pick: true, admin_core_reasons: ["核心美国", "低波动增强"],
+      },
+      // Equity Core 2: Rival Non-Admin US Broad (higher quant_score 95, should NOT beat admin core pick, and should yield higher weight to admin pick)
+      {
+        slug: "EU_SPYL", code: "SPYL", isin: "IE000XZSV718", yahoo_ticker: "SPYL.L",
+        name: "SPDR S&P 500 UCITS ETF (Acc)", asset_class: "股票", ilas_platform: "非投连险-国际股票",
+        currency: "USD", fee_pct: 0.03, data_tier: "A", quant_score: 95, quant_grade: "A",
+        ret_3y_ann: 0.16, vol_3y: 0.15, sharpe_3y: 1.05, r2_3y: 0.99, beta_3y: 1.0,
+        is_distributing: false, tags: [],
+      },
+      // Equity Core 3: Non-Admin Global Developed Broad
+      {
+        slug: "EU_IWDA", code: "IWDA", isin: "IE00B4L5Y983", yahoo_ticker: "IWDA.L",
+        name: "iShares Core MSCI World UCITS ETF (Acc)", asset_class: "股票", ilas_platform: "非投连险-国际股票",
+        currency: "USD", fee_pct: 0.2, data_tier: "A", quant_score: 91, quant_grade: "A",
+        ret_3y_ann: 0.13, vol_3y: 0.14, sharpe_3y: 0.85, r2_3y: 0.98, beta_3y: 0.98,
+        is_distributing: false, tags: [],
+      },
+      // Equity Satellite: Admin Core Pick tagged as 卫星行业
+      {
+        slug: "EU_IUIT", code: "IUIT", isin: "IE00B3WJKG14", yahoo_ticker: "IUIT.L",
+        name: "iShares S&P 500 Info Tech Sector UCITS ETF", asset_class: "股票", ilas_platform: "非投连险-国际股票",
+        currency: "USD", fee_pct: 0.15, data_tier: "A", quant_score: 79, quant_grade: "B",
+        ret_3y_ann: 0.18, vol_3y: 0.22, sharpe_3y: 0.8, is_distributing: false, tags: [],
+        is_admin_core_pick: true, admin_core_reasons: ["卫星行业"],
+      },
+      // Equity Satellite Rival (higher raw score but not admin pick)
+      {
+        slug: "EU_EIMI", code: "EIMI", isin: "IE00BKM4GZ66", yahoo_ticker: "EIMI.L",
+        name: "iShares Core MSCI EM IMI UCITS ETF", asset_class: "股票", ilas_platform: "非投连险-国际股票",
+        currency: "USD", fee_pct: 0.18, data_tier: "A", quant_score: 94, quant_grade: "A",
+        ret_3y_ann: 0.11, vol_3y: 0.17, sharpe_3y: 0.65, is_distributing: false, tags: [],
+      },
+      // Bond Core 1: Admin Core Pick
+      {
+        slug: "EU_IB01", code: "IB01", isin: "IE00BGSF1X88", yahoo_ticker: "IB01.L",
+        name: "iShares $ Treasury Bond 0-1yr UCITS ETF", asset_class: "固定收益", ilas_platform: "非投连险-债券基金比较",
+        currency: "USD", fee_pct: 0.07, data_tier: "A", quant_score: 88, quant_grade: "A",
+        ret_3y_ann: 0.048, vol_3y: 0.008, sharpe_3y: 2.1, is_distributing: false, tags: [],
+        is_admin_core_pick: true, admin_core_reasons: ["核心固收", "低波动增强"],
+      },
+      // Bond Core 2: Rival Bond
+      {
+        slug: "EU_AGGU", code: "AGGU", isin: "IE00BDBRDM35", yahoo_ticker: "AGGU.L",
+        name: "iShares Core Global Aggregate Bond UCITS ETF", asset_class: "固定收益", ilas_platform: "非投连险-债券基金比较",
+        currency: "USD", fee_pct: 0.1, data_tier: "A", quant_score: 84, quant_grade: "B",
+        ret_3y_ann: 0.03, vol_3y: 0.055, sharpe_3y: 0.25, is_distributing: false, tags: [],
+      },
+      // US-situs ETF (also marked admin pick to verify US estate tax hard isolation still excludes it in eu_ucits mode!)
+      {
+        slug: "US_VOO", code: "VOO", isin: "US9229083632", yahoo_ticker: "VOO",
+        name: "Vanguard S&P 500 ETF", asset_class: "股票", ilas_platform: "非投连险-国际股票",
+        currency: "USD", fee_pct: 0.03, data_tier: "A", quant_score: 99, quant_grade: "A",
+        ret_3y_ann: 0.17, vol_3y: 0.15, sharpe_3y: 1.15, is_distributing: false, tags: [],
+        is_admin_core_pick: true, admin_core_reasons: ["核心美国"],
+      },
+      // ILAS fund (also marked admin pick to verify ILAS isolation still excludes it in non-ILAS baskets!)
+      {
+        slug: "AIA_A22", code: "A22", aia_code: "A22",
+        name: "AIA 全球股票核心基金", asset_class: "股票", ilas_platform: "AIA 卓达智悦2",
+        currency: "USD", fee_pct: 1.2, data_tier: "B", quant_score: 95, quant_grade: "A",
+        ret_3y_ann: 0.15, vol_3y: 0.15, sharpe_3y: 0.9, is_distributing: false, tags: [],
+        is_admin_core_pick: true, admin_core_reasons: ["核心全球"],
+      },
+    ];
+
+    expect(resolveEffectiveFundRole(mockCatalog[0] as any)).toBe("core");
+    expect(resolveEffectiveFundRole(mockCatalog[3] as any)).toBe("satellite");
+
+    const prof = normalizeProfile({
+      product_scope: "eu_ucits",
+      ilp_planned: false,
+      risk_level: "growth",
+      horizon_years: 15,
+      primary_goal: "growth",
+    });
+    const res = buildCustomFundBaskets(mockCatalog as any, prof, getRiskEnvelope(prof));
+    const planA = res.baskets[0];
+    const codesA = planA.holdings.map((h) => h.code);
+
+    // 1. Admin core picks are selected first within matching universe
+    expect(codesA).toContain("CSPX");
+    expect(codesA).toContain("IUIT");
+    expect(codesA).toContain("IB01");
+    // 2. Hard constraints remain intact: VOO (US-situs) & A22 (ILAS) are excluded under eu_ucits
+    expect(codesA).not.toContain("VOO");
+    expect(codesA).not.toContain("A22");
+    // 3. Elevated weight for admin equity core pick vs non-admin equity core sibling
+    const cspx = planA.holdings.find((h) => h.code === "CSPX")!;
+    const iwda = planA.holdings.find((h) => h.code === "IWDA");
+    expect(cspx.is_admin_core_pick).toBe(true);
+    expect(cspx.admin_core_reasons).toEqual(["核心美国", "低波动增强"]);
+    expect(cspx.rationale_zh).toContain("管理员核心推荐");
+    if (iwda) {
+      expect(cspx.weight_pct).toBeGreaterThan(iwda.weight_pct);
+    }
+    // Core-Satellite constraint remains intact (>= 70% core)
+    expect(planA.metrics.core_pct).toBeGreaterThanOrEqual(70);
+
+    // 4. Tactical candidate pool propagates admin core pick metadata
+    const pool = buildTacticalCandidatePool(
+      mockCatalog as any,
+      prof,
+      [{ code: "IWDA" }],
+      10
+    );
+    const poolCspx = pool.find((c) => c.code === "CSPX");
+    expect(poolCspx?.is_admin_core_pick).toBe(true);
+    expect(poolCspx?.admin_core_reasons).toEqual(["核心美国", "低波动增强"]);
   });
 });

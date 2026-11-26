@@ -9,6 +9,7 @@ interface MockFundSopState {
   wq_funds: Array<Record<string, any>>;
   wq_fund_sop_reports: Record<string, Record<string, any>>;
   wq_fund_research_queue: Record<string, Record<string, any>>;
+  wq_admin_core_picks: Record<string, Record<string, any>>;
 }
 
 function createMockDb(state: MockFundSopState): D1Database {
@@ -43,6 +44,7 @@ function createMockDb(state: MockFundSopState): D1Database {
           const joined = state.wq_funds.map((f) => {
             const sr = state.wq_fund_sop_reports[f.slug];
             const rq = state.wq_fund_research_queue[f.slug];
+            const acp = state.wq_admin_core_picks[f.slug];
             return {
               ...f,
               has_sop_report: sr ? 1 : 0,
@@ -53,6 +55,11 @@ function createMockDb(state: MockFundSopState): D1Database {
               research_queue_status: rq?.status || null,
               research_request_count: rq?.request_count || 0,
               research_requesters_json: rq?.requesters_json || null,
+              is_admin_core_pick: acp ? 1 : 0,
+              admin_core_reasons_json: acp?.reasons_json || null,
+              admin_core_note: acp?.note || null,
+              admin_core_updated_at: acp?.updated_at || null,
+              admin_core_updated_by: acp?.updated_by || null,
             };
           });
           return { results: joined as T[], success: true, meta: {} as any };
@@ -104,6 +111,22 @@ function createMockDb(state: MockFundSopState): D1Database {
           if (state.wq_fund_research_queue[slug]) {
             state.wq_fund_research_queue[slug].request_count = Number(params[0]);
             state.wq_fund_research_queue[slug].requesters_json = String(params[1]);
+          }
+        } else if (sql.includes("INSERT INTO wq_admin_core_picks")) {
+          const slug = String(params[0]);
+          state.wq_admin_core_picks[slug] = {
+            slug,
+            reasons_json: String(params[1]),
+            note: params[2] ?? null,
+            priority: Number(params[3] || 1),
+            updated_by: params[4] ?? null,
+            created_at: String(params[5]),
+            updated_at: String(params[6]),
+          };
+        } else if (sql.includes("DELETE FROM wq_admin_core_picks WHERE slug = ?")) {
+          const target = String(params[0]).toLowerCase();
+          for (const k of Object.keys(state.wq_admin_core_picks)) {
+            if (k.toLowerCase() === target) delete state.wq_admin_core_picks[k];
           }
         } else if (sql.includes("UPDATE wq_fund_research_queue")) {
           const slug = String(params[6]);
@@ -215,6 +238,7 @@ function makeState(): MockFundSopState {
       },
     },
     wq_fund_research_queue: {},
+    wq_admin_core_picks: {},
   };
 }
 
@@ -349,5 +373,84 @@ describe("Fund SOP & FIS Hub Research Queue API", () => {
     );
     expect(delRes.status).toBe(200);
     expect(((await delRes.json()) as any).request_count).toBe(1);
+  });
+
+  it("enforces admin-only core pick favorite tagging and filters via GET /api/quant/funds", async () => {
+    const state = makeState();
+    const env = makeEnv(state);
+    const premToken = await createAccessToken({ sub: "prem-1", role: "premium" }, env);
+    const adminToken = await createAccessToken({ sub: "admin-1", role: "admin" }, env);
+
+    // Non-admin blocked from PUT and DELETE
+    const premPut = await app.fetch(
+      new Request("http://localhost/api/quant/funds/CN_512890/admin-core-pick", {
+        method: "PUT",
+        headers: { Authorization: `Bearer ${premToken}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ reasons: ["低波动增强", "高股息现金流"] }),
+      }),
+      env
+    );
+    expect(premPut.status).toBe(403);
+
+    const premDel = await app.fetch(
+      new Request("http://localhost/api/quant/funds/CN_512890/admin-core-pick", {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${premToken}` },
+      }),
+      env
+    );
+    expect(premDel.status).toBe(403);
+
+    // Admin saves favorite with multi-select reasons & note
+    const adminPut = await app.fetch(
+      new Request("http://localhost/api/quant/funds/CN_512890/admin-core-pick", {
+        method: "PUT",
+        headers: { Authorization: `Bearer ${adminToken}`, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          reasons: ["卫星国家", "低波动增强", "高股息现金流"],
+          note: "高股息红利低波底仓代表",
+        }),
+      }),
+      env
+    );
+    expect(adminPut.status).toBe(200);
+    const putBody = (await adminPut.json()) as any;
+    expect(putBody.is_admin_core_pick).toBe(true);
+    expect(putBody.admin_core_reasons).toEqual(["卫星国家", "低波动增强", "高股息现金流"]);
+    expect(putBody.admin_core_note).toBe("高股息红利低波底仓代表");
+
+    // GET /api/quant/funds returns facet count and supports ?only_admin_core=true
+    const listRes = await app.fetch(
+      new Request("http://localhost/api/quant/funds?only_admin_core=true", {
+        headers: { Authorization: `Bearer ${premToken}` },
+      }),
+      env
+    );
+    expect(listRes.status).toBe(200);
+    const listBody = (await listRes.json()) as any;
+    expect(listBody.facets.admin_core_picks).toBe(1);
+    expect(listBody.items).toHaveLength(1);
+    expect(listBody.items[0].slug).toBe("CN_512890");
+    expect(listBody.items[0].is_admin_core_pick).toBe(true);
+    expect(listBody.items[0].admin_core_reasons).toEqual(["卫星国家", "低波动增强", "高股息现金流"]);
+
+    // Admin deletes core pick -> facet drops back to 0
+    const adminDel = await app.fetch(
+      new Request("http://localhost/api/quant/funds/CN_512890/admin-core-pick", {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${adminToken}` },
+      }),
+      env
+    );
+    expect(adminDel.status).toBe(200);
+    const afterRes = await app.fetch(
+      new Request("http://localhost/api/quant/funds?only_admin_core=true", {
+        headers: { Authorization: `Bearer ${adminToken}` },
+      }),
+      env
+    );
+    const afterBody = (await afterRes.json()) as any;
+    expect(afterBody.facets.admin_core_picks).toBe(0);
+    expect(afterBody.items).toHaveLength(0);
   });
 });

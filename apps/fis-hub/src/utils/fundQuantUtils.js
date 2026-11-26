@@ -2,6 +2,17 @@
  * Pure formatting, badge, filtering & drift calculation utilities for Wonder Quant UI.
  */
 
+export const ADMIN_CORE_PICK_REASONS = [
+  { id: '核心美国', labelZh: '核心美国', labelEn: 'Core US', group: 'core' },
+  { id: '核心全球', labelZh: '核心全球', labelEn: 'Core Global', group: 'core' },
+  { id: '核心固收', labelZh: '核心固收', labelEn: 'Core Fixed Income', group: 'core' },
+  { id: '卫星行业', labelZh: '卫星行业', labelEn: 'Satellite Sector', group: 'satellite' },
+  { id: '卫星国家', labelZh: '卫星国家', labelEn: 'Satellite Country', group: 'satellite' },
+  { id: '抗通胀避险', labelZh: '抗通胀避险', labelEn: 'Inflation / Hedge', group: 'satellite' },
+  { id: '低波动增强', labelZh: '低波动增强', labelEn: 'Low-Vol Tilt', group: 'enhancer' },
+  { id: '高股息现金流', labelZh: '高股息现金流', labelEn: 'High Dividend', group: 'enhancer' },
+];
+
 export function fmtPct(val, digits = 2) {
   if (val === null || val === undefined || Number.isNaN(Number(val))) return '—';
   return `${(Number(val) * 100).toFixed(digits)}%`;
@@ -555,12 +566,14 @@ export function filterAndSortFunds(items = [], filters = {}) {
 
     if (query) {
       const rawTagsStr = Array.isArray(r.tags) ? r.tags.join(' ') : '';
+      const adminReasonsStr = Array.isArray(r.admin_core_reasons) ? r.admin_core_reasons.join(' ') : '';
+      const adminNoteStr = r.admin_core_note || '';
       const twinStr = [
         r.twin_code || '',
         ...(Array.isArray(r.twin_codes) ? r.twin_codes : []),
         ...(Array.isArray(r.twin_funds) ? r.twin_funds.map((tw) => `${tw.code} ${tw.aia_code || ''}`) : []),
       ].join(' ');
-      const hay = `${r.slug} ${r.code} ${r.aia_code || ''} ${r.isin || ''} ${r.yahoo_ticker || ''} ${r.name} ${r.manager || ''} ${effTags.join(' ')} ${rawTagsStr} ${twinStr}`.toLowerCase();
+      const hay = `${r.slug} ${r.code} ${r.aia_code || ''} ${r.isin || ''} ${r.yahoo_ticker || ''} ${r.name} ${r.manager || ''} ${effTags.join(' ')} ${rawTagsStr} ${adminReasonsStr} ${adminNoteStr} ${twinStr}`.toLowerCase();
       if (!hay.includes(query)) return false;
     }
     return true;

@@ -123,6 +123,8 @@ export interface CustomBasketHolding {
   fee_pct: number | null;
   is_distributing: boolean;
   weight_pct: number;
+  is_admin_core_pick?: boolean;
+  admin_core_reasons?: string[];
   rationale_zh: string;
   rationale_en: string;
 }
@@ -148,6 +150,8 @@ export interface TacticalCandidateFund {
   div_yield_ttm: number | null;
   quant_grade: string | null;
   is_distributing: boolean;
+  is_admin_core_pick?: boolean;
+  admin_core_reasons?: string[];
 }
 
 export interface CustomFundBasket {
@@ -186,6 +190,7 @@ export interface AdvisoryRecommendationResult {
     total_funds: number;
     scoped_funds: number;
     series_backed_funds: number;
+    admin_core_picks_count?: number;
   };
 }
 
@@ -1238,6 +1243,23 @@ export function inferFundRole(row: QuantFundCatalogRow): "core" | "satellite" {
   return "satellite";
 }
 
+const ADMIN_CORE_ROLE_REASONS = new Set(["核心美国", "核心全球", "核心固收"]);
+const ADMIN_SAT_ROLE_REASONS = new Set(["卫星行业", "卫星国家", "抗通胀避险"]);
+
+/**
+ * 若管理员在核心推荐中显式打标了「核心*」或「卫星* / 抗通胀避险」理由，则优先据此决定核心/卫星角色；
+ * 否则回退至机构级核心—卫星准则 inferFundRole。
+ */
+export function resolveEffectiveFundRole(row: QuantFundCatalogRow): "core" | "satellite" {
+  if (row.is_admin_core_pick && Array.isArray(row.admin_core_reasons) && row.admin_core_reasons.length > 0) {
+    const hasCoreTag = row.admin_core_reasons.some((r) => ADMIN_CORE_ROLE_REASONS.has(r));
+    const hasSatTag = row.admin_core_reasons.some((r) => ADMIN_SAT_ROLE_REASONS.has(r));
+    if (hasSatTag && !hasCoreTag) return "satellite";
+    if (hasCoreTag) return "core";
+  }
+  return inferFundRole(row);
+}
+
 /**
  * 识别基金的细分子赛道（底层资产同质性集群），防止选入底层高度相似的重复标的。
  */
@@ -1348,6 +1370,8 @@ export function computeHomogeneousQualityScore(row: QuantFundCatalogRow): number
 }
 
 export function compareHomogeneousFunds(a: QuantFundCatalogRow, b: QuantFundCatalogRow): number {
+  const adminDiff = Number(Boolean(b.is_admin_core_pick)) - Number(Boolean(a.is_admin_core_pick));
+  if (adminDiff !== 0) return adminDiff;
   const diff = computeHomogeneousQualityScore(b) - computeHomogeneousQualityScore(a);
   if (Math.abs(diff) > 1e-6) return diff;
   const feeA = a.fee_pct ?? 0.65;
@@ -1369,6 +1393,22 @@ function scoreFundCandidate(
   else if (row.data_tier === "B") score += 12;
   else if (row.data_tier === "C") score += 4;
 
+  // Admin Core Pick strong priority boost + reason alignment bonus
+  const wantIncome = mode === "income_boost" || (mode === "core" && envelope.income_focus);
+  if (row.is_admin_core_pick) {
+    score += 65;
+    const reasons = Array.isArray(row.admin_core_reasons) ? row.admin_core_reasons : [];
+    if (mode === "defensive" && (reasons.includes("低波动增强") || reasons.includes("核心固收"))) {
+      score += 12;
+    }
+    if (wantIncome && reasons.includes("高股息现金流")) {
+      score += 12;
+    }
+    if (mode === "core" && (reasons.includes("核心美国") || reasons.includes("核心全球") || reasons.includes("核心固收"))) {
+      score += 8;
+    }
+  }
+
   // Sharpe, Alpha/R2/Fee quality & Morningstar bonuses
   if (row.sharpe_3y != null) score += clamp(row.sharpe_3y * 8, -10, 14);
   if (row.morningstar_stars != null) score += (row.morningstar_stars - 3) * 3;
@@ -1380,7 +1420,6 @@ function scoreFundCandidate(
   if (row.currency === "MXN" && preferredCurrency !== "MXN") score -= 35;
 
   // Income tilt
-  const wantIncome = mode === "income_boost" || (mode === "core" && envelope.income_focus);
   if (wantIncome) {
     if (row.is_distributing) score += 10;
     if (row.div_yield_ttm != null && row.div_yield_ttm > 0) {
@@ -1404,6 +1443,14 @@ function scoreFundCandidate(
   return score;
 }
 
+function allocateBucketWeights(pickedRows: QuantFundCatalogRow[], bucketTotalWeight: number): number[] {
+  if (pickedRows.length === 0) return [];
+  if (pickedRows.length === 1) return [bucketTotalWeight];
+  const factors = pickedRows.map((r) => (r.is_admin_core_pick ? 1.65 : 1.0));
+  const factorSum = factors.reduce((s, f) => s + f, 0) || pickedRows.length;
+  return factors.map((f) => (bucketTotalWeight * f) / factorSum);
+}
+
 function normalizeBasketWeights(
   holdings: CustomBasketHolding[],
   opts: {
@@ -1418,13 +1465,15 @@ function normalizeBasketWeights(
   const step = minW >= 10 ? 5 : 5;
   // Ensure feasible upper bound when n is small (e.g. 3 holdings can't sum to 100 if max=35)
   const feasibleMax = Math.max(opts.maxWeightPct ?? 35, Math.ceil(100 / n / step) * step);
+  const holdingMax = (h: CustomBasketHolding) =>
+    h.is_admin_core_pick && h.core_role === "core" ? Math.max(45, feasibleMax) : feasibleMax;
   const satCap = opts.maxSatelliteTotalPct ?? 30;
 
   const rawTotal = holdings.reduce((s, h) => s + Math.max(0, h.weight_pct), 0) || 100;
   const weights = holdings.map((h) => {
     const scaled = (Math.max(0, h.weight_pct) / rawTotal) * 100;
     const snapped = Math.round(scaled / step) * step;
-    return clamp(snapped, minW, feasibleMax);
+    return clamp(snapped, minW, holdingMax(h));
   });
 
   // Enforce Core-Satellite rule: total satellite weight <= satCap (excess flows to core)
@@ -1438,13 +1487,21 @@ function normalizeBasketWeights(
   if (coreIdx.length > 0 && satIdx.length > 0) {
     let satSum = satIdx.reduce((s, i) => s + weights[i], 0);
     while (satSum > satCap) {
-      // Find largest satellite above minW, then shift step to smallest core below feasibleMax
+      // Find largest satellite above minW (reducing non-admin picks first), then shift step to admin core pick first
       const decTarget = satIdx
         .filter((i) => weights[i] - step >= minW)
-        .sort((a, b) => weights[b] - weights[a])[0];
+        .sort(
+          (a, b) =>
+            Number(Boolean(holdings[a].is_admin_core_pick)) -
+              Number(Boolean(holdings[b].is_admin_core_pick)) || weights[b] - weights[a]
+        )[0];
       const incTarget = coreIdx
-        .filter((i) => weights[i] + step <= feasibleMax)
-        .sort((a, b) => weights[a] - weights[b])[0];
+        .filter((i) => weights[i] + step <= holdingMax(holdings[i]))
+        .sort(
+          (a, b) =>
+            Number(Boolean(holdings[b].is_admin_core_pick)) -
+              Number(Boolean(holdings[a].is_admin_core_pick)) || weights[a] - weights[b]
+        )[0];
       if (decTarget == null || incTarget == null) break;
       weights[decTarget] -= step;
       weights[incTarget] += step;
@@ -1463,7 +1520,7 @@ function normalizeBasketWeights(
       .map((_, i) => i)
       .filter((i) => {
         const next = weights[i] + delta;
-        if (next < minW || next > feasibleMax) return false;
+        if (next < minW || next > holdingMax(holdings[i])) return false;
         if (
           delta > 0 &&
           holdings[i].core_role === "satellite" &&
@@ -1476,12 +1533,21 @@ function normalizeBasketWeights(
       })
       .sort((a, b) => {
         if (delta > 0) {
-          // Prefer boosting core first
+          // Prefer boosting core first, then admin core picks
           if (holdings[a].core_role !== holdings[b].core_role) {
             return holdings[a].core_role === "core" ? -1 : 1;
           }
+          const adminDiff =
+            Number(Boolean(holdings[b].is_admin_core_pick)) -
+            Number(Boolean(holdings[a].is_admin_core_pick));
+          if (adminDiff !== 0) return adminDiff;
           return weights[a] - weights[b];
         }
+        // Prefer trimming non-admin picks first
+        const adminDiff =
+          Number(Boolean(holdings[a].is_admin_core_pick)) -
+          Number(Boolean(holdings[b].is_admin_core_pick));
+        if (adminDiff !== 0) return adminDiff;
         return weights[b] - weights[a];
       });
 
@@ -1506,6 +1572,12 @@ function buildFundRationale(
 ) {
   const partsZh: string[] = [];
   const partsEn: string[] = [];
+
+  if (row.is_admin_core_pick) {
+    const reasons = Array.isArray(row.admin_core_reasons) ? row.admin_core_reasons : [];
+    partsZh.push(reasons.length > 0 ? `⭐ 管理员核心推荐(${reasons.join("/")})` : "⭐ 管理员核心推荐");
+    partsEn.push(reasons.length > 0 ? `⭐ Admin Core Pick (${reasons.join("/")})` : "⭐ Admin Core Pick");
+  }
 
   partsZh.push(coreRole === "core" ? "核心仓(Beta)" : "卫星仓(Alpha/分散)");
   partsEn.push(coreRole === "core" ? "Core (Beta)" : "Satellite (Alpha/Diversifier)");
@@ -1689,7 +1761,7 @@ function pickDiverseFromPool(
       if (state.usedTwins.has(codeKey) || (implicitTwin && state.usedTwins.has(implicitTwin.toUpperCase()))) {
         continue;
       }
-      const baseName = (row.name || "").split("(")[0].split("（")[0].slice(0, 8);
+      const baseName = (row.name || "").split("(")[0].split("（")[0].trim().slice(0, 24);
       if (baseName && state.usedNameKeys.has(baseName)) continue;
 
       const cluster = getFundHomogeneityCluster(row);
@@ -1777,10 +1849,10 @@ function buildSingleBasket(
     envelope.risk_level === "conservative" || mode === "defensive" ? 15 : 30;
 
   // Partition into Core vs Satellite pools while respecting equity/bond/other sleeves
-  const eqCorePool = activePool.filter((r) => classifyFundSleeve(r) === "equity" && inferFundRole(r) === "core");
-  const eqSatPool = activePool.filter((r) => classifyFundSleeve(r) === "equity" && inferFundRole(r) === "satellite");
-  const bdCorePool = activePool.filter((r) => classifyFundSleeve(r) === "bond" && inferFundRole(r) === "core");
-  const bdSatPool = activePool.filter((r) => classifyFundSleeve(r) === "bond" && inferFundRole(r) === "satellite");
+  const eqCorePool = activePool.filter((r) => classifyFundSleeve(r) === "equity" && resolveEffectiveFundRole(r) === "core");
+  const eqSatPool = activePool.filter((r) => classifyFundSleeve(r) === "equity" && resolveEffectiveFundRole(r) === "satellite");
+  const bdCorePool = activePool.filter((r) => classifyFundSleeve(r) === "bond" && resolveEffectiveFundRole(r) === "core");
+  const bdSatPool = activePool.filter((r) => classifyFundSleeve(r) === "bond" && resolveEffectiveFundRole(r) === "satellite");
   const othPool = activePool.filter((r) => classifyFundSleeve(r) === "other");
 
   const eqAllPool = activePool.filter((r) => classifyFundSleeve(r) === "equity");
@@ -1856,32 +1928,37 @@ function buildSingleBasket(
     residual = 0;
   }
 
-  for (const r of pickedEqCore) {
-    pickedWithRole.push({ row: r, sleeve: "equity", coreRole: "core", weight: adjEqCore / pickedEqCore.length });
-  }
-  for (const r of pickedBdCore) {
-    pickedWithRole.push({ row: r, sleeve: "bond", coreRole: "core", weight: adjBdCore / pickedBdCore.length });
-  }
-  for (const r of pickedEqSat) {
-    pickedWithRole.push({ row: r, sleeve: "equity", coreRole: "satellite", weight: wEqSat / pickedEqSat.length });
-  }
-  for (const r of pickedBdSat) {
-    pickedWithRole.push({ row: r, sleeve: "bond", coreRole: "satellite", weight: wBdSat / pickedBdSat.length });
-  }
-  for (const r of pickedOthSat) {
+  const eqCoreWeights = allocateBucketWeights(pickedEqCore, adjEqCore);
+  pickedEqCore.forEach((r, idx) => {
+    pickedWithRole.push({ row: r, sleeve: "equity", coreRole: "core", weight: eqCoreWeights[idx] });
+  });
+  const bdCoreWeights = allocateBucketWeights(pickedBdCore, adjBdCore);
+  pickedBdCore.forEach((r, idx) => {
+    pickedWithRole.push({ row: r, sleeve: "bond", coreRole: "core", weight: bdCoreWeights[idx] });
+  });
+  const eqSatWeights = allocateBucketWeights(pickedEqSat, wEqSat);
+  pickedEqSat.forEach((r, idx) => {
+    pickedWithRole.push({ row: r, sleeve: "equity", coreRole: "satellite", weight: eqSatWeights[idx] });
+  });
+  const bdSatWeights = allocateBucketWeights(pickedBdSat, wBdSat);
+  pickedBdSat.forEach((r, idx) => {
+    pickedWithRole.push({ row: r, sleeve: "bond", coreRole: "satellite", weight: bdSatWeights[idx] });
+  });
+  const othWeights = allocateBucketWeights(pickedOthSat, wOth);
+  pickedOthSat.forEach((r, idx) => {
     pickedWithRole.push({
       row: r,
       sleeve: "other",
-      coreRole: inferFundRole(r),
-      weight: wOth / pickedOthSat.length,
+      coreRole: resolveEffectiveFundRole(r),
+      weight: othWeights[idx],
     });
-  }
+  });
 
   // Ensure at least 3 holdings when catalog allows
   if (pickedWithRole.length < 3 && activePool.length > pickedWithRole.length) {
     const coreFirst = [
-      ...activePool.filter((r) => inferFundRole(r) === "core"),
-      ...activePool.filter((r) => inferFundRole(r) === "satellite"),
+      ...activePool.filter((r) => resolveEffectiveFundRole(r) === "core"),
+      ...activePool.filter((r) => resolveEffectiveFundRole(r) === "satellite"),
     ];
     const extra = pickDiverseFromPool(coreFirst, 3 - pickedWithRole.length, state, {
       allowClusterReuseFallback: true,
@@ -1890,8 +1967,8 @@ function buildSingleBasket(
       pickedWithRole.push({
         row: r,
         sleeve: classifyFundSleeve(r),
-        coreRole: inferFundRole(r),
-        weight: minWeightPct,
+        coreRole: resolveEffectiveFundRole(r),
+        weight: r.is_admin_core_pick ? minWeightPct * 1.5 : minWeightPct,
       });
     }
   }
@@ -1924,6 +2001,8 @@ function buildSingleBasket(
       fee_pct: row.fee_pct,
       is_distributing: row.is_distributing,
       weight_pct: weight,
+      is_admin_core_pick: Boolean(row.is_admin_core_pick),
+      admin_core_reasons: Array.isArray(row.admin_core_reasons) ? row.admin_core_reasons : [],
       rationale_zh: rat.zh,
       rationale_en: rat.en,
     };
@@ -1966,7 +2045,7 @@ export function buildCustomFundBaskets(
     ? universeRows.filter((r) => isIrelandOrLuxembourgFund(r))
     : universeRows;
 
-  const recommendedOnly = effectiveUniverse.filter((r) => !r.tags.includes("非推荐选择"));
+  const recommendedOnly = effectiveUniverse.filter((r) => !r.tags.includes("非推荐选择") || r.is_admin_core_pick);
   const scope = profile.product_scope || "all";
   let scoped = recommendedOnly.filter((r) => matchesProductScope(r, scope));
   if (scoped.length < 3) {
@@ -1992,15 +2071,20 @@ export function buildCustomFundBaskets(
       : "Plan A · Core-Satellite Quant Allocation",
     requireEuUcits
       ? "全仓采用爱尔兰/卢森堡注册欧洲 UCITS 基金，规避非美居民 6 万美元以上美股遗产税敞口，遵循核心 ≥70% 纪律"
-      : "遵循核心 ≥70%（Beta压舱）/ 卫星 ≤30%（Alpha分散）原则，同质赛道优中选低费高α标",
+      : "遵循核心 ≥70%（Beta压舱）/ 卫星 ≤30%（Alpha分散）原则，优先纳入管理员核心推荐标的",
     requireEuUcits
       ? "100% Ireland/Luxembourg domiciled UCITS ETFs shielding non-US residents from US-situs estate tax"
-      : "Core ≥70% / Satellite ≤30% discipline with lowest-fee & highest-alpha deduplication",
+      : "Core ≥70% / Satellite ≤30% discipline prioritizing Admin Core Picks",
     new Set()
   );
 
-  // Exclude top-2 core picks so Plan B offers meaningful variation
-  const excludeForAlt = new Set(coreBasket.holdings.slice(0, 2).map((h) => h.slug));
+  // Exclude top-2 non-admin core picks first so Plan B retains admin core picks when available while offering meaningful variation
+  const nonAdminFromPlanA = coreBasket.holdings.filter((h) => !h.is_admin_core_pick);
+  const excludeSource =
+    nonAdminFromPlanA.length >= 2
+      ? nonAdminFromPlanA.slice(0, 2)
+      : [...nonAdminFromPlanA, ...coreBasket.holdings.filter((h) => h.is_admin_core_pick)].slice(0, 2);
+  const excludeForAlt = new Set(excludeSource.map((h) => h.slug));
   const useDefensiveAlt = envelope.income_focus || envelope.risk_level === "conservative";
 
   const altBasket = buildSingleBasket(
@@ -2056,7 +2140,7 @@ export function buildTacticalCandidatePool(
     ? universeRows.filter((r) => isIrelandOrLuxembourgFund(r))
     : universeRows;
 
-  const recommendedOnly = effectiveUniverse.filter((r) => !r.tags.includes("非推荐选择"));
+  const recommendedOnly = effectiveUniverse.filter((r) => !r.tags.includes("非推荐选择") || r.is_admin_core_pick);
   let scoped = recommendedOnly.filter((r) => matchesProductScope(r, scope));
   if (scoped.length < 4) {
     scoped = effectiveUniverse.filter((r) => matchesProductScope(r, scope));
@@ -2101,13 +2185,16 @@ export function buildTacticalCandidatePool(
   }
 
   const reps = Array.from(bestByCluster.values());
-  // Prioritize clusters NOT yet represented in currentHoldings (e.g. gold, HK/CN, short cash, long bond, EM)
+  // Prioritize clusters NOT yet represented in currentHoldings, then Admin Core Picks, then quality
   reps.sort((a, b) => {
     const clA = getFundHomogeneityCluster(a);
     const clB = getFundHomogeneityCluster(b);
     const missingA = currentClusters.has(clA) ? 0 : 1;
     const missingB = currentClusters.has(clB) ? 0 : 1;
     if (missingA !== missingB) return missingB - missingA;
+    const adminA = a.is_admin_core_pick ? 1 : 0;
+    const adminB = b.is_admin_core_pick ? 1 : 0;
+    if (adminA !== adminB) return adminB - adminA;
     return compareHomogeneousFunds(a, b);
   });
 
@@ -2120,7 +2207,7 @@ export function buildTacticalCandidatePool(
     name: r.name,
     asset_class: r.asset_class,
     sleeve: classifyFundSleeve(r),
-    core_role: inferFundRole(r),
+    core_role: resolveEffectiveFundRole(r),
     homogeneity_cluster: getFundHomogeneityCluster(r),
     ilas_platform: r.ilas_platform,
     currency: r.currency,
@@ -2132,6 +2219,8 @@ export function buildTacticalCandidatePool(
     div_yield_ttm: r.div_yield_ttm,
     quant_grade: r.quant_grade,
     is_distributing: r.is_distributing,
+    is_admin_core_pick: Boolean(r.is_admin_core_pick),
+    admin_core_reasons: Array.isArray(r.admin_core_reasons) ? r.admin_core_reasons : [],
   }));
 }
 
@@ -2160,6 +2249,7 @@ export async function recommendForClient(
       total_funds: rows.length,
       scoped_funds: customBuilt.scopedCount,
       series_backed_funds: customBuilt.backedCount,
+      admin_core_picks_count: rows.filter((r) => r.is_admin_core_pick).length,
     },
   };
 }

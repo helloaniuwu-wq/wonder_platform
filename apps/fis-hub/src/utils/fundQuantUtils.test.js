@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  ADMIN_CORE_PICK_REASONS,
   buildPortfolioDriftRows,
   collectAvailableFundTags,
   collectAvailableManagers,
@@ -131,5 +132,15 @@ describe('fundQuantUtils', () => {
     expect(inferFundRole({ code: 'J07', name: '施羅德新興市場債券', asset_class: '固定收益', role: '核心' })).toBe('satellite');
     expect(inferFundRole({ code: 'A05', name: 'PineBridge Hong Kong Dollar Money Market Fund', asset_class: '货币基金' })).toBe('core');
     expect(filterAndSortFunds(newUcits, { role: 'core' }).map((f) => f.code)).toEqual(['CSPX', 'VHYD', 'IBTA', 'VDTY']);
+
+    // Admin core pick preset reasons & searchability
+    expect(ADMIN_CORE_PICK_REASONS.map((r) => r.id)).toContain('核心美国');
+    expect(ADMIN_CORE_PICK_REASONS.map((r) => r.id)).toContain('低波动增强');
+    const taggedWithCoreReason = [
+      { ...newUcits[0], is_admin_core_pick: true, admin_core_reasons: ['核心美国', '低波动增强'], admin_core_note: '旗舰标普底仓' },
+      { ...newUcits[1], is_admin_core_pick: false, admin_core_reasons: [] },
+    ];
+    expect(filterAndSortFunds(taggedWithCoreReason, { q: '低波动增强' }).map((f) => f.code)).toEqual(['CSPX']);
+    expect(filterAndSortFunds(taggedWithCoreReason, { q: '旗舰标普底仓' }).map((f) => f.code)).toEqual(['CSPX']);
   });
 });

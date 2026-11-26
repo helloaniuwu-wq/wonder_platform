@@ -98,6 +98,12 @@ export interface QuantFundCatalogRow {
   research_notes?: string[];
   research_request_count?: number;
   research_requester_ids?: string[];
+  // Admin Core Pick favorite & reason tags (0013)
+  is_admin_core_pick?: boolean;
+  admin_core_reasons?: string[];
+  admin_core_note?: string | null;
+  admin_core_updated_at?: string | null;
+  admin_core_updated_by?: string | null;
 }
 
 export interface UnpackedFundSeries {
@@ -282,6 +288,7 @@ export function catalogRichnessScore(row: QuantFundCatalogRow): number {
   let score = 0;
   if (row.has_sop_report) score += 100;
   if (row.xray_profile && Object.keys(row.xray_profile).length > 0) score += 40;
+  if (row.is_admin_core_pick) score += 25;
   if (Array.isArray(row.top_holdings) && row.top_holdings.length > 0) score += 15;
   if (row.duration != null) score += 10;
   if (row.avg_rating || row.credit_quality) score += 5;
@@ -331,11 +338,17 @@ export async function loadQuantCatalog(db: D1Database): Promise<{
             rq.priority AS research_priority,
             rq.admin_note AS research_admin_note,
             COALESCE(rq.request_count, 0) AS research_request_count,
-            rq.requesters_json AS research_requesters_json
+            rq.requesters_json AS research_requesters_json,
+            CASE WHEN acp.slug IS NOT NULL THEN 1 ELSE 0 END AS is_admin_core_pick,
+            acp.reasons_json AS admin_core_reasons_json,
+            acp.note AS admin_core_note,
+            acp.updated_at AS admin_core_updated_at,
+            acp.updated_by AS admin_core_updated_by
            FROM wq_funds f
            LEFT JOIN wq_fund_metrics m ON m.slug = f.slug
            LEFT JOIN wq_fund_sop_reports sr ON sr.slug = f.slug COLLATE NOCASE
            LEFT JOIN wq_fund_research_queue rq ON rq.slug = f.slug
+           LEFT JOIN wq_admin_core_picks acp ON acp.slug = f.slug COLLATE NOCASE
            WHERE f.is_trackable = 1`
         )
         .all<any>();
@@ -474,6 +487,11 @@ export async function loadQuantCatalog(db: D1Database): Promise<{
       research_notes: extractRequesterNotes(r.research_requesters_json, r.research_admin_note),
       research_request_count: Number(r.research_request_count || 0),
       research_requester_ids: extractRequesterIds(r.research_requesters_json),
+      is_admin_core_pick: Boolean(r.is_admin_core_pick),
+      admin_core_reasons: safeJsonArray(r.admin_core_reasons_json),
+      admin_core_note: r.admin_core_note || null,
+      admin_core_updated_at: r.admin_core_updated_at || null,
+      admin_core_updated_by: r.admin_core_updated_by || null,
     }));
 
     const lookup = new Map<string, QuantFundCatalogRow>();

@@ -23,6 +23,7 @@ import {
   ArrowRight,
   Zap,
   RefreshCw,
+  Star,
 } from 'lucide-react';
 import { authHeaders } from '../utils/auth';
 import { gradeMeta } from '../utils/fundQuantUtils';
@@ -1261,6 +1262,30 @@ const AdvisoryView = ({
                                       }}
                                     >
                                       {h.core_role === 'core' ? (isEn ? 'Core' : '核心') : (isEn ? 'Sat' : '卫星')}
+                                    </span>
+                                  )}
+                                  {h.is_admin_core_pick && (
+                                    <span
+                                      style={{
+                                        fontSize: '0.64rem',
+                                        padding: '1px 5px',
+                                        borderRadius: '3px',
+                                        fontWeight: 700,
+                                        background: 'rgba(245, 158, 11, 0.16)',
+                                        border: '1px solid rgba(245, 158, 11, 0.42)',
+                                        color: '#d97706',
+                                        display: 'inline-flex',
+                                        alignItems: 'center',
+                                        gap: '3px',
+                                      }}
+                                      title={
+                                        Array.isArray(h.admin_core_reasons) && h.admin_core_reasons.length > 0
+                                          ? `管理员核心推荐：${h.admin_core_reasons.join(' / ')}`
+                                          : '管理员核心推荐标的（高优先级高权重）'
+                                      }
+                                    >
+                                      <Star size={10} style={{ fill: '#f59e0b', color: '#f59e0b' }} />
+                                      {isEn ? 'Core Pick' : '核心推荐'}
                                     </span>
                                   )}
                                   <span style={{ fontWeight: 600, color: 'var(--text-primary)' }}>{h.name}</span>

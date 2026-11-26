@@ -40,6 +40,14 @@ async function requireQuantAccess(c: any) {
   return user;
 }
 
+async function requireAdmin(c: any) {
+  const user = await requireUser(c);
+  if (user.role !== "admin") {
+    throw new HttpError(403, "權限不足，僅限系統管理員操作");
+  }
+  return user;
+}
+
 function rangeToCutoffIso(rangeStr: string): string {
   const now = new Date();
   const r = (rangeStr || "3y").toLowerCase();
@@ -140,6 +148,7 @@ quantRouter.get("/funds", async (c) => {
   const onlyDistributing = c.req.query("only_distributing") === "true";
   const onlySop = c.req.query("only_sop") === "true";
   const onlyQueued = c.req.query("only_queued") === "true";
+  const onlyAdminCore = c.req.query("only_admin_core") === "true";
   const distType = (c.req.query("dist_type") || "all").trim().toLowerCase();
   const sortKey = (c.req.query("sort") || "quant_score").trim();
   const order = (c.req.query("order") || "desc").toLowerCase() === "asc" ? 1 : -1;
@@ -152,6 +161,7 @@ quantRouter.get("/funds", async (c) => {
     eu_ucits: 0,
     sop_covered: 0,
     queued_research: 0,
+    admin_core_picks: 0,
     domiciles: {} as Record<string, number>,
     tiers: { A: 0, B: 0, C: 0, U: 0 } as Record<string, number>,
     asset_classes: {} as Record<string, number>,
@@ -164,6 +174,7 @@ quantRouter.get("/funds", async (c) => {
     if (r.research_queue_status && ["queued", "watching", "in_progress"].includes(r.research_queue_status)) {
       facets.queued_research++;
     }
+    if (r.is_admin_core_pick) facets.admin_core_picks++;
     const dom = getFundDomicile(r);
     facets.domiciles[dom] = (facets.domiciles[dom] || 0) + 1;
     facets.tiers[r.data_tier] = (facets.tiers[r.data_tier] || 0) + 1;
@@ -199,13 +210,14 @@ quantRouter.get("/funds", async (c) => {
     if (excludeNonRec && r.tags.includes("非推荐选择")) return false;
     if (onlySop && !r.has_sop_report) return false;
     if (onlyQueued && !["queued", "watching", "in_progress"].includes(r.research_queue_status || "")) return false;
+    if (onlyAdminCore && !r.is_admin_core_pick) return false;
     if (onlyDistributing || distType === "dist") {
       if (!r.is_distributing) return false;
     } else if (distType === "acc") {
       if (r.is_distributing) return false;
     }
     if (q) {
-      const hay = `${r.slug} ${r.code} ${r.aia_code || ""} ${r.isin || ""} ${r.yahoo_ticker || ""} ${r.name} ${r.manager || ""} ${r.tags.join(" ")}`.toLowerCase();
+      const hay = `${r.slug} ${r.code} ${r.aia_code || ""} ${r.isin || ""} ${r.yahoo_ticker || ""} ${r.name} ${r.manager || ""} ${r.tags.join(" ")} ${(r.admin_core_reasons || []).join(" ")} ${r.admin_core_note || ""}`.toLowerCase();
       if (!hay.includes(q)) return false;
     }
     return true;
@@ -671,7 +683,11 @@ quantRouter.post("/recommend/explain", async (c) => {
     ? rec.holdings
         .map(
           (h: any) =>
-            `- ${h.lab_id || h.slug} (${h.name || "未命名"}): 权重 ${h.weight_pct || h.weight}%, 角色=${h.core_role === "satellite" ? "卫星" : "核心"}, 资产类型=${h.asset_class || "大类标的"}, 费率=${h.fee_pct != null ? `${h.fee_pct}%` : "N/A"}, Alpha=${h.alpha_3y != null ? `${(h.alpha_3y * 100).toFixed(2)}%` : "N/A"}, R²=${h.r2_3y != null ? h.r2_3y.toFixed(2) : "N/A"}, 逻辑: ${h.rationale_zh || h.rationale_en || "核心资产"}`
+            `- ${h.lab_id || h.slug} (${h.name || "未命名"})${
+              h.is_admin_core_pick
+                ? ` [⭐管理员核心推荐${Array.isArray(h.admin_core_reasons) && h.admin_core_reasons.length > 0 ? `(${h.admin_core_reasons.join("/")})` : "(投委会首选)"}]`
+                : ""
+            }: 权重 ${h.weight_pct || h.weight}%, 角色=${h.core_role === "satellite" ? "卫星" : "核心"}, 资产类型=${h.asset_class || "大类标的"}, 费率=${h.fee_pct != null ? `${h.fee_pct}%` : "N/A"}, Alpha=${h.alpha_3y != null ? `${(h.alpha_3y * 100).toFixed(2)}%` : "N/A"}, R²=${h.r2_3y != null ? h.r2_3y.toFixed(2) : "N/A"}, 逻辑: ${h.rationale_zh || h.rationale_en || "核心资产"}`
         )
         .join("\n")
     : "暂无明细";
@@ -681,7 +697,11 @@ quantRouter.post("/recommend/explain", async (c) => {
       ? candidatePool
           .map(
             (cand) =>
-              `- ${cand.lab_id} (${cand.name}): 类别=${cand.asset_class}, 定位=${cand.core_role === "core" ? "核心" : "卫星"}, 税籍=${getFundDomicile(cand as any)}, 赛道=${cand.homogeneity_cluster}, 平台=${cand.ilas_platform || "全市场"}, 费率=${cand.fee_pct != null ? `${cand.fee_pct}%` : "N/A"}, Alpha=${cand.alpha_3y != null ? `${(cand.alpha_3y * 100).toFixed(2)}%` : "N/A"}, R²=${cand.r2_3y != null ? cand.r2_3y.toFixed(2) : "N/A"}, 股息=${cand.div_yield_ttm != null ? `${(cand.div_yield_ttm * 100).toFixed(1)}%` : "N/A"}, 评级=${cand.quant_grade || "N/A"}`
+              `- ${cand.lab_id} (${cand.name})${
+                cand.is_admin_core_pick
+                  ? ` [⭐管理员核心推荐${Array.isArray(cand.admin_core_reasons) && cand.admin_core_reasons.length > 0 ? `(${cand.admin_core_reasons.join("/")})` : "(投委会首选)"}]`
+                  : ""
+              }: 类别=${cand.asset_class}, 定位=${cand.core_role === "core" ? "核心" : "卫星"}, 税籍=${getFundDomicile(cand as any)}, 赛道=${cand.homogeneity_cluster}, 平台=${cand.ilas_platform || "全市场"}, 费率=${cand.fee_pct != null ? `${cand.fee_pct}%` : "N/A"}, Alpha=${cand.alpha_3y != null ? `${(cand.alpha_3y * 100).toFixed(2)}%` : "N/A"}, R²=${cand.r2_3y != null ? cand.r2_3y.toFixed(2) : "N/A"}, 股息=${cand.div_yield_ttm != null ? `${(cand.div_yield_ttm * 100).toFixed(1)}%` : "N/A"}, 评级=${cand.quant_grade || "N/A"}`
           )
           .join("\n")
       : "无额外候补基金（请基于原篮子标的调整权重）";
@@ -735,7 +755,7 @@ ${candidatePoolBlock}
 ${macroBlock}
 
 【配置原则与报告输出要求】
-1. 严格遵循「核心—卫星」配置原则（核心资产 ≥ 70% 承担广泛高质量 Beta 压舱，仅限全球/发达/美股大盘宽基与全球/美股红利高股息、主权国债/全球及美元投资级综合债、短债/货币现金与经典股债平衡；高收益债、新兴市场/亚洲/单一非美国家资产、可转债/优先证券、期权备兑及行业主题资产一律只能归为卫星资产，且卫星合计 ≤ 30%），并审视同质性、费率与指数贴合度/Alpha 效率；
+1. 严格遵循「核心—卫星」配置原则（核心资产 ≥ 70% 承担广泛高质量 Beta 压舱，仅限全球/发达/美股大盘宽基与全球/美股红利高股息、主权国债/全球及美元投资级综合债、短债/货币现金与经典股债平衡；高收益债、新兴市场/亚洲/单一非美国家资产、可转债/优先证券、期权备兑及行业主题资产一律只能归为卫星资产，且卫星合计 ≤ 30%），并审视同质性、费率与指数贴合度/Alpha 效率；凡标注「⭐管理员核心推荐」的标的均为投委会严选核心池标的，在符合平台隔离、美国遗产税与客户风险上限前提下应优先保留并维持较高权重；
 2. 完全基于上方实时宏观数据客观判断所处利率与估值周期，禁止套用刻板预设观点；任何偏离或换基建议必须附带明确的**退出/复位条件**。
 请使用规范清晰的 Markdown 格式输出，包含以下章节结构：
 ### 一、宏观利率与市场估值时钟研判（基于当期利率、利差、ERP 与大宗商品数据的中性客观研判）
@@ -1210,4 +1230,95 @@ quantRouter.post("/research-request/batch", async (c) => {
   }
   const res = await batchEnqueueResearchRequests(c.env.DB, user, slugs, body.note);
   return c.json({ success: true, ...res });
+});
+
+// ── 11. Admin Core Pick Favorites & Structured Reason Tagging ───────────────
+quantRouter.put("/funds/:slug/admin-core-pick", async (c) => {
+  const admin = await requireAdmin(c);
+  const rawSlug = c.req.param("slug");
+  const fund = await resolveQuantFund(c.env.DB, rawSlug);
+  if (!fund) {
+    throw new HttpError(404, `未找到基金: ${rawSlug}`);
+  }
+
+  let body: { reasons?: unknown; note?: unknown; priority?: unknown } = {};
+  try {
+    body = await c.req.json();
+  } catch {
+    body = {};
+  }
+
+  const rawReasons = Array.isArray(body.reasons) ? body.reasons : [];
+  const seenReasons = new Set<string>();
+  const cleanReasons: string[] = [];
+  for (const item of rawReasons) {
+    const trimmed = String(item || "").trim().slice(0, 30);
+    if (trimmed && !seenReasons.has(trimmed)) {
+      seenReasons.add(trimmed);
+      cleanReasons.push(trimmed);
+      if (cleanReasons.length >= 8) break;
+    }
+  }
+
+  const rawNote = body.note != null ? String(body.note).trim().slice(0, 200) : "";
+  const cleanNote = rawNote || null;
+  const parsedPriority = parseInt(String(body.priority ?? "1"), 10);
+  const cleanPriority = Number.isFinite(parsedPriority) ? Math.min(3, Math.max(1, parsedPriority)) : 1;
+  const nowIso = new Date().toISOString();
+  const updatedBy = admin.name || admin.email || "admin";
+
+  await c.env.DB.prepare(
+    `INSERT INTO wq_admin_core_picks (
+      slug, reasons_json, note, priority, updated_by, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(slug) DO UPDATE SET
+      reasons_json = excluded.reasons_json,
+      note = excluded.note,
+      priority = excluded.priority,
+      updated_by = excluded.updated_by,
+      updated_at = excluded.updated_at`
+  )
+    .bind(
+      fund.slug,
+      JSON.stringify(cleanReasons),
+      cleanNote,
+      cleanPriority,
+      updatedBy,
+      nowIso,
+      nowIso
+    )
+    .run();
+
+  clearQuantStoreCaches();
+
+  return c.json({
+    success: true,
+    slug: fund.slug,
+    is_admin_core_pick: true,
+    admin_core_reasons: cleanReasons,
+    admin_core_note: cleanNote,
+    admin_core_updated_at: nowIso,
+    admin_core_updated_by: updatedBy,
+  });
+});
+
+quantRouter.delete("/funds/:slug/admin-core-pick", async (c) => {
+  await requireAdmin(c);
+  const rawSlug = c.req.param("slug");
+  const fund = await resolveQuantFund(c.env.DB, rawSlug);
+  const canonicalSlug = fund?.slug || rawSlug.trim();
+
+  await c.env.DB.prepare("DELETE FROM wq_admin_core_picks WHERE slug = ? COLLATE NOCASE")
+    .bind(canonicalSlug)
+    .run();
+
+  clearQuantStoreCaches();
+
+  return c.json({
+    success: true,
+    slug: canonicalSlug,
+    is_admin_core_pick: false,
+    admin_core_reasons: [],
+    admin_core_note: null,
+  });
 });
