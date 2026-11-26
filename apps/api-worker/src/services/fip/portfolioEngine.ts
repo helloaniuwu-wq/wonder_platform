@@ -144,6 +144,8 @@ export class PortfolioEngine {
     const portfolio: Record<string, { shares: number; avg_cost: number; total_cost: number; total_div_cash: number }> =
       {};
     const cashBalances: Record<string, number> = {};
+    const baseCcy = (this.meta.base_currency || "USD").toUpperCase();
+    const baseKey = `CASH_${baseCcy}`;
     const cutoff = asOfDate?.slice(0, 10);
     const ledger = cutoff ? this.transactions.filter((t) => t.date <= cutoff) : this.transactions;
 
@@ -171,9 +173,30 @@ export class PortfolioEngine {
 
       if (t === "BUY") {
         const cashNeeded = q * p;
-        const currency = await resolveAssetCurrency(this.db, isin);
+        const currency = (await resolveAssetCurrency(this.db, isin)).toUpperCase();
         const cKey = `CASH_${currency}`;
+        if (cKey !== baseKey) {
+          const availForeign = Math.max(0, cashBalances[cKey] || 0);
+          const shortfallForeign = Math.max(0, cashNeeded - availForeign);
+          const availBase = cashBalances[baseKey] || 0;
+          if (shortfallForeign > 0 && availBase > 0) {
+            const fxAssetToBase = await getFxRate(this.db, currency, baseCcy);
+            if (fxAssetToBase > 0) {
+              const neededBase = shortfallForeign * fxAssetToBase;
+              const convertBase = Math.min(availBase, neededBase);
+              const convertedForeign = convertBase / fxAssetToBase;
+              cashBalances[baseKey] = availBase - convertBase;
+              cashBalances[cKey] = (cashBalances[cKey] || 0) + convertedForeign;
+            }
+          }
+        }
         cashBalances[cKey] = (cashBalances[cKey] || 0) - cashNeeded;
+        if (Math.abs(cashBalances[cKey] || 0) < 1e-6) {
+          cashBalances[cKey] = 0;
+        }
+        if (cashBalances[baseKey] !== undefined && Math.abs(cashBalances[baseKey]) < 1e-6) {
+          cashBalances[baseKey] = 0;
+        }
         const newShares = curr.shares + q;
         if (newShares > 0) {
           curr.avg_cost = (curr.shares * curr.avg_cost + q * p) / newShares;
@@ -329,10 +352,11 @@ export class PortfolioEngine {
 
     // Process Cash
     for (const [cIsin, bal] of Object.entries(cashBalances)) {
-      if (bal === 0) continue;
+      if (Math.abs(bal) < 0.01) continue;
       const ccy = cIsin.replace("CASH_", "");
       const fx = await getFxRate(this.db, ccy, baseCcy);
       const marketVal = bal * fx;
+      if (Math.abs(marketVal) < 0.01) continue;
       walletBalance += marketVal;
       totalNav += marketVal;
       totalCost += marketVal;
@@ -357,7 +381,7 @@ export class PortfolioEngine {
       if (data.shares <= 0) continue;
 
       const mData = await getMarketData(this.db, isin);
-      const ccy = mData.currency || guessCurrencyFromIsin(isin);
+      const ccy = mData.currency || (await resolveAssetCurrency(this.db, isin));
       const fx = await getFxRate(this.db, ccy, baseCcy);
       let currPrice = mData.price * fx;
 
@@ -864,7 +888,7 @@ export class PortfolioEngine {
     const fiveYearsAgoStr = new Date(Date.now() - 5 * 365 * 86400000).toISOString().slice(0, 10);
     for (const isin of isins) {
       const shares = portfolio[isin].shares;
-      const assetCcy = guessCurrencyFromIsin(isin);
+      const assetCcy = await resolveAssetCurrency(this.db, isin);
       const fx = await getFxRate(this.db, assetCcy, baseCcy);
       const divs = await getDividendHistory(this.db, isin, fiveYearsAgoStr);
 
@@ -988,9 +1012,11 @@ export class PortfolioEngine {
     let txIdx = 0;
     const histChart: Array<{ date: string; value: number }> = [];
 
-    // 计算每个资产买入均价以备兜底
+    // 计算每个资产买入均价以备兜底，并缓存资产币种
     const avgCosts: Record<string, number> = {};
+    const isinCcyMap = new Map<string, string>();
     for (const isin of uniqueIsins) {
+      isinCcyMap.set(isin, await resolveAssetCurrency(this.db, isin));
       const buys = this.transactions.filter((t) => t.isin === isin && t.type.toUpperCase() === "BUY");
       if (buys.length > 0) {
         const totalPaid = buys.reduce((s, b) => s + b.shares * b.price, 0);
@@ -1016,7 +1042,7 @@ export class PortfolioEngine {
             fx = await getFxRate(this.db, ccy, baseCcy);
           }
         } else {
-          const isinCcy = guessCurrencyFromIsin(isin);
+          const isinCcy = isinCcyMap.get(isin) || (await resolveAssetCurrency(this.db, isin));
           if (isinCcy && isinCcy !== baseCcy) {
             fx = await getFxRate(this.db, isinCcy, baseCcy);
           }
@@ -1084,7 +1110,7 @@ export class PortfolioEngine {
           }
 
           if (price && price > 0) {
-            const isinCcy = guessCurrencyFromIsin(isin);
+            const isinCcy = isinCcyMap.get(isin) || (await resolveAssetCurrency(this.db, isin));
             let pFx = 1.0;
             if (isinCcy && isinCcy !== baseCcy) {
               pFx = await getFxRate(this.db, isinCcy, baseCcy);

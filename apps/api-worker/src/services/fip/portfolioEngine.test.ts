@@ -281,4 +281,65 @@ describe("PortfolioEngine.applyDividends", () => {
     expect(f51Trade.shares).toBeCloseTo(65.5737, 4);
     expect(Number.isInteger(f51Trade.shares)).toBe(false);
   });
+
+  it("USD 组合入金后买入 CNY/HKD 资产时自动从 CASH_USD 结汇扣款，不产生虚高美元与负外币钱包", async () => {
+    vi.mocked(dataProvider.getFxRate).mockImplementation(async (_db: unknown, from: string, to: string = "USD") => {
+      if (from === to) return 1;
+      if (from === "CNY" && to === "USD") return 0.15;
+      if (from === "HKD" && to === "USD") return 0.128;
+      return 1;
+    });
+    const engine = makeEngine([
+      tx("2026-09-11", "CASH_USD", "CASH_IN", 1, 100000),
+      tx("2026-09-11", "159545.SZ", "BUY", 100000, 1.0), // 100,000 CNY = 15,000 USD
+      tx("2026-09-11", "2269.HK", "BUY", 1000, 50.0), // 50,000 HKD = 6,400 USD
+    ]);
+
+    const { cashBalances } = await engine.buildBaseHoldings();
+
+    expect(cashBalances.CASH_CNY).toBe(0);
+    expect(cashBalances.CASH_HKD).toBe(0);
+    expect(cashBalances.CASH_USD).toBeCloseTo(100000 - 15000 - 6400, 4);
+  });
+
+  it("resolveAssetCurrency 在 prices 表存在历史污染 USD 时仍优先识别 .SZ/.SS/.HK 后缀币种", async () => {
+    const fakeDb = {
+      prepare: (sql: string) => ({
+        bind: () => ({
+          first: async () => {
+            if (sql.includes("FROM wq_funds")) return null;
+            if (sql.includes("FROM prices")) return { currency: "USD" };
+            return null;
+          },
+        }),
+      }),
+    } as unknown as D1Database;
+
+    await expect(dataProvider.resolveAssetCurrency(fakeDb, "159545.SZ")).resolves.toBe("CNY");
+    await expect(dataProvider.resolveAssetCurrency(fakeDb, "515080.SS")).resolves.toBe("CNY");
+    await expect(dataProvider.resolveAssetCurrency(fakeDb, "3690.hk")).resolves.toBe("HKD");
+  });
+
+  it("calculateNav 过滤绝对值 < 0.01 的灰尘钱包残余行", async () => {
+    const fakeDb = {
+      prepare: () => ({
+        bind: () => ({
+          first: async () => null,
+          all: async () => ({ results: [] }),
+          run: async () => ({}),
+        }),
+      }),
+    } as unknown as D1Database;
+
+    const engine = makeEngine([
+      tx("2026-09-11", "CASH_USD", "CASH_IN", 1, 1000.004),
+      tx("2026-09-11", "VOO", "BUY", 10, 100),
+    ]);
+    engine.db = fakeDb;
+    vi.spyOn(engine, "getDividendDetails").mockResolvedValue([]);
+
+    const nav = await engine.calculateNav();
+    expect(nav.details.some((d) => d.isin.startsWith("CASH_"))).toBe(false);
+    expect(nav.wallet_balance).toBe(0);
+  });
 });

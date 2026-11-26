@@ -137,11 +137,21 @@ export default function XRayPrintReport({
           />
 
           {/* 持仓明细表 */}
-          <section style={{ marginBottom: '18px', pageBreakInside: 'avoid', breakInside: 'avoid' }}>
-            <h3 style={{ fontFamily: 'var(--font-display)', fontSize: '1.02rem', margin: '0 0 8px', color: '#0A192F', display: 'flex', alignItems: 'center', gap: '6px' }}>
+          <section style={{ marginBottom: '18px' }}>
+            <h3 className="ips-section-heading" style={{ fontFamily: 'var(--font-display)', fontSize: '1.02rem', margin: '0 0 8px', color: '#0A192F', display: 'flex', alignItems: 'center', gap: '6px' }}>
               <TrendingUp size={15} color="#9A6F38" /> 二、组合持仓明细与 SOP 研究覆盖
             </h3>
-            <table className="ips-table">
+            <table className="ips-table ips-table-compact">
+              <colgroup>
+                <col style={{ width: '11%' }} />
+                <col style={{ width: '31%' }} />
+                <col style={{ width: '8%' }} />
+                <col style={{ width: '8%' }} />
+                <col style={{ width: '8%' }} />
+                <col style={{ width: '7%' }} />
+                <col style={{ width: '10%' }} />
+                <col style={{ width: '17%' }} />
+              </colgroup>
               <thead>
                 <tr>
                   <th>代码</th>
@@ -171,11 +181,11 @@ export default function XRayPrintReport({
                     <tr key={h.isin}>
                       <td className="ips-mono" style={{ fontWeight: 700 }}>{h.code || h.isin}</td>
                       <td>{h.name}</td>
-                      <td>{typeLbl}</td>
-                      <td className="ips-mono" style={{ textAlign: 'right', fontWeight: 700 }}>{Number(wp).toFixed(1)}%</td>
-                      <td className="ips-mono" style={{ textAlign: 'right' }}>{fp != null ? `${Number(fp).toFixed(2)}%` : '—'}</td>
-                      <td className="ips-mono" style={{ textAlign: 'right' }}>{h.duration != null ? `${Number(h.duration).toFixed(1)}Y` : '—'}</td>
-                      <td className="ips-mono" style={{ textAlign: 'right' }}>{yp != null ? `${Number(yp).toFixed(2)}%` : '—'}</td>
+                      <td className="ips-nowrap">{typeLbl}</td>
+                      <td className="ips-mono ips-nowrap" style={{ textAlign: 'right', fontWeight: 700 }}>{Number(wp).toFixed(1)}%</td>
+                      <td className="ips-mono ips-nowrap" style={{ textAlign: 'right' }}>{fp != null ? `${Number(fp).toFixed(2)}%` : '—'}</td>
+                      <td className="ips-mono ips-nowrap" style={{ textAlign: 'right' }}>{h.duration != null ? `${Number(h.duration).toFixed(1)}Y` : '—'}</td>
+                      <td className="ips-mono ips-nowrap" style={{ textAlign: 'right' }}>{yp != null ? `${Number(yp).toFixed(2)}%` : '—'}</td>
                       <td>
                         {h.has_sop_report || h.hasSopReport
                           ? `${h.sop_medal || '已研判'} · ${h.sop_valuation_zone || '已标注'}`
@@ -192,11 +202,11 @@ export default function XRayPrintReport({
 
           {/* 重叠、风险贡献与压力测试 */}
           {(overlapPairs.length > 0 || (risk.risk_contributions || []).length > 0 || stressList.length > 0) && (
-            <section style={{ marginBottom: '18px', pageBreakInside: 'avoid', breakInside: 'avoid' }}>
-              <h3 style={{ fontFamily: 'var(--font-display)', fontSize: '1.02rem', margin: '0 0 8px', color: '#0A192F', display: 'flex', alignItems: 'center', gap: '6px' }}>
+            <section style={{ marginBottom: '18px' }}>
+              <h3 className="ips-section-heading" style={{ fontFamily: 'var(--font-display)', fontSize: '1.02rem', margin: '0 0 8px', color: '#0A192F', display: 'flex', alignItems: 'center', gap: '6px' }}>
                 <AlertTriangle size={15} color="#9A6F38" /> 三、持仓重叠、真实风险贡献与历史危机回放
               </h3>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginBottom: '10px' }}>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginBottom: '10px', breakInside: 'avoid', pageBreakInside: 'avoid' }}>
                 {overlapPairs.length > 0 && (
                   <div style={{ border: '1px solid #DFD9CC', borderRadius: '4px', padding: '10px' }}>
                     <div style={{ fontSize: '0.76rem', fontWeight: 700, color: '#5F6662', marginBottom: '6px' }}>两两前十大持仓重叠检视</div>
@@ -222,7 +232,14 @@ export default function XRayPrintReport({
               </div>
 
               {stressList.length > 0 && (
-                <table className="ips-table">
+                <table className="ips-table ips-table-compact">
+                  <colgroup>
+                    <col style={{ width: '28%' }} />
+                    <col style={{ width: '26%' }} />
+                    <col style={{ width: '14%' }} />
+                    <col style={{ width: '16%' }} />
+                    <col style={{ width: '16%' }} />
+                  </colgroup>
                   <thead>
                     <tr>
                       <th>历史极端市场窗口</th>
@@ -236,12 +253,12 @@ export default function XRayPrintReport({
                     {stressList.map((s) => (
                       <tr key={s.id}>
                         <td style={{ fontWeight: 600 }}>{s.label}</td>
-                        <td className="ips-mono" style={{ fontSize: '0.74rem' }}>{s.start} → {s.end}</td>
-                        <td className="ips-mono" style={{ textAlign: 'right' }}>{s.coverage_weight}%</td>
-                        <td className="ips-mono" style={{ textAlign: 'right', fontWeight: 700, color: s.total_return_pct >= 0 ? '#1E4D3B' : '#8C3B32' }}>
+                        <td className="ips-mono ips-nowrap" style={{ fontSize: '0.72rem' }}>{s.start} → {s.end}</td>
+                        <td className="ips-mono ips-nowrap" style={{ textAlign: 'right' }}>{s.coverage_weight}%</td>
+                        <td className="ips-mono ips-nowrap" style={{ textAlign: 'right', fontWeight: 700, color: s.total_return_pct >= 0 ? '#1E4D3B' : '#8C3B32' }}>
                           {s.total_return_pct >= 0 ? '+' : ''}{s.total_return_pct}%
                         </td>
-                        <td className="ips-mono" style={{ textAlign: 'right', fontWeight: 700, color: '#8C3B32' }}>
+                        <td className="ips-mono ips-nowrap" style={{ textAlign: 'right', fontWeight: 700, color: '#8C3B32' }}>
                           {s.max_drawdown_pct}%
                         </td>
                       </tr>

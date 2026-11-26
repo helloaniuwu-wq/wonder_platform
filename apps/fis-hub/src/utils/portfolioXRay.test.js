@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { classifyHoldingInstrument, computePortfolioXRay } from './portfolioXRay';
+import { classifyHoldingInstrument, computePortfolioXRay, findCatalogFund } from './portfolioXRay';
 
 describe('computePortfolioXRay', () => {
   const catalog = [
@@ -81,5 +81,18 @@ describe('computePortfolioXRay', () => {
     expect(xray.weightedDuration).toBeGreaterThan(4);
     // Z36 fee 0.5% (40%) + direct AAPL 0% (30%) + direct bond 0% (30%) => avg 0.20%
     expect(xray.avgFeePct).toBeCloseTo(0.2, 4);
+  });
+
+  it('findCatalogFund matches by isin, code, aia_code, yahoo_ticker, and .SS/.SZ suffix fallback', () => {
+    const richCatalog = [
+      ...catalog,
+      { code: '515080', slug: 'CN_515080', name: '红利ETF', asset_class: '股票', currency: 'CNY' },
+      { code: 'Z39', aia_code: 'Z39', isin: 'LU2621531008', slug: 'Z39_F', name: 'CapGrp Bond', currency: 'CNY' },
+      { code: 'SCHD', yahoo_ticker: 'SCHD', slug: 'US_SCHD', name: 'Schwab Dividend', currency: 'USD' },
+    ];
+    expect(findCatalogFund(richCatalog, 'LU2621531008')?.slug).toBe('Z39_F');
+    expect(findCatalogFund(richCatalog, '515080.SS')?.slug).toBe('CN_515080');
+    expect(findCatalogFund(richCatalog, 'SCHD')?.slug).toBe('US_SCHD');
+    expect(findCatalogFund(richCatalog, 'CASH_USD')).toBeNull();
   });
 });

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useLang } from './i18n/langCore';
 import WealthReport from './components/WealthReport';
 import ClientBriefReport from './components/ClientBriefReport';
@@ -251,6 +251,92 @@ function App() {
     toggleLabBasketId,
     refreshFunds: refreshQuantFunds,
   } = useFundQuant({ activeTab, currentUser });
+
+  // ── Fund Detail Return Context (点击组合持仓基金进入详情 + 返回上一页) ──
+  const [fundDetailReturnTo, setFundDetailReturnTo] = useState(null);
+  const fundDetailReturnRef = useRef(null);
+  const activeTabRef = useRef(activeTab);
+  const quantDetailSlugRef = useRef(quantDetailSlug);
+
+  useEffect(() => {
+    fundDetailReturnRef.current = fundDetailReturnTo;
+  }, [fundDetailReturnTo]);
+
+  useEffect(() => {
+    activeTabRef.current = activeTab;
+  }, [activeTab]);
+
+  useEffect(() => {
+    quantDetailSlugRef.current = quantDetailSlug;
+  }, [quantDetailSlug]);
+
+  const handleOpenFundDetailFromOrigin = (slug, origin) => {
+    if (!slug) return;
+    const ret = { ...origin, scrollY: typeof window !== 'undefined' ? window.scrollY : 0 };
+    setFundDetailReturnTo(ret);
+    fundDetailReturnRef.current = ret;
+    setQuantDetailSlug(slug);
+    setActiveTab('funds');
+    try {
+      window.history.pushState({ fisFundDetail: true, slug }, '');
+    } catch {
+      // ignore history errors in sandboxed/test contexts
+    }
+    try {
+      window.scrollTo({ top: 0, behavior: 'instant' });
+    } catch {
+      window.scrollTo(0, 0);
+    }
+  };
+
+  const handleReturnFromFundDetail = useCallback(({ fromPopState = false } = {}) => {
+    const target = fundDetailReturnRef.current;
+    setFundDetailReturnTo(null);
+    fundDetailReturnRef.current = null;
+    setQuantDetailSlug(null);
+    if (!target) return;
+
+    if (target.portfolioId != null) {
+      setActiveId(target.portfolioId);
+    }
+    if (target.subTab) {
+      setActiveSubTab(target.subTab);
+    }
+    setActiveTab(target.tab || 'portfolios');
+
+    if (!fromPopState && typeof window !== 'undefined' && window.history.state?.fisFundDetail) {
+      try {
+        window.history.replaceState(null, '');
+      } catch {
+        // ignore
+      }
+    }
+
+    const restoreY = Number(target.scrollY || 0);
+    requestAnimationFrame(() => {
+      try {
+        window.scrollTo({ top: restoreY, behavior: 'instant' });
+      } catch {
+        window.scrollTo(0, restoreY);
+      }
+    });
+  }, [setQuantDetailSlug]);
+
+  useEffect(() => {
+    const onPopState = () => {
+      if (activeTabRef.current === 'funds' && quantDetailSlugRef.current && fundDetailReturnRef.current) {
+        handleReturnFromFundDetail({ fromPopState: true });
+      }
+    };
+    window.addEventListener('popstate', onPopState);
+    return () => window.removeEventListener('popstate', onPopState);
+  }, [handleReturnFromFundDetail]);
+
+  const handleSwitchTab = (nextTab) => {
+    setFundDetailReturnTo(null);
+    fundDetailReturnRef.current = null;
+    setActiveTab(nextTab);
+  };
 
   const handleSendFundsToLab = (ids, { replace = true, navigate = true } = {}) => {
     if (!ids || ids.length === 0) return;
@@ -899,7 +985,7 @@ function App() {
 
       {/* Sidebar */}
       <Sidebar
-        activeTab={activeTab} setActiveTab={setActiveTab}
+        activeTab={activeTab} setActiveTab={handleSwitchTab}
         portfolios={portfolios} setPortfolios={setPortfolios} activeId={activeId} setActiveId={setActiveId}
         setShowModal={setShowModal}
         setDeleteCandidate={setDeleteCandidate} setShowDeleteModal={setShowDeleteModal}
@@ -972,10 +1058,7 @@ function App() {
         ) : activeTab === 'admin' ? (
           <AdminPanel
             currentUser={currentUser}
-            onOpenFundDetail={(slug) => {
-              setQuantDetailSlug(slug);
-              setActiveTab('funds');
-            }}
+            onOpenFundDetail={(slug) => handleOpenFundDetailFromOrigin(slug, { tab: 'admin', label: '管理后台' })}
           />
         ) : activeTab === 'advisor' ? (
           <AdvisorClientsPanel 
@@ -1024,6 +1107,13 @@ function App() {
               refreshFunds={refreshQuantFunds}
               onAddFundsToLab={handleSendFundsToLab}
               currentUser={currentUser}
+              returnContext={fundDetailReturnTo}
+              onReturnBack={() => handleReturnFromFundDetail()}
+              onGoToCatalog={() => {
+                setFundDetailReturnTo(null);
+                fundDetailReturnRef.current = null;
+                setQuantDetailSlug(null);
+              }}
             />
           </FeatureLock>
         ) : activeTab === 'lab' ? (
@@ -1090,6 +1180,14 @@ function App() {
               handleOpenCompModal={handleOpenCompModal} handleOpenManageDivModal={handleOpenManageDivModal}
               handleRebalancePreview={handleRebalancePreview} handleUndoRebalance={handleUndoRebalance}
               canEdit={canEditActive}
+              onOpenFundDetail={(slug) =>
+                handleOpenFundDetailFromOrigin(slug, {
+                  tab: 'portfolios',
+                  portfolioId: activeId,
+                  portfolioName: activePf?.name || '',
+                  subTab: activeSubTab,
+                })
+              }
               ilpEnabled={ilpEnabled} ilpConfig={ilpConfig}
               setIlpConfig={setIlpConfig} setIlpEnabled={setIlpEnabled}
               onOpenIlpEnrollmentModal={() => setIlpEnrollmentModalOpen(true)}
@@ -1115,7 +1213,7 @@ function App() {
         <button
           type="button"
           className={`mobile-nav-item ${activeTab === 'portfolios' && !mobileDrawerOpen ? 'active' : ''}`}
-          onClick={() => { setActiveTab('portfolios'); setMobileDrawerOpen(false); }}
+          onClick={() => { handleSwitchTab('portfolios'); setMobileDrawerOpen(false); }}
         >
           <Briefcase size={18} aria-hidden="true" />
           <span>{t('sidebar.portfolios')}</span>
@@ -1131,7 +1229,7 @@ function App() {
         <button
           type="button"
           className={`mobile-nav-item ${activeTab === 'funds' && !mobileDrawerOpen ? 'active' : ''}`}
-          onClick={() => { setActiveTab('funds'); setMobileDrawerOpen(false); }}
+          onClick={() => { handleSwitchTab('funds'); setMobileDrawerOpen(false); }}
         >
           <Database size={18} aria-hidden="true" />
           <span>{t('sidebar.funds')}</span>
@@ -1139,7 +1237,7 @@ function App() {
         <button
           type="button"
           className={`mobile-nav-item ${activeTab === 'lab' && !mobileDrawerOpen ? 'active' : ''}`}
-          onClick={() => { setActiveTab('lab'); setMobileDrawerOpen(false); }}
+          onClick={() => { handleSwitchTab('lab'); setMobileDrawerOpen(false); }}
         >
           <Activity size={18} aria-hidden="true" />
           <span>{t('sidebar.lab')}</span>
@@ -1147,7 +1245,7 @@ function App() {
         <button
           type="button"
           className={`mobile-nav-item ${activeTab === 'advisory' && !mobileDrawerOpen ? 'active' : ''}`}
-          onClick={() => { setActiveTab('advisory'); setMobileDrawerOpen(false); }}
+          onClick={() => { handleSwitchTab('advisory'); setMobileDrawerOpen(false); }}
         >
           <Compass size={18} aria-hidden="true" />
           <span>{t('sidebar.advisory')}</span>
@@ -1156,7 +1254,7 @@ function App() {
           <button
             type="button"
             className={`mobile-nav-item ${activeTab === 'help' && !mobileDrawerOpen ? 'active' : ''}`}
-            onClick={() => { setActiveTab('help'); setMobileDrawerOpen(false); }}
+            onClick={() => { handleSwitchTab('help'); setMobileDrawerOpen(false); }}
           >
             <BookOpen size={18} aria-hidden="true" />
             <span>{lang === 'zh' ? '手册' : 'Guide'}</span>

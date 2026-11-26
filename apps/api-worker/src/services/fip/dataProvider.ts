@@ -95,11 +95,8 @@ function nowDateTimeStr(): string {
   return new Date().toISOString().replace("T", " ").slice(0, 19);
 }
 
-export function guessCurrencyFromIsin(isin: string): string {
-  const upper = String(isin || "").toUpperCase();
-  if (upper.startsWith("CASH_")) {
-    return upper.slice(5) || "USD";
-  }
+export function guessExplicitCurrencyFromSuffix(isin: string): string | null {
+  const upper = String(isin || "").trim().toUpperCase();
   if (upper.endsWith(".HK")) return "HKD";
   if (upper.endsWith(".T")) return "JPY";
   if (upper.endsWith(".L")) return "GBP";
@@ -107,12 +104,20 @@ export function guessCurrencyFromIsin(isin: string): string {
   if (upper.endsWith(".TO") || upper.endsWith(".V")) return "CAD";
   if (upper.endsWith(".AX")) return "AUD";
   if (upper.endsWith(".SZ") || upper.endsWith(".SS")) return "CNY";
-  return "USD";
+  return null;
+}
+
+export function guessCurrencyFromIsin(isin: string): string {
+  const upper = String(isin || "").trim().toUpperCase();
+  if (upper.startsWith("CASH_")) {
+    return upper.slice(5) || "USD";
+  }
+  return guessExplicitCurrencyFromSuffix(upper) ?? "USD";
 }
 
 /**
- * Resolve asset currency using Wonder Quant catalog metadata & D1 prices table
- * before falling back to ISIN/ticker suffix heuristics.
+ * Resolve asset currency using Wonder Quant catalog metadata, explicit ticker suffix,
+ * and D1 prices table before falling back to USD.
  */
 export async function resolveAssetCurrency(db: D1Database, isin: string): Promise<string> {
   const upper = String(isin || "").trim().toUpperCase();
@@ -126,6 +131,18 @@ export async function resolveAssetCurrency(db: D1Database, isin: string): Promis
       if (qFund && qFund.currency) {
         return qFund.currency.toUpperCase();
       }
+    }
+  } catch {
+    // ignore and fallback
+  }
+
+  const suffixCcy = guessExplicitCurrencyFromSuffix(upper);
+  if (suffixCcy) {
+    return suffixCcy;
+  }
+
+  try {
+    if (db && typeof db.prepare === "function") {
       const pRow = await db
         .prepare("SELECT currency FROM prices WHERE isin = ? AND currency IS NOT NULL ORDER BY date DESC LIMIT 1")
         .bind(isin)
@@ -596,10 +613,14 @@ export async function getMarketData(db: D1Database, isin: string): Promise<Marke
 
   // 2. Fetch live quote from Yahoo Finance if not cached today
   const skipYf = isin.includes("US-T") || isin.startsWith("CASH_");
+  let yfCurrency: string | null = null;
   if ((currentPrice === null || currentPrice <= 0) && !skipYf) {
     const yahooTicker = normalizeForYahoo(meta.ticker || isin);
     const yfData = await fetchYahooChart(yahooTicker, "5d", false);
     if (yfData) {
+      if (yfData.currency) {
+        yfCurrency = yfData.currency;
+      }
       if (yfData.price && yfData.price > 0) {
         currentPrice = yfData.price;
         fetchedFresh = true;
@@ -684,7 +705,7 @@ export async function getMarketData(db: D1Database, isin: string): Promise<Marke
     }
   }
 
-  const currency = guessCurrencyFromIsin(isin);
+  const currency = yfCurrency || (await resolveAssetCurrency(db, isin));
   const fxToUsd = await getFxRate(db, currency, "USD");
   const basePrice = finalPrice * fxToUsd;
 

@@ -160,8 +160,9 @@ fipRouter.post("/portfolios/new", async (c) => {
   const resolvedAssets = await Promise.all(
     allocEntries.map(async ([isin]) => {
       const assetCcy = await resolveAssetCurrency(c.env.DB, isin);
-      const fxBaseToAsset =
-        assetCcy !== baseCurrency ? await getFxRate(c.env.DB, baseCurrency, assetCcy) : 1.0;
+      const fxAssetToBase =
+        assetCcy !== baseCurrency ? await getFxRate(c.env.DB, assetCcy, baseCurrency) : 1.0;
+      const fxBaseToAsset = fxAssetToBase > 0 ? 1.0 / fxAssetToBase : 1.0;
 
       const manual = Number(manualPrices[isin]);
       if (Number.isFinite(manual) && manual > 0) {
@@ -177,7 +178,8 @@ fipRouter.post("/portfolios/new", async (c) => {
         const md = await getMarketData(c.env.DB, isin);
         if (md && md.price > 0) {
           const mdCcy = md.currency ? md.currency.toUpperCase() : assetCcy;
-          const mdFx = mdCcy !== baseCurrency ? await getFxRate(c.env.DB, baseCurrency, mdCcy) : 1.0;
+          const mdAssetToBase = mdCcy !== baseCurrency ? await getFxRate(c.env.DB, mdCcy, baseCurrency) : 1.0;
+          const mdFx = mdAssetToBase > 0 ? 1.0 / mdAssetToBase : 1.0;
           return { price: md.price, fxBaseToAsset: mdFx, isFallback: false };
         }
       } catch {

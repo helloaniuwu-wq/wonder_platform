@@ -47,6 +47,9 @@ const FundQuantView = ({
   refreshFunds,
   onAddFundsToLab,
   currentUser,
+  returnContext = null,
+  onReturnBack = null,
+  onGoToCatalog = null,
 }) => {
   const { lang } = useLang();
   const [localLabBasketIds, setLocalLabBasketIds] = useState([]);
@@ -246,12 +249,26 @@ const FundQuantView = ({
         const drawerFund = funds.find((f) => f.slug === detailSlug);
         const drawerLabId = String(drawerFund?.code || detailSlug || '').toUpperCase();
         const drawerInBasket = labBasketIds.includes(drawerLabId);
+        const backLabel = returnContext
+          ? returnContext.tab === 'portfolios'
+            ? lang === 'en'
+              ? `Back to ${returnContext.portfolioName || 'Portfolio'}`
+              : `返回上一页 · ${returnContext.portfolioName || '组合详情'}`
+            : lang === 'en'
+              ? `Back to ${returnContext.label || 'Previous Page'}`
+              : `返回上一页 · ${returnContext.label || '来源页面'}`
+          : null;
         return (
           <FundDetailDrawer
             slug={detailSlug}
             allFunds={enrichedFunds}
             onSelectSlug={setDetailSlug}
-            onClose={() => setDetailSlug(null)}
+            onClose={() => {
+              if (returnContext && onReturnBack) onReturnBack();
+              else setDetailSlug(null);
+            }}
+            backLabel={backLabel}
+            onBackToCatalog={returnContext && onGoToCatalog ? onGoToCatalog : null}
             onAddToLab={(id) => toggleLabBasketId(id)}
             inLabBasket={drawerInBasket}
             labBasketCount={labBasketIds.length}

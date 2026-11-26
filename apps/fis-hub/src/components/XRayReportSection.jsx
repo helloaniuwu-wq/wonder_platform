@@ -57,8 +57,9 @@ export default function XRayReportSection({ xrayData, localXRay = null, currency
   const aftertaxYield = valSop.aftertax_yield_pct ?? fallback?.aftertaxYieldPct;
 
   return (
-    <section style={{ marginBottom: '20px', pageBreakInside: 'avoid', breakInside: 'avoid' }}>
+    <section style={{ marginBottom: '20px' }}>
       <div
+        className="ips-section-heading"
         style={{
           fontSize: '0.72rem',
           letterSpacing: '0.1em',
@@ -74,12 +75,12 @@ export default function XRayReportSection({ xrayData, localXRay = null, currency
         <Layers size={13} aria-hidden="true" />
         PORTFOLIO X-RAY LOOK-THROUGH
       </div>
-      <h2 style={{ fontFamily: 'var(--font-display)', fontSize: '1.15rem', margin: '0 0 10px', color: '#18201C' }}>
+      <h2 className="ips-section-heading" style={{ fontFamily: 'var(--font-display)', fontSize: '1.15rem', margin: '0 0 10px', color: '#18201C' }}>
         {sectionTitle}
       </h2>
 
       {/* 核心穿透指标条 */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: '8px', marginBottom: '12px' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: '8px', marginBottom: '12px', breakInside: 'avoid', pageBreakInside: 'avoid' }}>
         <div style={{ background: '#F4F1EA', border: '1px solid #DFD9CC', borderRadius: '4px', padding: '8px 10px' }}>
           <div style={{ fontSize: '0.7rem', color: '#5F6662' }}>穿透综合费率 / 10Y侵蚀</div>
           <div className="ips-mono" style={{ fontSize: '0.96rem', fontWeight: 700, color: '#0A192F' }}>
@@ -122,7 +123,7 @@ export default function XRayReportSection({ xrayData, localXRay = null, currency
       </div>
 
       {/* 工具结构 + 资产穿透 + 股债双九宫格 */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px', marginBottom: '12px' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px', marginBottom: '12px', breakInside: 'avoid', pageBreakInside: 'avoid' }}>
         <div style={{ border: '1px solid #DFD9CC', borderRadius: '4px', padding: '10px', background: '#FAF8F3' }}>
           <div style={{ fontSize: '0.76rem', fontWeight: 700, color: '#18201C', marginBottom: '6px' }}>
             工具形态与资产大类穿透
@@ -219,11 +220,18 @@ export default function XRayReportSection({ xrayData, localXRay = null, currency
 
       {/* 底层 Top 8 穿透合并重仓 */}
       {underlying.length > 0 && (
-        <div style={{ marginBottom: '10px', pageBreakInside: 'avoid', breakInside: 'avoid' }}>
-          <div style={{ fontSize: '0.76rem', fontWeight: 700, color: '#5F6662', marginBottom: '5px' }}>
+        <div style={{ marginBottom: '10px' }}>
+          <div className="ips-section-heading" style={{ fontSize: '0.76rem', fontWeight: 700, color: '#5F6662', marginBottom: '5px' }}>
             底层穿透合并 Top {Math.min(8, underlying.length)} 重仓（基金持仓 + 直投个股/债券合并，覆盖率 {server?.underlying_holdings?.coverage_pct ?? 0}%）
           </div>
-          <table className="ips-table">
+          <table className="ips-table ips-table-compact">
+            <colgroup>
+              <col style={{ width: '34%' }} />
+              <col style={{ width: '13%' }} />
+              <col style={{ width: '11%' }} />
+              <col style={{ width: '11%' }} />
+              <col style={{ width: '31%' }} />
+            </colgroup>
             <thead>
               <tr>
                 <th>标的 / 发行人</th>
@@ -237,11 +245,11 @@ export default function XRayReportSection({ xrayData, localXRay = null, currency
               {underlying.slice(0, 8).map((u) => (
                 <tr key={u.key}>
                   <td style={{ fontWeight: 600 }}>{u.name} {u.symbol ? `(${u.symbol})` : ''}</td>
-                  <td className="ips-mono" style={{ textAlign: 'right', fontWeight: 700, color: u.total_weight_pct >= 10 ? '#8C3B32' : '#0A192F' }}>
+                  <td className="ips-mono ips-nowrap" style={{ textAlign: 'right', fontWeight: 700, color: u.total_weight_pct >= 10 ? '#8C3B32' : '#0A192F' }}>
                     {u.total_weight_pct.toFixed(2)}%
                   </td>
-                  <td className="ips-mono" style={{ textAlign: 'right' }}>{u.direct_weight_pct > 0 ? `${u.direct_weight_pct.toFixed(2)}%` : '—'}</td>
-                  <td className="ips-mono" style={{ textAlign: 'right' }}>{u.fund_weight_pct > 0 ? `${u.fund_weight_pct.toFixed(2)}%` : '—'}</td>
+                  <td className="ips-mono ips-nowrap" style={{ textAlign: 'right' }}>{u.direct_weight_pct > 0 ? `${u.direct_weight_pct.toFixed(2)}%` : '—'}</td>
+                  <td className="ips-mono ips-nowrap" style={{ textAlign: 'right' }}>{u.fund_weight_pct > 0 ? `${u.fund_weight_pct.toFixed(2)}%` : '—'}</td>
                   <td style={{ fontSize: '0.72rem', color: '#5F6662' }}>
                     {(u.sources || []).slice(0, 3).map((s) => `${s.is_direct ? '直投' : s.code} ${s.contribution_pct}%`).join(' + ')}
                   </td>
@@ -254,7 +262,7 @@ export default function XRayReportSection({ xrayData, localXRay = null, currency
 
       {/* 风控诊断摘要 */}
       {diagnostics.length > 0 && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', breakInside: 'avoid', pageBreakInside: 'avoid' }}>
           {diagnostics.slice(0, 4).map((d, idx) => (
             <div
               key={idx}

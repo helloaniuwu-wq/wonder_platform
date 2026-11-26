@@ -17,6 +17,8 @@ const FundDetailDrawer = ({
   allFunds = [],
   onSelectSlug,
   onClose,
+  backLabel = null,
+  onBackToCatalog = null,
   onAddToLab,
   inLabBasket = false,
   labBasketCount = 0,
@@ -192,11 +194,31 @@ const FundDetailDrawer = ({
             type="button"
             onClick={onClose}
             className="action-btn-secondary"
-            style={{ padding: '6px 12px', fontSize: '0.82rem', display: 'inline-flex', alignItems: 'center', gap: '6px' }}
+            style={{
+              padding: '6px 12px',
+              fontSize: '0.82rem',
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '6px',
+              ...(backLabel
+                ? { borderColor: 'var(--accent-color)', color: 'var(--accent-color)', fontWeight: 700 }
+                : {}),
+            }}
           >
             <ArrowLeft size={15} />
-            {lang === 'en' ? 'Back to Fund Catalog' : '返回基金库'}
+            {backLabel || (lang === 'en' ? 'Back to Fund Catalog' : '返回基金库')}
           </button>
+
+          {onBackToCatalog && (
+            <button
+              type="button"
+              onClick={onBackToCatalog}
+              className="action-btn-secondary"
+              style={{ padding: '6px 10px', fontSize: '0.78rem' }}
+            >
+              {lang === 'en' ? 'Fund Catalog' : '进入基金库'}
+            </button>
+          )}
 
           {(onPrev || onNext) && (
             <div style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>

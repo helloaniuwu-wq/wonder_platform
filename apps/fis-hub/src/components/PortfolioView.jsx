@@ -34,6 +34,7 @@ const PortfolioView = ({
   handleRebalancePreview, handleUndoRebalance,
   canEdit,
   onPortfolioMutated,
+  onOpenFundDetail = null,
 }) => {
   const { t } = useLang();
   const ccy = data?.base_currency || 'USD';
@@ -890,41 +891,99 @@ const PortfolioView = ({
                 </thead>
                 <tbody>
                   {data.details.map((asset, i) => {
+                    const isCash = asset.isin.startsWith('CASH_');
+                    const catalogFund = isCash ? null : findCatalogFund(quantFunds, asset.isin);
                     const displayName =
                       asset.name && asset.name !== asset.isin
                         ? asset.name
-                        : findCatalogFund(quantFunds, asset.isin)?.name || asset.name || asset.isin;
+                        : catalogFund?.name || asset.name || asset.isin;
+                    const canOpenDetail = Boolean(!isCash && catalogFund?.slug && onOpenFundDetail);
+                    const itemColor = isCash ? 'var(--accent-color)' : COLORS[i % COLORS.length];
                     return (
                     <tr key={asset.isin}>
-                      <td style={asset.isin.startsWith('CASH_') ? { background: 'var(--surface-subtle)' } : undefined}>
+                      <td style={isCash ? { background: 'var(--surface-subtle)' } : undefined}>
                         <div style={{ display: 'flex', flexDirection: 'column' }}>
-                          <span style={{
-                            color: asset.isin.startsWith('CASH_') ? 'var(--accent-color)' : COLORS[i % COLORS.length],
-                            fontWeight: 700,
-                          }}>
-                            {displayName}
-                          </span>
-                          <span className="isin-badge">{asset.isin}</span>
+                          {canOpenDetail ? (
+                            <button
+                              type="button"
+                              onClick={() => onOpenFundDetail(catalogFund.slug)}
+                              title="点击进入基金详情页"
+                              className="portfolio-fund-link"
+                              style={{
+                                background: 'none',
+                                border: 'none',
+                                padding: 0,
+                                margin: 0,
+                                textAlign: 'left',
+                                cursor: 'pointer',
+                                color: itemColor,
+                                fontWeight: 700,
+                                fontSize: 'inherit',
+                                fontFamily: 'inherit',
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: '4px',
+                                minBlockSize: 'auto',
+                              }}
+                            >
+                              <span style={{ textDecoration: 'underline', textDecorationColor: 'rgba(128,128,128,0.35)', textUnderlineOffset: '3px' }}>
+                                {displayName}
+                              </span>
+                              <ArrowUpRight size={13} style={{ flexShrink: 0, opacity: 0.78 }} aria-hidden="true" />
+                            </button>
+                          ) : (
+                            <span style={{ color: itemColor, fontWeight: 700 }}>
+                              {displayName}
+                            </span>
+                          )}
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+                            <span className="isin-badge">{asset.isin}</span>
+                            {catalogFund?.has_sop_report && (
+                              <span
+                                style={{
+                                  fontSize: '0.66rem',
+                                  padding: '1px 5px',
+                                  borderRadius: '3px',
+                                  background: 'rgba(217, 119, 6, 0.14)',
+                                  color: '#d97706',
+                                  fontWeight: 700,
+                                  marginTop: '3px',
+                                }}
+                              >
+                                SOP
+                              </span>
+                            )}
+                          </div>
                         </div>
                       </td>
                       <td style={{ fontWeight: 700, color: 'var(--accent-color)', fontFamily: 'var(--font-mono)' }}>
-                        {(asset.market_value / data.total_nav * 100).toFixed(1)}%
+                        {data.total_nav > 0 ? `${(asset.market_value / data.total_nav * 100).toFixed(1)}%` : '0.0%'}
                       </td>
                       <td style={{ fontFamily: 'var(--font-mono)' }}>
-                        {asset.isin.startsWith('CASH_')
-                          ? asset.shares.toLocaleString()
+                        {isCash
+                          ? Number(asset.shares || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
                           : Number(asset.shares || 0).toLocaleString(undefined, { maximumFractionDigits: 4 })}
                       </td>
                       <td style={{ fontFamily: 'var(--font-mono)' }}>
-                        {asset.total_cost ? fmtMoney(asset.total_cost / (asset.isin.startsWith('CASH_') ? 1 : asset.shares), 1, ccy) : '-'}
+                        {isCash ? (
+                          <span style={{ color: 'var(--text-muted)' }}>—</span>
+                        ) : asset.total_cost && asset.shares ? (
+                          fmtMoney(asset.total_cost / asset.shares, 1, ccy)
+                        ) : (
+                          '-'
+                        )}
                       </td>
                       <td style={{ fontFamily: 'var(--font-mono)' }}>{fmtMoney(asset.price, 1, ccy)}</td>
                       <td style={{ fontFamily: 'var(--font-mono)', fontWeight: 600 }}>{fmtMoney(asset.market_value, 1, ccy)}</td>
                       {hasDividends && <td style={{ fontFamily: 'var(--font-mono)' }}>{fmtMoney(asset.dividends, 1, ccy)}</td>}
                       <td>
-                        <span className={asset.yield >= 0 ? 'positive' : 'negative'} style={{ fontFamily: 'var(--font-mono)' }}>
-                          {asset.yield >= 0 ? '+' : ''}{asset.yield.toFixed(2)}%
-                        </span>
+                        {isCash ? (
+                          <span style={{ color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>—</span>
+                        ) : (
+                          <span className={asset.yield >= 0 ? 'positive' : 'negative'} style={{ fontFamily: 'var(--font-mono)' }}>
+                            {asset.yield >= 0 ? '+' : ''}{asset.yield.toFixed(2)}%
+                          </span>
+                        )}
                       </td>
                     </tr>
                     );
@@ -950,6 +1009,7 @@ const PortfolioView = ({
             currencySymbol={getCurrencySymbol(ccy)}
             taxRate={taxRate || 0}
             portfolioName={portfolios?.find((p) => p.id === activeId)?.name || '当前实盘组合'}
+            onOpenFundDetail={onOpenFundDetail}
           />
         </>
       )}
@@ -1121,11 +1181,43 @@ const PortfolioView = ({
                       </tr>
                     </thead>
                     <tbody>
-                      {divProjData.assets.map((asset, i) => (
+                      {divProjData.assets.map((asset, i) => {
+                        const divCatFund = findCatalogFund(quantFunds, asset.isin);
+                        const canOpenDivFund = Boolean(divCatFund?.slug && onOpenFundDetail);
+                        return (
                         <tr key={asset.isin}>
                           <td>
                             <div style={{ display: 'flex', flexDirection: 'column' }}>
-                              <span style={{ color: COLORS[i % COLORS.length], fontWeight: 700 }}>{asset.name}</span>
+                              {canOpenDivFund ? (
+                                <button
+                                  type="button"
+                                  onClick={() => onOpenFundDetail(divCatFund.slug)}
+                                  title="点击进入基金详情页"
+                                  style={{
+                                    background: 'none',
+                                    border: 'none',
+                                    padding: 0,
+                                    margin: 0,
+                                    textAlign: 'left',
+                                    cursor: 'pointer',
+                                    color: COLORS[i % COLORS.length],
+                                    fontWeight: 700,
+                                    fontSize: 'inherit',
+                                    fontFamily: 'inherit',
+                                    display: 'inline-flex',
+                                    alignItems: 'center',
+                                    gap: '4px',
+                                    minBlockSize: 'auto',
+                                  }}
+                                >
+                                  <span style={{ textDecoration: 'underline', textDecorationColor: 'rgba(128,128,128,0.35)', textUnderlineOffset: '3px' }}>
+                                    {asset.name}
+                                  </span>
+                                  <ArrowUpRight size={13} style={{ flexShrink: 0, opacity: 0.78 }} aria-hidden="true" />
+                                </button>
+                              ) : (
+                                <span style={{ color: COLORS[i % COLORS.length], fontWeight: 700 }}>{asset.name}</span>
+                              )}
                               <span className="isin-badge">{asset.isin}</span>
                             </div>
                           </td>
@@ -1177,7 +1269,8 @@ const PortfolioView = ({
                             )}
                           </td>
                         </tr>
-                      ))}
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>

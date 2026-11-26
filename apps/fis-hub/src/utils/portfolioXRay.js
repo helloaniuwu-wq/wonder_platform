@@ -25,12 +25,23 @@ function normalizeAssetBucket(rawClass = '', isin = '', instrumentType = 'fund')
 export function findCatalogFund(quantFunds, identifier) {
   if (!Array.isArray(quantFunds) || !identifier) return null;
   const key = String(identifier).trim().toUpperCase();
-  return (
+  const exact =
     quantFunds.find((f) => {
-      const candidates = [f.code, f.aia_code, f.isin, f.slug].filter(Boolean);
+      const candidates = [f.code, f.aia_code, f.isin, f.slug, f.yahoo_ticker].filter(Boolean);
       return candidates.some((c) => String(c).trim().toUpperCase() === key);
-    }) || null
-  );
+    }) || null;
+  if (exact) return exact;
+
+  if (key.endsWith('.SS') || key.endsWith('.SZ')) {
+    const bare = key.replace(/\.(SS|SZ)$/, '');
+    const cnMatch = quantFunds.find(
+      (f) => String(f.code || '').trim().toUpperCase() === bare && String(f.slug || '').toUpperCase().startsWith('CN_')
+    );
+    if (cnMatch) return cnMatch;
+    return quantFunds.find((f) => String(f.code || '').trim().toUpperCase() === bare) || null;
+  }
+
+  return null;
 }
 
 export function classifyHoldingInstrument(holding = {}, cat = null) {

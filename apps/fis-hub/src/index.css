@@ -720,8 +720,8 @@ tbody tr:hover td {
   .table-container th:first-child {
     z-index: 3;
   }
-  table th:not(:first-child),
-  table td:not(:first-child) {
+  table:not(.ips-table) th:not(:first-child),
+  table:not(.ips-table) td:not(:first-child) {
     white-space: nowrap;
   }
 }
@@ -1587,6 +1587,8 @@ input:checked + .slider:before {
   border: 1px solid #D5CFC3;
   border-top: 5px solid #1E4D3B;
   font-family: var(--font-sans);
+  max-width: 100%;
+  overflow-x: hidden;
 }
 .ips-masthead {
   border-bottom: 1.5px solid #1E4D3B;
@@ -1721,28 +1723,63 @@ input:checked + .slider:before {
 }
 .ips-table {
   width: 100%;
+  max-width: 100%;
+  table-layout: fixed;
   border-collapse: collapse;
   background: #FFFFFF;
   border: 1px solid #DFDBD2;
-  font-size: 0.82rem;
+  font-size: 0.8rem;
 }
 .ips-table thead th {
+  position: static;
+  inset-block-start: auto;
+  z-index: auto;
   background: #1E4D3B;
   color: #FAF8F3;
   font-weight: 600;
-  padding: 9px 10px;
+  padding: 8px 8px;
   text-align: left;
-  font-size: 0.76rem;
+  font-size: 0.74rem;
   letter-spacing: 0.03em;
+  white-space: normal;
+  word-break: break-word;
+  overflow-wrap: break-word;
+  line-height: 1.35;
 }
 .ips-table tbody td {
-  padding: 9px 10px;
+  background: #FFFFFF;
+  padding: 8px 8px;
   border-bottom: 1px solid #EFECE4;
   color: #141413;
   vertical-align: top;
+  white-space: normal;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  line-height: 1.4;
 }
-.ips-table tbody tr:nth-child(even) td {
+.ips-table tbody tr:hover td {
+  background: #FFFFFF;
+}
+.ips-table tbody tr:nth-child(even) td,
+.ips-table tbody tr:nth-child(even):hover td {
   background: #FAF8F3;
+}
+.ips-table.ips-table-compact thead th {
+  font-size: 0.69rem;
+  padding: 6px 6px;
+}
+.ips-table.ips-table-compact tbody td {
+  font-size: 0.73rem;
+  padding: 6px 6px;
+}
+.ips-table .ips-nowrap {
+  white-space: nowrap;
+  word-break: normal;
+  overflow-wrap: normal;
+}
+.ips-section-heading {
+  break-after: avoid;
+  page-break-after: avoid;
 }
 .ips-table tfoot td {
   background: #EFECE4;
@@ -1833,14 +1870,24 @@ input:checked + .slider:before {
     box-shadow: none !important;
     border: none !important;
     background: #ffffff !important;
+    overflow: visible !important;
   }
 
   .no-print {
     display: none !important;
   }
 
+  .ips-table {
+    width: 100% !important;
+    table-layout: fixed !important;
+  }
+
   .ips-table thead {
     display: table-header-group;
+  }
+
+  .ips-table thead th {
+    position: static !important;
   }
 
   .ips-table tr,
