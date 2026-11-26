@@ -25,6 +25,10 @@ export const ThemeProvider = ({ children }) => {
     Object.entries(theme.vars).forEach(([key, value]) => {
       root.style.setProperty(key, value);
     });
+    const themeMetas = document.querySelectorAll('meta[name="theme-color"]');
+    themeMetas.forEach((meta) => {
+      meta.setAttribute('content', theme.vars['--bg-canvas'] || '#F6F4EE');
+    });
     try {
       localStorage.setItem('fis-theme', theme.id);
     } catch { /* 隐私模式下忽略 */ }
