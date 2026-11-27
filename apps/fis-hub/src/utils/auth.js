@@ -24,3 +24,6 @@ export const authHeaders = () => {
 const ROLE_RANK = { free: 0, premium: 1, advisor: 2, admin: 3 };
 export const hasRole = (userRole, minRole) =>
   (ROLE_RANK[userRole] ?? -1) >= (ROLE_RANK[minRole] ?? 99);
+
+export const canViewInternalWarnings = (user) =>
+  user?.role === 'advisor' || user?.role === 'admin';

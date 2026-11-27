@@ -25,7 +25,7 @@ import {
   CheckCircle2,
   ExternalLink,
 } from 'lucide-react';
-import { authHeaders } from '../utils/auth';
+import { authHeaders, canViewInternalWarnings } from '../utils/auth';
 import { computePortfolioXRay } from '../utils/portfolioXRay';
 import XRayPrintReport from './XRayPrintReport';
 
@@ -80,6 +80,7 @@ const SUB_TABS = [
  * 统一支持 基金 + 直投个股 + 直投债券 + 现金 的 7 维度深度穿透，带 A4 PDF 导出与一键批量加入观察队列。
  */
 export default function PortfolioXRayPanel({
+  currentUser = null,
   holdings = [],
   quantFunds = [],
   totalNav = 0,
@@ -92,6 +93,7 @@ export default function PortfolioXRayPanel({
   onXRayDataChange = null,
   onOpenFundDetail = null,
 }) {
+  const showWarnings = canViewInternalWarnings(currentUser);
   const [subTab, setSubTab] = useState('overview');
   const [serverXRay, setServerXRay] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -177,7 +179,16 @@ export default function PortfolioXRayPanel({
   const sSum = serverXRay?.summary || {};
   const assetClasses = serverXRay?.asset_classes || localXRay.assetClasses;
   const currencies = serverXRay?.currencies || localXRay.currencies;
-  const diagnostics = serverXRay?.diagnostics || localXRay.diagnostics;
+  const rawDiagnostics = serverXRay?.diagnostics || localXRay.diagnostics;
+  const diagnostics = showWarnings
+    ? rawDiagnostics
+    : (() => {
+        const filtered = (rawDiagnostics || []).filter((d) => d.level !== 'warn');
+        if (filtered.length > 0) return filtered;
+        return localXRay.holdings.length > 0
+          ? [{ level: 'good', text: '已完成组合多维穿透分析，大类资产、风格箱与现金流结构均已清晰呈现，建议结合持有周期定期检视。' }]
+          : [];
+      })();
   const instMix = sSum.instrument_mix || localXRay.instrumentMix || {};
 
   const avgStars = sSum.weighted_stars ?? localXRay.avgStars;
@@ -338,7 +349,7 @@ export default function PortfolioXRayPanel({
           <div style={{ fontSize: '1.14rem', fontWeight: 700, fontFamily: 'var(--font-mono)', color: 'var(--text-primary)' }}>
             {weightedDuration != null ? `${Number(weightedDuration).toFixed(2)} 年` : '—'}
           </div>
-          <div style={{ fontSize: '0.68rem', color: weightedDuration != null && weightedDuration >= 5 ? 'var(--danger, #f43f5e)' : 'var(--text-secondary)', marginTop: '2px' }}>
+          <div style={{ fontSize: '0.68rem', color: showWarnings && weightedDuration != null && weightedDuration >= 5 ? 'var(--danger, #f43f5e)' : 'var(--text-secondary)', marginTop: '2px' }}>
             {weightedDuration != null ? `加息100bp冲击 -${Number(weightedDuration).toFixed(1)}%` : '纯权益或未标注久期'}
           </div>
         </div>
@@ -394,7 +405,7 @@ export default function PortfolioXRayPanel({
             >
               <Icon size={13} />
               <span>{tb.label}</span>
-              {tb.id === 'underlying' && overlap.high_overlap_count > 0 && (
+              {showWarnings && tb.id === 'underlying' && overlap.high_overlap_count > 0 && (
                 <span style={{ fontSize: '0.66rem', background: '#B91C1C', color: '#fff', padding: '0 5px', borderRadius: '99px' }}>
                   重叠{overlap.high_overlap_count}
                 </span>
@@ -575,7 +586,7 @@ export default function PortfolioXRayPanel({
                         <strong style={{ color: 'var(--text-primary)' }}>{u.name}</strong>
                         {u.symbol && <span className="isin-badge" style={{ marginLeft: '6px' }}>{u.symbol}</span>}
                       </td>
-                      <td style={{ textAlign: 'right', fontFamily: 'var(--font-mono)', fontWeight: 700, color: u.total_weight_pct >= 10 ? '#B91C1C' : 'var(--accent-color)' }}>
+                      <td style={{ textAlign: 'right', fontFamily: 'var(--font-mono)', fontWeight: 700, color: showWarnings && u.total_weight_pct >= 10 ? '#B91C1C' : 'var(--accent-color)' }}>
                         {u.total_weight_pct.toFixed(2)}%
                       </td>
                       <td style={{ textAlign: 'right', fontFamily: 'var(--font-mono)' }}>
@@ -610,14 +621,14 @@ export default function PortfolioXRayPanel({
                     style={{
                       padding: '8px 10px',
                       borderRadius: '6px',
-                      border: `1px solid ${p.overlap_pct >= 25 ? 'rgba(185,28,28,0.4)' : 'var(--border-subtle)'}`,
-                      background: p.overlap_pct >= 25 ? 'rgba(185,28,28,0.06)' : 'transparent',
+                      border: `1px solid ${showWarnings && p.overlap_pct >= 25 ? 'rgba(185,28,28,0.4)' : 'var(--border-subtle)'}`,
+                      background: showWarnings && p.overlap_pct >= 25 ? 'rgba(185,28,28,0.06)' : 'transparent',
                       fontSize: '0.75rem',
                     }}
                   >
                     <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 700, marginBottom: '3px' }}>
                       <span>{p.left_code} × {p.right_code}</span>
-                      <span className="isin-badge" style={{ color: p.overlap_pct >= 25 ? '#B91C1C' : 'var(--text-primary)' }}>
+                      <span className="isin-badge" style={{ color: showWarnings && p.overlap_pct >= 25 ? '#B91C1C' : 'var(--text-primary)' }}>
                         重合 {p.overlap_pct}%
                       </span>
                     </div>
@@ -725,7 +736,7 @@ export default function PortfolioXRayPanel({
             {/* 相关性矩阵 */}
             <div style={{ background: 'var(--surface-subtle)', border: '1px solid var(--border-subtle)', borderRadius: '8px', padding: '13px', overflowX: 'auto' }}>
               <div style={{ fontSize: '0.82rem', fontWeight: 700, marginBottom: '8px' }}>
-                历史日收益相关性矩阵（r ≥ 0.85 高相关告警）
+                {showWarnings ? '历史日收益相关性矩阵（r ≥ 0.85 高相关告警）' : '历史日收益相关性矩阵'}
               </div>
               {risk.correlation_matrix?.codes?.length > 0 ? (
                 <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.71rem', fontFamily: 'var(--font-mono)' }}>
@@ -742,7 +753,7 @@ export default function PortfolioXRayPanel({
                       <tr key={rowCode}>
                         <td style={{ fontWeight: 700, padding: '4px' }}>{rowCode}</td>
                         {risk.correlation_matrix.matrix[rIdx].map((val, cIdx) => {
-                          const hi = rIdx !== cIdx && val >= 0.85;
+                          const hi = showWarnings && rIdx !== cIdx && val >= 0.85;
                           const neg = val < 0;
                           return (
                             <td
@@ -838,9 +849,11 @@ export default function PortfolioXRayPanel({
               ) : (
                 <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)', marginBottom: '8px' }}>尚未有持仓基金完成 SOP 估值水位入库。</div>
               )}
-              {(valSop.medal_distribution || []).length > 0 && (
+              {(valSop.medal_distribution || []).filter((m) => showWarnings || m.label !== 'Negative').length > 0 && (
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
-                  {valSop.medal_distribution.map((m) => (
+                  {(valSop.medal_distribution || [])
+                    .filter((m) => showWarnings || m.label !== 'Negative')
+                    .map((m) => (
                     <span key={m.label} className="isin-badge" style={{ borderColor: '#C5A059' }}>{m.label}: <strong>{m.pct}%</strong></span>
                   ))}
                 </div>
@@ -855,19 +868,19 @@ export default function PortfolioXRayPanel({
                 <div>税前派息/YTM：<strong className="ips-mono">{valSop.pretax_yield_pct != null ? `${valSop.pretax_yield_pct}%` : '—'}</strong></div>
                 <div>税后净到手率：<strong className="ips-mono" style={{ color: 'var(--success)' }}>{aftertaxYield != null ? `${aftertaxYield}%` : '—'}</strong></div>
                 <div>10Y 无风险利差：<strong className="ips-mono">{valSop.spread_vs_rf_bps != null ? `${valSop.spread_vs_rf_bps >= 0 ? '+' : ''}${valSop.spread_vs_rf_bps} bps` : '—'}</strong></div>
-                <div>10Y 费用复利侵蚀：<strong className="ips-mono" style={{ color: 'var(--danger)' }}>{feeDrag10yPct != null ? `${feeDrag10yPct}%` : '—'}</strong></div>
+                <div>10Y 费用复利侵蚀：<strong className="ips-mono" style={{ color: showWarnings ? 'var(--danger)' : 'var(--text-primary)' }}>{feeDrag10yPct != null ? `${feeDrag10yPct}%` : '—'}</strong></div>
               </div>
               {sSum.fee_drag_20y_amount != null && (
                 <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: '8px' }}>
                   按 6.5% 名义毛回报测算：当前综合费率 20 年复利累计摩擦约{' '}
-                  <strong style={{ color: 'var(--danger)' }}>{currencySymbol}{Number(sSum.fee_drag_20y_amount).toLocaleString()}</strong>（侵蚀 {sSum.fee_drag_20y_pct}% 复利增量）。
+                  <strong style={{ color: showWarnings ? 'var(--danger)' : 'var(--text-primary)' }}>{currencySymbol}{Number(sSum.fee_drag_20y_amount).toLocaleString()}</strong>（侵蚀 {sSum.fee_drag_20y_pct}% 复利增量）。
                 </div>
               )}
             </div>
           </div>
 
           {/* 红旗告警与一键批量加入观察队列 */}
-          {(valSop.red_flags || []).length > 0 && (
+          {showWarnings && (valSop.red_flags || []).length > 0 && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
               {valSop.red_flags.map((rf) => (
                 <div

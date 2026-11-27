@@ -1140,7 +1140,7 @@ const WealthReportContent = ({
                   系统性熊市防御应对守则
                 </div>
                 <p style={{ margin: 0, fontSize: '0.8rem', color: '#44403C', lineHeight: 1.65 }}>
-                  严禁在情绪恐慌期割肉核心权益仓位。优先使用组合内生派息、短期美债票息及保单备用现金度过 6–18 个月的市场下行窗口，保留底部筹码等待估值修复。
+                  保持长期配置定力，避免在市场波动低位被动减仓。优先使用组合内生派息、短期美债票息及保单备用现金度过 6–18 个月的市场下行窗口，保留底部筹码等待估值修复。
                 </p>
               </div>
               <div style={{ background: '#FFFFFF', border: '1px solid #DFDBD2', borderLeft: '3px solid #1E4D3B', borderRadius: '4px', padding: '12px 14px' }}>

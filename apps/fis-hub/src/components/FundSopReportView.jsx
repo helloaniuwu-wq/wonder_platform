@@ -16,6 +16,7 @@ import {
   Legend,
 } from 'recharts';
 import { useLang } from '../i18n/langCore';
+import { canViewInternalWarnings } from '../utils/auth';
 
 const MEDAL_STYLE = {
   Gold: { bg: 'rgba(217, 119, 6, 0.16)', color: '#d97706', border: 'rgba(217, 119, 6, 0.4)' },
@@ -300,15 +301,29 @@ function SimpleMarkdown({ content }) {
   return <div>{blocks}</div>;
 }
 
-export default function FundSopReportView({ sopData }) {
+export default function FundSopReportView({ sopData, currentUser = null }) {
   const { lang } = useLang();
-  const tabs = Array.isArray(sopData?.commercial_tabs) ? sopData.commercial_tabs : [];
+  const showWarnings = currentUser
+    ? canViewInternalWarnings(currentUser)
+    : Boolean(sopData?.can_view_sop_warnings);
+  const rawTabs = Array.isArray(sopData?.commercial_tabs) ? sopData.commercial_tabs : [];
+  const tabs = showWarnings
+    ? rawTabs
+    : rawTabs.filter((t) => {
+        const id = String(t?.id || '').trim();
+        const label = String(t?.label || '').trim();
+        if (id === 'masters' || id === 'risks_onepager') return false;
+        if (/risk|stress|red_team|warning/i.test(id)) return false;
+        if (/红队|红旗|审问|警示|警告/.test(label)) return false;
+        return true;
+      });
   const hasInternal = Boolean(sopData?.can_view_internal_decision && sopData?.decision_md);
   const [activeTabId, setActiveTabId] = useState(tabs[0]?.id || 'executive_memo');
 
   if (!sopData?.has_report) return null;
 
-  const mStyle = MEDAL_STYLE[sopData.medal_rating] || MEDAL_STYLE.Neutral;
+  const effectiveMedal = !showWarnings && sopData.medal_rating === 'Negative' ? '' : sopData.medal_rating;
+  const mStyle = MEDAL_STYLE[effectiveMedal] || MEDAL_STYLE.Neutral;
   const zStyle = ZONE_STYLE[sopData.valuation_zone] || ZONE_STYLE.合理中性;
   const currentTab =
     activeTabId === '__internal_decision__' && hasInternal
@@ -341,7 +356,9 @@ export default function FundSopReportView({ sopData }) {
                 }}
               >
                 <Award size={14} />
-                Morningstar 2026: {sopData.medal_rating} ({sopData.pillar_score != null ? Number(sopData.pillar_score).toFixed(2) : '—'})
+                {effectiveMedal
+                  ? `Morningstar 2026: ${effectiveMedal} (${sopData.pillar_score != null ? Number(sopData.pillar_score).toFixed(2) : '—'})`
+                  : (lang === 'en' ? 'SOP Deep Research Covered' : 'SOP 深度商业研究已覆盖')}
               </span>
               <span
                 style={{
@@ -405,17 +422,19 @@ export default function FundSopReportView({ sopData }) {
 
           <div style={{ background: 'var(--surface-subtle)', border: '1px solid var(--border-subtle)', borderRadius: '6px', padding: '10px 12px' }}>
             <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '4px' }}>
-              <Users size={12} /> {lang === 'en' ? 'Value Masters Consensus' : '六大价值大师审问'}
+              <Users size={12} /> {showWarnings ? (lang === 'en' ? 'Value Masters Consensus' : '六大价值大师审问') : (lang === 'en' ? 'Research Dimensions' : '深度研究覆盖维度')}
             </div>
             <div style={{ fontSize: '0.82rem', fontWeight: 700, marginTop: '4px' }}>
-              {masters.length > 0
-                ? `${masters.filter((m) => String(m.stance).includes('支持')).length} 支持 / ${masters.length} 位已审`
-                : '已覆盖 6 流派'}
+              {showWarnings
+                ? (masters.length > 0
+                    ? `${masters.filter((m) => String(m.stance).includes('支持')).length} 支持 / ${masters.length} 位已审`
+                    : '已覆盖 6 流派')
+                : (lang === 'en' ? 'Mechanics · Valuation · Dividend' : '商业机制 · 历史估值 · 分红')}
             </div>
           </div>
         </div>
 
-        {sopData.red_flag_top && (
+        {showWarnings && sopData.red_flag_top && (
           <div
             style={{
               padding: '9px 12px',

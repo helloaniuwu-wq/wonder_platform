@@ -473,7 +473,7 @@ export function buildDeterministicReportNarrative(ctx: NormalizedReportContext):
     `在 2,000 次前瞻蒙特卡洛压力模拟中，组合年化波动率为 ${ctx.volatilityPct}%，中性情景最大回撤约 ${ctx.ddP50Pct}%，极端 10% 逆风情景（P10）下回撤边界为 ${ctx.ddP10Pct}%。` +
     (worstHistorical
       ? ` 在历史真实危机回放中，即使面对「${worstHistorical.label}」，本组合历史最大回撤仍控制在 ${worstHistorical.max_drawdown_pct}% 以内，展现出显著优于单一股票头寸的抗跌韧性。`
-      : " 建议严格执行半年度检视或 ±5% 资产权重偏离自动再平衡纪律，在牛市适度兑现盈利反哺防线，在市场恐慌期坚守底仓不割肉。");
+      : " 建议严格执行半年度检视或 ±5% 资产权重偏离自动再平衡纪律，在牛市适度兑现盈利反哺防线，在市场波动期保持长期配置定力，依托防御防线平稳穿越周期。");
 
   return {
     executive_summary,
@@ -520,6 +520,7 @@ export async function generateClientReportNarrative(
 1. 语气：庄重、克制、权威且富有同理心的私人银行首席投资官 (CIO) 口吻，使用简体中文。
 2. 严禁使用任何 Emoji 表情符号，严禁空洞营销口号或保本承诺，所有论断必须锚定下方提供的真实数字。
 3. 必须直面响应【客户补充情况与特别诉求】，把“为什么这样配权重”、“当期宏观利率与市场估值背景”以及“资金提领不断流机制”讲透。
+4. 【客户报告正向客观原则】严禁对组合内任何已选基金、标的或方案发表贬损性、负面批评或“红旗/警告/缺陷/偏高/伪分散/不推荐”等负面评价；对于波动、回撤、利率变化或费用结构，一律以建设性、客观中立的配置分工、分散价值与长期应对纪律视角表述。
 
 【客户真实画像与约束】
 - 客户称谓：${ctx.clientName}${ctx.clientAge ? `（${ctx.clientAge} 岁）` : ""}

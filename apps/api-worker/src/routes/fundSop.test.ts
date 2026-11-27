@@ -52,6 +52,7 @@ function createMockDb(state: MockFundSopState): D1Database {
               sop_pillar_score: sr?.pillar_score ?? null,
               sop_valuation_zone: sr?.valuation_zone || null,
               sop_report_date: sr?.report_date || null,
+              sop_red_flag_top: sr?.red_flag_top || null,
               research_queue_status: rq?.status || null,
               research_request_count: rq?.request_count || 0,
               research_requesters_json: rq?.requesters_json || null,
@@ -232,7 +233,11 @@ function makeState(): MockFundSopState {
         valuation_summary_json: '{"pe_5y_pct":34.5}',
         dividend_summary_json: '{"div_yield_pretax_pct":4.45}',
         masters_json: '[{"master":"John Bogle","stance":"支持"}]',
-        commercial_tabs_json: '[{"id":"executive_memo","label":"⚡ 商业与策略速览","markdown":"客观内容"}]',
+        commercial_tabs_json: JSON.stringify([
+          { id: "executive_memo", label: "⚡ 商业与策略速览", markdown: "客观内容\n- **结构性最大风险（🔴）**：费率不透明" },
+          { id: "masters", label: "🏛️ 六大价值大师审问", markdown: "红队审问内容" },
+          { id: "risks_onepager", label: "🛡️ 风险、情景与一页纸", markdown: "红队风险" },
+        ]),
         decision_md: "# B稿内部决策\nPlan A 建仓线",
         one_pager_md: "# 一页纸",
       },
@@ -247,10 +252,11 @@ describe("Fund SOP & FIS Hub Research Queue API", () => {
     clearQuantStoreCaches();
   });
 
-  it("redacts internal decision_md for premium/advisor and exposes it to admin", async () => {
+  it("redacts internal decision_md for premium/advisor and isolates SOP warnings/negative red-team tabs to advisor/admin", async () => {
     const state = makeState();
     const env = makeEnv(state);
     const premToken = await createAccessToken({ sub: "prem-1", role: "premium" }, env);
+    const advToken = await createAccessToken({ sub: "adv-1", role: "advisor" }, env);
     const adminToken = await createAccessToken({ sub: "admin-1", role: "admin" }, env);
 
     const premRes = await app.fetch(
@@ -263,8 +269,26 @@ describe("Fund SOP & FIS Hub Research Queue API", () => {
     const premBody = (await premRes.json()) as any;
     expect(premBody.has_report).toBe(true);
     expect(premBody.can_view_internal_decision).toBe(false);
+    expect(premBody.can_view_sop_warnings).toBe(false);
     expect(premBody.decision_md).toBeNull();
+    expect(premBody.red_flag_top).toBe("");
+    expect(premBody.masters).toEqual([]);
     expect(premBody.commercial_tabs.length).toBe(1);
+    expect(premBody.commercial_tabs[0].markdown).not.toContain("结构性最大风险");
+
+    const advRes = await app.fetch(
+      new Request("http://localhost/api/quant/funds/CN_512890/sop-report", {
+        headers: { Authorization: `Bearer ${advToken}` },
+      }),
+      env
+    );
+    expect(advRes.status).toBe(200);
+    const advBody = (await advRes.json()) as any;
+    expect(advBody.can_view_internal_decision).toBe(false);
+    expect(advBody.can_view_sop_warnings).toBe(true);
+    expect(advBody.red_flag_top).toBe("行业集中");
+    expect(advBody.masters.length).toBe(1);
+    expect(advBody.commercial_tabs.length).toBe(3);
 
     const adminRes = await app.fetch(
       new Request("http://localhost/api/quant/funds/CN_512890/sop-report", {
@@ -275,7 +299,60 @@ describe("Fund SOP & FIS Hub Research Queue API", () => {
     expect(adminRes.status).toBe(200);
     const adminBody = (await adminRes.json()) as any;
     expect(adminBody.can_view_internal_decision).toBe(true);
+    expect(adminBody.can_view_sop_warnings).toBe(true);
+    expect(adminBody.red_flag_top).toBe("行业集中");
     expect(adminBody.decision_md).toContain("Plan A");
+  });
+
+  it("hides X-Ray red_flags and warn diagnostics for premium users and in client_report_mode, while keeping them for advisor/admin", async () => {
+    const state = makeState();
+    const env = makeEnv(state);
+    const premToken = await createAccessToken({ sub: "prem-1", role: "premium" }, env);
+    const advToken = await createAccessToken({ sub: "adv-1", role: "advisor" }, env);
+
+    const payload = { holdings: [{ isin: "512890", weight: 1 }], currency: "CNY" };
+
+    const premXray = await app.fetch(
+      new Request("http://localhost/api/quant/xray", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${premToken}`, "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      }),
+      env
+    );
+    expect(premXray.status).toBe(200);
+    const premBody = (await premXray.json()) as any;
+    expect(premBody.can_view_internal_warnings).toBe(false);
+    expect(premBody.valuation_cashflow_sop.red_flags).toEqual([]);
+    expect(premBody.diagnostics.some((d: any) => d.level === "warn")).toBe(false);
+
+    const advXray = await app.fetch(
+      new Request("http://localhost/api/quant/xray", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${advToken}`, "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      }),
+      env
+    );
+    expect(advXray.status).toBe(200);
+    const advBody = (await advXray.json()) as any;
+    expect(advBody.can_view_internal_warnings).toBe(true);
+    expect(advBody.valuation_cashflow_sop.red_flags.length).toBe(1);
+    expect(advBody.diagnostics.some((d: any) => d.level === "warn")).toBe(true);
+
+    const clientModeRes = await app.fetch(
+      new Request("http://localhost/api/quant/xray", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${advToken}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ ...payload, client_report_mode: true }),
+      }),
+      env
+    );
+    expect(clientModeRes.status).toBe(200);
+    const clientModeBody = (await clientModeRes.json()) as any;
+    expect(clientModeBody.can_view_internal_warnings).toBe(false);
+    expect(clientModeBody.valuation_cashflow_sop.red_flags).toEqual([]);
+    expect(clientModeBody.diagnostics.some((d: any) => d.level === "warn")).toBe(false);
   });
 
   it("deduplicates research queue votes per user and enforces admin-only queue management", async () => {

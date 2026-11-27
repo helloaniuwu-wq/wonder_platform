@@ -34,7 +34,13 @@ function moneyStr(val, currencySymbol = '$') {
 /**
  * 专为 A4 PDF 打印排版的组合 X-Ray 透视专节，可同时嵌入 ClientBriefReport、WealthReport 与独立 XRayPrintReport。
  */
-export default function XRayReportSection({ xrayData, localXRay = null, currencySymbol = '$', sectionTitle = '组合底层穿透 X-Ray（Morningstar × Wonder SOP 体检）' }) {
+export default function XRayReportSection({
+  xrayData,
+  localXRay = null,
+  currencySymbol = '$',
+  sectionTitle = '组合底层穿透 X-Ray（Morningstar × Wonder SOP 体检）',
+  clientMode = true,
+}) {
   const server = xrayData && xrayData.summary ? xrayData : null;
   const fallback = localXRay;
   if (!server && !fallback) return null;
@@ -50,7 +56,19 @@ export default function XRayReportSection({ xrayData, localXRay = null, currency
   const fiStyle = server?.style_boxes?.fixed_income || fallback?.style_boxes?.fixed_income || {};
   const risk = server?.risk_analytics || {};
   const valSop = server?.valuation_cashflow_sop || {};
-  const diagnostics = server?.diagnostics || fallback?.diagnostics || [];
+  const rawDiagnostics = server?.diagnostics || fallback?.diagnostics || [];
+  const diagnostics = clientMode
+    ? (() => {
+        const clean = (rawDiagnostics || []).filter((d) => d.level !== 'warn');
+        if (clean.length > 0) return clean;
+        return [
+          {
+            level: 'good',
+            text: '已完成多维穿透分析，组合大类资产、风格箱与收益结构已清晰呈现，建议结合家庭现金流周期定期检视再平衡。',
+          },
+        ];
+      })()
+    : rawDiagnostics;
 
   const avgFeePct = sum.weighted_fee_pct ?? fallback?.avgFeePct;
   const estAnnualFee = sum.est_annual_fee ?? fallback?.estAnnualFeeAmount;
@@ -107,8 +125,12 @@ export default function XRayReportSection({ xrayData, localXRay = null, currency
           <div className="ips-mono" style={{ fontSize: '0.96rem', fontWeight: 700, color: '#0A192F' }}>
             {weightedDuration != null ? `${Number(weightedDuration).toFixed(2)} Y` : '—'}
           </div>
-          <div style={{ fontSize: '0.68rem', color: '#8C3B32' }}>
-            {weightedDuration != null ? `理论冲击 -${Number(weightedDuration).toFixed(1)}%` : '权益/货币为主'}
+          <div style={{ fontSize: '0.68rem', color: clientMode ? '#5F6662' : '#8C3B32' }}>
+            {weightedDuration != null
+              ? clientMode
+                ? `利率 ±100bps 敏感度约 ±${Number(weightedDuration).toFixed(1)}%`
+                : `理论冲击 -${Number(weightedDuration).toFixed(1)}%`
+              : '权益/货币为主'}
           </div>
         </div>
 
@@ -246,7 +268,7 @@ export default function XRayReportSection({ xrayData, localXRay = null, currency
               {underlying.slice(0, 8).map((u) => (
                 <tr key={u.key}>
                   <td style={{ fontWeight: 600 }}>{u.name} {u.symbol ? `(${u.symbol})` : ''}</td>
-                  <td className="ips-mono ips-nowrap" style={{ textAlign: 'right', fontWeight: 700, color: u.total_weight_pct >= 10 ? '#8C3B32' : '#0A192F' }}>
+                  <td className="ips-mono ips-nowrap" style={{ textAlign: 'right', fontWeight: 700, color: !clientMode && u.total_weight_pct >= 10 ? '#8C3B32' : '#0A192F' }}>
                     {u.total_weight_pct.toFixed(2)}%
                   </td>
                   <td className="ips-mono ips-nowrap" style={{ textAlign: 'right' }}>{u.direct_weight_pct > 0 ? `${u.direct_weight_pct.toFixed(2)}%` : '—'}</td>

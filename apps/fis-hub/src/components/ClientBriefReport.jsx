@@ -214,7 +214,7 @@ export default function ClientBriefReport({
 
   const drawdownObj = (insuranceIsActive && mc.combined_drawdown) ? mc.combined_drawdown : mc.drawdown;
   const p50DdStr = drawdownObj?.p50 != null ? `${(drawdownObj.p50 * 100).toFixed(1)}%` : '—';
-  const p10DdStr = drawdownObj?.p10 != null ? (drawdownObj.p10 <= -0.999 ? '账户枯竭' : `${(drawdownObj.p10 * 100).toFixed(1)}%`) : '—';
+  const p10DdStr = drawdownObj?.p10 != null ? (drawdownObj.p10 <= -0.999 ? '极端提领边界' : `${(drawdownObj.p10 * 100).toFixed(1)}%`) : '—';
 
   // Milestones at ~1/3, ~2/3, and final horizon
   const candidateYears = Array.from(

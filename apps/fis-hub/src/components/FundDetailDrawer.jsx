@@ -5,7 +5,7 @@ import {
 import {
   X, Plus, Check, Zap, GitCompare, AlertTriangle, Layers, ExternalLink, Info, ArrowLeft, ChevronLeft, ChevronRight, RefreshCw, BookOpen, BookmarkPlus, BookmarkCheck, Sparkles, Download, Star,
 } from 'lucide-react';
-import { authHeaders } from '../utils/auth';
+import { authHeaders, canViewInternalWarnings } from '../utils/auth';
 import { fmtNum, fmtPct, fmtSignedPct, gradeMeta, inferFundRole, resolveFundTwins, tierMeta } from '../utils/fundQuantUtils';
 import { buildFundExternalLinks } from '../utils/fundLinks';
 import { buildSingleFundSopPrompt, copyAndDownloadSopPrompt } from '../utils/sopPromptBuilder';
@@ -34,6 +34,7 @@ const FundDetailDrawer = ({
 }) => {
   const { lang } = useLang();
   const isAdmin = currentUser?.role === 'admin';
+  const showWarnings = canViewInternalWarnings(currentUser);
   const [corePickModalOpen, setCorePickModalOpen] = useState(false);
   const [range, setRange] = useState('3y');
   const [currency, setCurrency] = useState('NATIVE');
@@ -476,7 +477,7 @@ const FundDetailDrawer = ({
           </div>
         )}
 
-        {fund?.anomalies && fund.anomalies.length > 0 && (
+        {showWarnings && fund?.anomalies && fund.anomalies.length > 0 && (
           <div style={{ marginTop: '12px', padding: '10px 12px', borderRadius: '6px', background: 'var(--warning-bg)', border: '1px solid var(--warning)', color: 'var(--warning)', fontSize: '0.8rem', display: 'flex', gap: '8px', alignItems: 'center' }}>
             <AlertTriangle size={15} />
             <span>{lang === 'en' ? 'Data note:' : '数据提示：'} {fund.anomalies.join(' ; ')}</span>
@@ -492,7 +493,11 @@ const FundDetailDrawer = ({
               📊 {lang === 'en' ? 'Quant & Holdings' : '量化体检与持仓'}
             </button>
             <button type="button" aria-pressed={drawerTab === 'sop'} onClick={() => setDrawerTab('sop')}>
-              📘 {lang === 'en' ? `SOP Deep Analysis (${sopData.medal_rating})` : `SOP 深度分析 (${sopData.medal_rating})`}
+              📘 {(() => {
+                const medalLabel = !showWarnings && sopData.medal_rating === 'Negative' ? '' : sopData.medal_rating;
+                if (lang === 'en') return medalLabel ? `SOP Deep Analysis (${medalLabel})` : 'SOP Deep Analysis';
+                return medalLabel ? `SOP 深度分析 (${medalLabel})` : 'SOP 深度分析';
+              })()}
             </button>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.76rem', color: 'var(--text-muted)' }}>
@@ -545,7 +550,7 @@ const FundDetailDrawer = ({
       )}
 
       {drawerTab === 'sop' && sopData?.has_report ? (
-        <FundSopReportView sopData={sopData} />
+        <FundSopReportView sopData={sopData} currentUser={currentUser} />
       ) : (
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(420px, 1fr))', gap: '18px', alignItems: 'start' }}>
         {/* Left Column: Chart + Drawdown + Quantitative Metrics */}
@@ -727,7 +732,7 @@ const FundDetailDrawer = ({
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontWeight: 700, fontSize: '0.9rem', color: '#d97706' }}>
                     <BookOpen size={15} />
-                    SOP v{sopData.sop_version} 深度分析已就绪 · {sopData.medal_rating}
+                    SOP v{sopData.sop_version} 深度分析已就绪{(!showWarnings && sopData.medal_rating === 'Negative') || !sopData.medal_rating ? '' : ` · ${sopData.medal_rating}`}
                   </div>
                   <button
                     type="button"
@@ -745,7 +750,7 @@ const FundDetailDrawer = ({
                   {' · '}分红率：{sopData.dividend_yield_ttm != null ? `${sopData.dividend_yield_ttm}%` : '—'}
                   {' · '}10Y利差：{sopData.dividend_spread_rf != null ? `${sopData.dividend_spread_rf >= 0 ? '+' : ''}${sopData.dividend_spread_rf}%` : '—'}
                 </div>
-                {sopData.red_flag_top && (
+                {showWarnings && sopData.red_flag_top && (
                   <div style={{ fontSize: '0.75rem', color: 'var(--danger, #dc2626)', lineHeight: 1.45, marginTop: '2px' }}>
                     ⚠️ 首要红旗：{sopData.red_flag_top}
                   </div>
@@ -856,7 +861,11 @@ const FundDetailDrawer = ({
               </div>
 
               <div style={{ fontSize: '0.85rem', lineHeight: 1.7, color: 'var(--text-secondary)' }}>
-                {fund.commentary || fallbackSummary || (lang === 'en' ? 'No commentary available yet.' : '暂无补充投研简介。')}
+                {(showWarnings
+                  ? fund.commentary
+                  : fund.commentary?.replace(/\s*[｜|]\s*结构性风险[：:].*$/u, '')) ||
+                  fallbackSummary ||
+                  (lang === 'en' ? 'No commentary available yet.' : '暂无补充投研简介。')}
               </div>
 
               {fund.tags && fund.tags.length > 0 && (

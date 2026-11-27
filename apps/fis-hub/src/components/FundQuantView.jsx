@@ -3,6 +3,7 @@ import {
   Search, RefreshCw, GitCompare, Plus, Check, X, ArrowUpDown, Database, Eye, Zap, Sparkles, Copy, Star,
 } from 'lucide-react';
 import { useLang } from '../i18n/langCore';
+import { canViewInternalWarnings } from '../utils/auth';
 import {
   buildSingleFundSopPrompt,
   buildBatchFundSopPrompt,
@@ -54,6 +55,7 @@ const FundQuantView = ({
 }) => {
   const { lang } = useLang();
   const isAdmin = currentUser?.role === 'admin';
+  const showWarnings = canViewInternalWarnings(currentUser);
   const [localLabBasketIds, setLocalLabBasketIds] = useState([]);
   const [promptToast, setPromptToast] = useState('');
   const [corePickModalFund, setCorePickModalFund] = useState(null);
@@ -755,7 +757,8 @@ const FundQuantView = ({
                               }}
                               title={`SOP 深度分析 (${f.sop_report_date || ''}) · ${f.sop_valuation_zone || ''}`}
                             >
-                              📘 {f.sop_medal || 'SOP'}{f.sop_valuation_zone ? ` · ${f.sop_valuation_zone}` : ''}
+                              📘 {!showWarnings && f.sop_medal === 'Negative' ? 'SOP' : (f.sop_medal || 'SOP')}
+                              {f.sop_valuation_zone ? ` · ${f.sop_valuation_zone}` : ''}
                             </span>
                           ) : ['queued', 'watching', 'in_progress'].includes(f.research_queue_status || '') ? (
                             <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>

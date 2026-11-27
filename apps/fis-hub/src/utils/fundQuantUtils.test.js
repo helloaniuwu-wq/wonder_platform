@@ -16,6 +16,7 @@ import {
   resolveFundTwins,
   tierMeta,
 } from './fundQuantUtils';
+import { canViewInternalWarnings } from './auth';
 
 describe('fundQuantUtils', () => {
   it('formats percentages and numbers cleanly', () => {
@@ -142,5 +143,12 @@ describe('fundQuantUtils', () => {
     ];
     expect(filterAndSortFunds(taggedWithCoreReason, { q: '低波动增强' }).map((f) => f.code)).toEqual(['CSPX']);
     expect(filterAndSortFunds(taggedWithCoreReason, { q: '旗舰标普底仓' }).map((f) => f.code)).toEqual(['CSPX']);
+
+    // Role gate for internal SOP warnings / red flags
+    expect(canViewInternalWarnings(null)).toBe(false);
+    expect(canViewInternalWarnings({ role: 'free' })).toBe(false);
+    expect(canViewInternalWarnings({ role: 'premium' })).toBe(false);
+    expect(canViewInternalWarnings({ role: 'advisor' })).toBe(true);
+    expect(canViewInternalWarnings({ role: 'admin' })).toBe(true);
   });
 });

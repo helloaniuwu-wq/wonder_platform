@@ -720,8 +720,8 @@ tbody tr:hover td {
   .table-container th:first-child {
     z-index: 3;
   }
-  table:not(.ips-table) th:not(:first-child),
-  table:not(.ips-table) td:not(:first-child) {
+  table:not(.ips-table):not(.xray-print-sheet) th:not(:first-child),
+  table:not(.ips-table):not(.xray-print-sheet) td:not(:first-child) {
     white-space: nowrap;
   }
 }
@@ -1822,12 +1822,36 @@ input:checked + .slider:before {
   }
 }
 
-@media print {
-  @page {
-    size: A4 portrait;
-    margin: 12mm 14mm 12mm 14mm;
-  }
+/* ── X-Ray A4 Print Pagination Margin Sheet ─────────────────────────────── */
+.xray-print-sheet {
+  width: 100%;
+  border-collapse: collapse;
+  border-spacing: 0;
+  table-layout: fixed;
+}
+.xray-print-running-header,
+.xray-print-running-footer {
+  display: none;
+}
+.xray-print-sheet > thead > tr > td,
+.xray-print-sheet > tfoot > tr > td,
+.xray-print-sheet > tbody > tr > td.xray-print-body-cell,
+.xray-print-sheet > tbody > tr:hover > td.xray-print-body-cell {
+  padding: 0;
+  border: none;
+  background: transparent;
+  white-space: normal;
+  color: inherit;
+  font-size: inherit;
+  vertical-align: top;
+}
 
+@page {
+  size: A4 portrait;
+  margin: 12mm 12mm 12mm 12mm;
+}
+
+@media print {
   body, html, #root, .app-layout {
     height: auto !important;
     overflow: visible !important;
@@ -1866,11 +1890,56 @@ input:checked + .slider:before {
     position: static !important;
     width: 100% !important;
     margin: 0 !important;
-    padding: 0 !important;
+    padding: 6mm 6mm !important;
+    box-sizing: border-box !important;
     box-shadow: none !important;
     border: none !important;
     background: #ffffff !important;
     overflow: visible !important;
+  }
+
+  #printable-report.xray-print-paper {
+    padding: 0 !important;
+  }
+
+  .xray-print-sheet {
+    width: 100% !important;
+    border-collapse: collapse !important;
+    table-layout: fixed !important;
+  }
+
+  .xray-print-running-header {
+    display: table-header-group !important;
+  }
+
+  .xray-print-running-footer {
+    display: table-footer-group !important;
+  }
+
+  .xray-print-running-header > tr > td {
+    height: 11mm;
+    padding: 2mm 8mm 3mm 8mm !important;
+    vertical-align: bottom !important;
+    font-size: 7.5pt !important;
+    color: #78736A !important;
+    border-bottom: 0.5pt solid #DFD9CC !important;
+    background: #ffffff !important;
+  }
+
+  .xray-print-running-footer > tr > td {
+    height: 11mm;
+    padding: 3mm 8mm 2mm 8mm !important;
+    vertical-align: top !important;
+    font-size: 7.5pt !important;
+    color: #78736A !important;
+    border-top: 0.5pt solid #DFD9CC !important;
+    background: #ffffff !important;
+  }
+
+  .xray-print-body-cell {
+    padding: 4mm 8mm !important;
+    vertical-align: top !important;
+    background: #ffffff !important;
   }
 
   .no-print {

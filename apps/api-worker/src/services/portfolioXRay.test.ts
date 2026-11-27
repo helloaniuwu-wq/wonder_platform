@@ -197,6 +197,22 @@ describe("computeFullPortfolioXRay", () => {
     expect(res.style_boxes.fixed_income.grid.high_extensive).toBeCloseTo(50, 1);
     expect(res.valuation_cashflow_sop.sop_covered_count).toBe(1);
     expect(res.valuation_cashflow_sop.red_flags.length).toBe(1);
+
+    const clientSafeRes = await computeFullPortfolioXRay(
+      db,
+      {
+        holdings: [
+          { isin: "Z29", weight: 0.5 },
+          { isin: "US10Y_BOND", name: "US Treasury 10Y Note", weight: 0.5, asset_type: "bond", duration: 8.0, ytm: 4.5, credit_rating: "AAA" },
+        ],
+        total_nav: 200000,
+        include_stress: false,
+      },
+      { includeInternalWarnings: false }
+    );
+    expect(clientSafeRes.can_view_internal_warnings).toBe(false);
+    expect(clientSafeRes.valuation_cashflow_sop.red_flags).toEqual([]);
+    expect(clientSafeRes.diagnostics.some((d) => d.level === "warn")).toBe(false);
   });
 
   it("computes real covariance volatility lower than linear sum and risk contributions summing to 100%", () => {

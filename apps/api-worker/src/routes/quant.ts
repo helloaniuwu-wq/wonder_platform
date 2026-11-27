@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { Env, Variables } from "../types";
-import { HttpError, requireUser } from "../utils/auth";
+import { getOptionalUser, HttpError, requireUser } from "../utils/auth";
 import {
   buildBenchmarkProxySeries,
   clearQuantStoreCaches,
@@ -46,6 +46,56 @@ async function requireAdmin(c: any) {
     throw new HttpError(403, "權限不足，僅限系統管理員操作");
   }
   return user;
+}
+
+function isAdvisorOrAdmin(user?: { role?: string } | null): boolean {
+  return user?.role === "advisor" || user?.role === "admin";
+}
+
+function stripNegativeCommentary(text: string | null | undefined): string | null {
+  if (!text) return text ?? null;
+  const cleaned = String(text)
+    .replace(/\s*[｜|]\s*结构性风险[：:].*$/u, "")
+    .replace(/\s*[｜|]\s*红队风险[：:].*$/u, "")
+    .trim();
+  return cleaned || null;
+}
+
+function sanitizeFundRowForRole(row: QuantFundCatalogRow, canSeeWarnings: boolean): QuantFundCatalogRow {
+  if (canSeeWarnings) return row;
+  return {
+    ...row,
+    sop_red_flag_top: null,
+    sop_medal: row.sop_medal === "Negative" ? null : row.sop_medal,
+    anomalies: [],
+    commentary: stripNegativeCommentary(row.commentary),
+  };
+}
+
+function sanitizeSopTabsForClient(tabs: any[]): any[] {
+  if (!Array.isArray(tabs)) return [];
+  return tabs
+    .filter((tab) => {
+      const id = String(tab?.id || "").trim();
+      const label = String(tab?.label || "").trim();
+      if (id === "masters" || id === "risks_onepager") return false;
+      if (/risk|stress|red_team|warning/i.test(id)) return false;
+      if (/红队|红旗|审问|警示|警告/.test(label)) return false;
+      return true;
+    })
+    .map((tab) => {
+      const rawMd = String(tab?.markdown || "");
+      const cleanedMd = rawMd
+        .split(/\r?\n/)
+        .filter(
+          (line) =>
+            !/^\s*[-*]\s*\*\*结构性最大风险/.test(line) &&
+            !/^\s*[-*]\s*🔴/.test(line) &&
+            !/^\s*[-*]\s*\*\*主要红旗/.test(line)
+        )
+        .join("\n");
+      return { ...tab, markdown: cleanedMd };
+    });
 }
 
 function rangeToCutoffIso(rangeStr: string): string {
@@ -252,8 +302,9 @@ quantRouter.get("/funds", async (c) => {
     return String((a as any)[sortKey] || "").localeCompare(String((b as any)[sortKey] || "")) * order;
   });
 
+  const canSeeWarnings = isAdvisorOrAdmin(user);
   const itemsOut = filtered.map(({ research_requester_ids, ...rest }) => ({
-    ...rest,
+    ...sanitizeFundRowForRole(rest as QuantFundCatalogRow, canSeeWarnings),
     requested_by_me: Array.isArray(research_requester_ids) && research_requester_ids.includes(String(user.id)),
   }));
 
@@ -266,7 +317,8 @@ quantRouter.get("/funds", async (c) => {
 
 // ── 3. Single Fund Quant Profile + Twin Comparison ──────────────────────────
 quantRouter.get("/funds/:slug", async (c) => {
-  await requireQuantAccess(c);
+  const user = await requireQuantAccess(c);
+  const canSeeWarnings = isAdvisorOrAdmin(user);
   const slug = c.req.param("slug");
   const { lookup } = await loadQuantCatalog(c.env.DB);
   const fund = lookup.get(slug.trim().toUpperCase()) || (await resolveQuantFund(c.env.DB, slug));
@@ -292,10 +344,11 @@ quantRouter.get("/funds/:slug", async (c) => {
       seenTwinSlugs.add(direct.slug);
     }
   }
+  const sanitizedTwins = twins.map((tw) => sanitizeFundRowForRole(tw, canSeeWarnings));
   return c.json({
-    fund,
-    twin: twins[0] || null,
-    twins,
+    fund: sanitizeFundRowForRole(fund, canSeeWarnings),
+    twin: sanitizedTwins[0] || null,
+    twins: sanitizedTwins,
   });
 });
 
@@ -1031,17 +1084,21 @@ quantRouter.get("/funds/:slug/sop-report", async (c) => {
       }
     : null;
 
+  const canViewSopWarnings = isAdvisorOrAdmin(user);
   if (!reportRow) {
     return c.json({
       has_report: false,
       slug: canonicalSlug,
       code: fund?.code || rawSlug,
       can_view_internal_decision: user.role === "admin",
+      can_view_sop_warnings: canViewSopWarnings,
       queue_entry: queueSummary,
     });
   }
 
   const isAdmin = user.role === "admin";
+  const rawTabs = safeParseJson<any[]>(reportRow.commercial_tabs_json, []);
+  const rawMasters = safeParseJson<any[]>(reportRow.masters_json, []);
   return c.json({
     has_report: true,
     slug: reportRow.slug,
@@ -1052,7 +1109,7 @@ quantRouter.get("/funds/:slug/sop-report", async (c) => {
     data_as_of: reportRow.data_as_of,
     fund_type: reportRow.fund_type,
     val_route: reportRow.val_route,
-    medal_rating: reportRow.medal_rating,
+    medal_rating: !canViewSopWarnings && reportRow.medal_rating === "Negative" ? "" : reportRow.medal_rating,
     pillar_score: reportRow.pillar_score != null ? Number(reportRow.pillar_score) : null,
     g1_g5_pass: Boolean(reportRow.g1_g5_pass),
     uncertainty: reportRow.uncertainty,
@@ -1061,15 +1118,16 @@ quantRouter.get("/funds/:slug/sop-report", async (c) => {
     dividend_yield_ttm: reportRow.dividend_yield_ttm != null ? Number(reportRow.dividend_yield_ttm) : null,
     dividend_spread_rf: reportRow.dividend_spread_rf != null ? Number(reportRow.dividend_spread_rf) : null,
     one_liner: reportRow.one_liner || "",
-    red_flag_top: reportRow.red_flag_top || "",
+    red_flag_top: canViewSopWarnings ? reportRow.red_flag_top || "" : "",
     pillars: safeParseJson<Record<string, any>>(reportRow.pillar_json, {}),
     valuation_summary: safeParseJson<Record<string, any>>(reportRow.valuation_summary_json, {}),
     dividend_summary: safeParseJson<Record<string, any>>(reportRow.dividend_summary_json, {}),
-    masters: safeParseJson<any[]>(reportRow.masters_json, []),
-    commercial_tabs: safeParseJson<any[]>(reportRow.commercial_tabs_json, []),
+    masters: canViewSopWarnings ? rawMasters : [],
+    commercial_tabs: canViewSopWarnings ? rawTabs : sanitizeSopTabsForClient(rawTabs),
     one_pager_md: reportRow.one_pager_md || "",
-    // Compliance Isolation: internal B-edition decision tree strictly restricted to admin
+    // Compliance Isolation: internal B-edition decision tree strictly restricted to admin; SOP warnings/negative red-team restricted to advisor & admin
     can_view_internal_decision: isAdmin,
+    can_view_sop_warnings: canViewSopWarnings,
     decision_md: isAdmin ? reportRow.decision_md || null : null,
     published_at: reportRow.published_at,
     updated_at: reportRow.updated_at,
@@ -1213,11 +1271,13 @@ quantRouter.delete("/funds/:slug/research-request", async (c) => {
 
 // ── 10. Full Institutional Portfolio X-Ray v2 (Funds + Direct Stocks/Bonds) ─
 quantRouter.post("/xray", async (c) => {
+  const user = await getOptionalUser(c);
   const body = await c.req.json<any>().catch(() => ({}));
   if (!Array.isArray(body?.holdings) || body.holdings.length === 0) {
     throw new HttpError(400, "請提供至少一項有效持倉進行組合透視");
   }
-  const result = await computeFullPortfolioXRay(c.env.DB, body);
+  const includeInternalWarnings = isAdvisorOrAdmin(user) && !Boolean(body?.client_report_mode);
+  const result = await computeFullPortfolioXRay(c.env.DB, body, { includeInternalWarnings });
   return c.json(result);
 });
 

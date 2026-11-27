@@ -28,7 +28,6 @@ export default function XRayPrintReport({
   const stressList = (server?.stress_test || []).filter((s) => s.available);
   const risk = server?.risk_analytics || {};
   const overlapPairs = server?.overlap?.pairs || [];
-  const valSop = server?.valuation_cashflow_sop || {};
   const todayStr = new Date().toISOString().slice(0, 10);
 
   const modal = (
@@ -53,9 +52,10 @@ export default function XRayPrintReport({
             boxShadow: '0 8px 24px rgba(0,0,0,0.28)',
           }}
         >
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.84rem' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.84rem', flexWrap: 'wrap' }}>
             <Layers size={16} color="#C5A059" />
             <span>Morningstar × Wonder Portfolio X-Ray 透视报告预览（A4 排版）</span>
+            <span style={{ fontSize: '0.73rem', color: '#C8C1B4' }}>· 建议打印设置保持「默认边距」与「背景图形」开启</span>
           </div>
           <div style={{ display: 'flex', gap: '8px' }}>
             <button
@@ -98,7 +98,31 @@ export default function XRayPrintReport({
           </div>
         </div>
 
-        <div id="printable-report" className="ips-paper" style={{ padding: '26px 30px' }}>
+        <div id="printable-report" className="ips-paper xray-print-paper" style={{ padding: '30px 34px' }}>
+          <table className="xray-print-sheet">
+            <thead className="xray-print-running-header">
+              <tr>
+                <td>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span>WONDER ATELIER · PORTFOLIO X-RAY REPORT</span>
+                    <span>{portfolioName} · {todayStr}</span>
+                  </div>
+                </td>
+              </tr>
+            </thead>
+            <tfoot className="xray-print-running-footer">
+              <tr>
+                <td>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span>Wonder Atelier 客观量化穿透引擎编制 · 仅供专属资产配置沟通参考</span>
+                    <span>Wonder Platform FIS Hub</span>
+                  </div>
+                </td>
+              </tr>
+            </tfoot>
+            <tbody>
+              <tr>
+                <td className="xray-print-body-cell">
           {/* Header */}
           <header
             style={{
@@ -134,6 +158,7 @@ export default function XRayPrintReport({
             localXRay={localXRay}
             currencySymbol={currencySymbol}
             sectionTitle="一、底层穿透画像、双九宫格风格与 Top 8 合并重仓"
+            clientMode={true}
           />
 
           {/* 持仓明细表 */}
@@ -188,9 +213,9 @@ export default function XRayPrintReport({
                       <td className="ips-mono ips-nowrap" style={{ textAlign: 'right' }}>{yp != null ? `${Number(yp).toFixed(2)}%` : '—'}</td>
                       <td>
                         {h.has_sop_report || h.hasSopReport
-                          ? `${h.sop_medal || '已研判'} · ${h.sop_valuation_zone || '已标注'}`
+                          ? `${!h.sop_medal || h.sop_medal === 'Negative' ? '已研判' : h.sop_medal} · ${h.sop_valuation_zone || '已标注'}`
                           : h.instrument_type === 'fund'
-                          ? '待深入研究'
+                          ? '常规跟踪'
                           : '直投证券'}
                       </td>
                     </tr>
@@ -213,7 +238,7 @@ export default function XRayPrintReport({
                     {overlapPairs.slice(0, 5).map((p, idx) => (
                       <div key={idx} style={{ fontSize: '0.74rem', marginBottom: '4px', display: 'flex', justifyContent: 'space-between' }}>
                         <span>{p.left_code} × {p.right_code}</span>
-                        <strong className="ips-mono" style={{ color: p.overlap_pct >= 25 ? '#8C3B32' : '#0A192F' }}>{p.overlap_pct}%</strong>
+                        <strong className="ips-mono" style={{ color: '#0A192F' }}>{p.overlap_pct}%</strong>
                       </div>
                     ))}
                   </div>
@@ -269,24 +294,14 @@ export default function XRayPrintReport({
             </section>
           )}
 
-          {/* SOP 红旗提醒 */}
-          {(valSop.red_flags || []).length > 0 && (
-            <section style={{ marginBottom: '14px', pageBreakInside: 'avoid', breakInside: 'avoid' }}>
-              <div style={{ fontSize: '0.78rem', fontWeight: 700, color: '#8C3B32', marginBottom: '6px' }}>
-                SOP v2.0 红队关键风险摘要（Red Flags）
-              </div>
-              {valSop.red_flags.map((rf) => (
-                <div key={rf.slug} style={{ fontSize: '0.75rem', padding: '6px 10px', background: '#FEF2F2', border: '1px solid #FECACA', borderRadius: '4px', marginBottom: '4px' }}>
-                  <strong>{rf.code} ({rf.weight_pct}%)</strong>：{rf.red_flag}
-                </div>
-              ))}
-            </section>
-          )}
-
           <footer style={{ marginTop: '16px', paddingTop: '10px', borderTop: '1px solid #C8C1B4', fontSize: '0.72rem', color: '#5F6662', display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: '10px' }}>
             <div>Wonder Atelier 客观商业与量化穿透引擎生成 · 未穿透底层持仓与行业均如实标示覆盖率，不作推算填补。</div>
             <div>Wonder Platform FIS Hub • {todayStr}</div>
           </footer>
+                </td>
+              </tr>
+            </tbody>
+          </table>
         </div>
       </div>
     </div>

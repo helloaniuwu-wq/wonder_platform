@@ -1119,6 +1119,7 @@ function App() {
         ) : activeTab === 'lab' ? (
           <FeatureLock minRole="premium" currentUser={currentUser} featureName="策略实验室" onLoginClick={() => setAuthModalOpen(true)}>
             <StrategyLabView
+              currentUser={currentUser}
               labIsins={labIsins} labInput={labInput} setLabInput={setLabInput}
               labData={labData} labLoading={labLoading} labError={labError}
               labDaysBack={labDaysBack} setLabDaysBack={setLabDaysBack}
@@ -1169,6 +1170,7 @@ function App() {
             <div style={{ textAlign: 'center', paddingTop: '100px', color: 'var(--text-secondary)' }}><h2>Analyzing Data...</h2></div>
           ) : data && data.details ? (
             <PortfolioView
+              currentUser={currentUser}
               portfolios={portfolios} activeId={activeId} data={data} historyData={historyData} loading={loading}
               quantFunds={quantFunds}
               activeSubTab={activeSubTab} setActiveSubTab={setActiveSubTab}

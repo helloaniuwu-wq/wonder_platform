@@ -23,6 +23,7 @@ import { calcILPMonthlyFee, getEnrollmentBonusRate } from '../utils/ilpImpactUti
  * PortfolioView — Nordic Gallery Minimal & Responsive Multi-Screen Edition.
  */
 const PortfolioView = ({
+  currentUser = null,
   portfolios, activeId, data, historyData, loading,
   quantFunds = [],
   activeSubTab, setActiveSubTab,
@@ -994,6 +995,7 @@ const PortfolioView = ({
           </section>
 
           <PortfolioXRayPanel
+            currentUser={currentUser}
             holdings={data.details.map((a) => ({
               isin: a.isin,
               name: a.name,

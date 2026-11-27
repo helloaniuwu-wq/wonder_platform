@@ -661,8 +661,10 @@ export function computeCovarianceAnalytics(
 
 export async function computeFullPortfolioXRay(
   db: D1Database,
-  req: PortfolioXRayRequest
+  req: PortfolioXRayRequest,
+  opts: { includeInternalWarnings?: boolean } = {}
 ) {
+  const includeInternalWarnings = opts.includeInternalWarnings !== false;
   const validInputs = (req.holdings || []).filter((h) => h && Number(h.weight) > 0 && h.isin);
   const totalWeight = validInputs.reduce((s, h) => s + Number(h.weight), 0) || 1;
   const targetCcy = String(req.currency || "USD").toUpperCase();
@@ -1135,7 +1137,10 @@ export async function computeFullPortfolioXRay(
       duration: h.duration ?? cat?.duration ?? xray?.valuation?.duration ?? null,
       yield_pct: h.dividend_yield ?? h.ytm ?? cat?.yield_pct ?? cat?.sop_dividend_yield_ttm ?? null,
       has_sop_report: Boolean(cat?.has_sop_report),
-      sop_medal: cat?.sop_medal || null,
+      sop_medal:
+        !includeInternalWarnings && cat?.sop_medal === "Negative"
+          ? null
+          : cat?.sop_medal || null,
       sop_valuation_zone: cat?.sop_valuation_zone || null,
     });
   }
@@ -1282,7 +1287,25 @@ export async function computeFullPortfolioXRay(
     });
   }
 
+  const publicDiagnostics = includeInternalWarnings
+    ? diagnostics
+    : diagnostics.filter((d) => d.level !== "warn");
+  if (!includeInternalWarnings && publicDiagnostics.length === 0 && enrichedHoldings.length > 0) {
+    publicDiagnostics.push({
+      level: "good",
+      text: "已完成组合多维穿透分析，大类资产、风格箱与收益结构已清晰呈现，建议结合投资周期定期检视再平衡。",
+    });
+  }
+
+  const rawMedalDist = Object.entries(medalWeights)
+    .map(([label, v]) => ({ label, pct: round1((v / (sopCoveredW || 1)) * 100) }))
+    .sort((a, b) => b.pct - a.pct);
+  const publicMedalDist = includeInternalWarnings
+    ? rawMedalDist
+    : rawMedalDist.filter((m) => m.label !== "Negative");
+
   return {
+    can_view_internal_warnings: includeInternalWarnings,
     currency: targetCcy,
     total_nav: totalNav,
     summary: {
@@ -1369,9 +1392,7 @@ export async function computeFullPortfolioXRay(
       valuation_zones: Object.entries(valuationZoneWeights)
         .map(([label, v]) => ({ label, pct: round1((v / (sopCoveredW || 1)) * 100) }))
         .sort((a, b) => b.pct - a.pct),
-      medal_distribution: Object.entries(medalWeights)
-        .map(([label, v]) => ({ label, pct: round1((v / (sopCoveredW || 1)) * 100) }))
-        .sort((a, b) => b.pct - a.pct),
+      medal_distribution: publicMedalDist,
       weighted_pe: peW > 0 ? round2(peWeighted / peW) : null,
       weighted_pb: pbW > 0 ? round2(pbWeighted / pbW) : null,
       pretax_yield_pct: pretaxYieldPct,
@@ -1379,11 +1400,11 @@ export async function computeFullPortfolioXRay(
       est_annual_income: estAnnualIncome,
       rf_rate_pct: rfRatePct,
       spread_vs_rf_bps: spreadVsRfBps,
-      red_flags: redFlags,
+      red_flags: includeInternalWarnings ? redFlags : [],
       uncovered_funds: uncoveredFunds.sort((a, b) => b.weight_pct - a.weight_pct),
     },
     stress_test: stressTest,
-    diagnostics,
+    diagnostics: publicDiagnostics,
     holdings: enrichedHoldings,
   };
 }

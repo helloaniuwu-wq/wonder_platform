@@ -139,6 +139,7 @@ const AllocationCard = ({ portfolio, name, color, onDeploy, onApplyToCustom, ass
 const QUICK_TEMPLATE_IDS = ['all-weather', 'sixty-forty', 'golden-butterfly'];
 
 const StrategyLabView = ({
+  currentUser = null,
   labIsins = [], labInput, setLabInput,
   labData, labLoading, labError,
   labDaysBack, setLabDaysBack,
@@ -1273,6 +1274,7 @@ const StrategyLabView = ({
             .map(([isin, weight]) => ({ isin, weight: Number(weight) }));
           return (
             <PortfolioXRayPanel
+              currentUser={currentUser}
               holdings={holdings}
               quantFunds={quantFunds}
               totalNav={Number(labMcSettings?.capital) || 0}
