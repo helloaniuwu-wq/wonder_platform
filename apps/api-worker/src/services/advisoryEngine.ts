@@ -19,6 +19,7 @@ export type PrimaryGoal =
 export type ProductScope =
   | "all"
   | "hk_broker"
+  | "hk_broker_etf"
   | "non_ilas"
   | "aia_tmp2"
   | "eu_ucits"
@@ -160,6 +161,7 @@ export interface CustomFundBasket {
   key: "core" | "alternative";
   universe_mode: "ilas" | "non_ilas" | "hk_broker";
   us_estate_tax_shield?: boolean;
+  hk_broker_etf_only?: boolean;
   title_zh: string;
   title_en: string;
   subtitle_zh: string;
@@ -285,6 +287,7 @@ export function normalizeProfile(raw: Partial<ClientAdvisoryProfile>): ClientAdv
   const validScopes: ProductScope[] = [
     "all",
     "hk_broker",
+    "hk_broker_etf",
     "non_ilas",
     "aia_tmp2",
     "eu_ucits",
@@ -646,7 +649,10 @@ export function matchClassicTemplates(
   profile: ClientAdvisoryProfile,
   envelope: TargetEnvelope
 ): ClassicTemplateMatch[] {
-  const useUcitsRemap = resolveBasketUniverseMode(profile) === "non_ilas" && hasUsEstateTaxConcern(profile);
+  const useUcitsRemap =
+    resolveBasketUniverseMode(profile) === "non_ilas" &&
+    profile.product_scope !== "hk_broker_etf" &&
+    hasUsEstateTaxConcern(profile);
   const scored = CLASSIC_ARCHETYPES.map((spec) => {
     const equityDiff = Math.abs(spec.equity_pct - envelope.target_equity_pct);
     const bondDiff = Math.abs(spec.bond_pct - envelope.target_bond_pct);
@@ -852,7 +858,15 @@ export async function matchExistingPortfolios(
           score -= 18;
           watchouts.push("含投连险平台标的（与纯非投连险架构隔离）");
         }
-        if (hasUsEstateTaxConcern(profile)) {
+        if (profile.product_scope === "hk_broker_etf") {
+          if (ieLuEtfCount > 0) {
+            score -= 22;
+            watchouts.push("含爱尔兰/卢森堡注册 ETF（香港券商无法直接买入，纯低费 ETF 方案已剔除）");
+          } else if (allocEntries.length > 0 && ilasCount === 0) {
+            score += 8;
+            fitReasons.push("纯低费美/港/日 ETF 结构，剔除爱尔兰/卢森堡 ETF 与互惠基金");
+          }
+        } else if (hasUsEstateTaxConcern(profile)) {
           if (usSitusCount > 0) {
             score -= 20;
             watchouts.push("含美国本土注册 ETF（存在非美居民美股遗产税敞口，建议改配爱尔兰/卢森堡 UCITS 标的）");
@@ -1074,6 +1088,28 @@ export function isHkBrokerEligibleFund(row: Partial<QuantFundCatalogRow>): boole
   return /^(LU|IE|HK|GB|SG|AU)[A-Z0-9]{10}$/.test(isin);
 }
 
+export function isUsMutualFund(row: Partial<QuantFundCatalogRow>): boolean {
+  const clean = String(row.yahoo_ticker || row.code || "").trim().toUpperCase();
+  if (!clean || clean.includes(".")) return false;
+  return /^[A-Z]{4}X$/.test(clean);
+}
+
+const HK_BROKER_LOW_FEE_ETF_PLATFORMS = new Set([
+  "非投连险-美股分红型ETF",
+  "非投连险-国际股票",
+  "非投连险-分红型基金",
+  "非投连险-日本宽基ETF",
+  "非投连险-债券基金比较",
+  "非投连险-货币基金",
+]);
+
+export function isHkBrokerLowFeeEtf(row: Partial<QuantFundCatalogRow>): boolean {
+  if (isIlasFund(row)) return false;
+  if (isIrelandOrLuxembourgEtf(row) || isIrelandOrLuxembourgFund(row)) return false;
+  if (isUsMutualFund(row)) return false;
+  return HK_BROKER_LOW_FEE_ETF_PLATFORMS.has(row.ilas_platform || "");
+}
+
 export function isEuropeanCategoryFund(row: Partial<QuantFundCatalogRow>): boolean {
   if (!isIlasFund(row) && isIrelandOrLuxembourgFund(row)) return true;
   if (Array.isArray(row.tags) && row.tags.some((t) => /欧洲|UCITS|爱尔兰|卢森堡/i.test(t))) return true;
@@ -1144,7 +1180,7 @@ export function resolveBasketUniverseMode(
 
   const scope = profile.product_scope || "all";
   if (scope === "aia_tmp2") return "ilas";
-  if (scope === "eu_ucits" || scope === "global_etf" || scope === "cn_hk_dividend" || scope === "non_ilas") {
+  if (scope === "hk_broker_etf" || scope === "eu_ucits" || scope === "global_etf" || scope === "cn_hk_dividend" || scope === "non_ilas") {
     return "non_ilas";
   }
   return profile.ilp_planned ? "ilas" : "non_ilas";
@@ -1154,6 +1190,7 @@ function matchesProductScope(row: QuantFundCatalogRow, scope: ProductScope): boo
   const plat = row.ilas_platform || "";
   if (scope === "aia_tmp2") return isIlasFund(row);
   if (scope === "hk_broker") return isHkBrokerEligibleFund(row);
+  if (scope === "hk_broker_etf") return isHkBrokerLowFeeEtf(row);
   if (scope === "non_ilas") return !isIlasFund(row);
   if (scope === "eu_ucits") return !isIlasFund(row) && isIrelandOrLuxembourgFund(row);
   if (scope === "global_etf") {
@@ -2073,11 +2110,16 @@ function buildSingleBasket(
     weight_pct: h.weight_pct,
   }));
 
+  const isHkBrokerEtfOnly = profile.product_scope === "hk_broker_etf";
   const publicHoldings: CustomBasketHolding[] = normHoldings.map(({ max_dd_3y: _ignored, ...rest }) => rest);
   return {
     key,
     universe_mode: universeMode,
-    us_estate_tax_shield: (universeMode === "non_ilas" || universeMode === "hk_broker") && hasUsEstateTaxConcern(profile),
+    us_estate_tax_shield:
+      !isHkBrokerEtfOnly &&
+      (universeMode === "non_ilas" || universeMode === "hk_broker") &&
+      hasUsEstateTaxConcern(profile),
+    hk_broker_etf_only: isHkBrokerEtfOnly,
     title_zh: titleZh,
     title_en: titleEn,
     subtitle_zh: subtitleZh,
@@ -2092,16 +2134,19 @@ export function buildCustomFundBaskets(
   profile: ClientAdvisoryProfile,
   envelope: TargetEnvelope
 ): { baskets: CustomFundBasket[]; scopedCount: number; backedCount: number } {
-  // 硬约束：投连险平台基金与平台外基金严格隔离，同一组合内绝不混配；香港券商模式剔除 IE/LU ETF 并保留互惠基金与美/港/日 ETF
+  // 硬约束：投连险平台基金与平台外基金严格隔离，同一组合内绝不混配；香港券商模式剔除 IE/LU ETF；纯低费 ETF 模式更进一步仅保留美/港/日低费 ETF
   const universeMode = resolveBasketUniverseMode(profile);
   const wantIlas = universeMode === "ilas";
   const isHkBroker = universeMode === "hk_broker";
+  const isHkBrokerEtfOnly = !wantIlas && profile.product_scope === "hk_broker_etf";
   const universeRows = isHkBroker
     ? catalogRows.filter((r) => isHkBrokerEligibleFund(r))
     : catalogRows.filter((r) => isIlasFund(r) === wantIlas);
-  const requireEuDomicile = !wantIlas && hasUsEstateTaxConcern(profile);
+  const requireEuDomicile = !wantIlas && !isHkBrokerEtfOnly && hasUsEstateTaxConcern(profile);
   let effectiveUniverse = universeRows;
-  if (isHkBroker && requireEuDomicile) {
+  if (isHkBrokerEtfOnly) {
+    effectiveUniverse = universeRows.filter((r) => isHkBrokerLowFeeEtf(r));
+  } else if (isHkBroker && requireEuDomicile) {
     const euMutualFunds = universeRows.filter((r) => isIrelandOrLuxembourgFund(r) && !isIrelandOrLuxembourgEtf(r));
     effectiveUniverse = euMutualFunds.length >= 3 ? euMutualFunds : universeRows;
   } else if (!isHkBroker && requireEuDomicile) {
@@ -2120,34 +2165,42 @@ export function buildCustomFundBaskets(
 
   const backedCount = scoped.filter((r) => r.data_tier === "A" || r.data_tier === "B").length;
 
-  const planATitleZh = isHkBroker
-    ? requireEuDomicile
-      ? "方案一 · 香港券商互惠基金优选组合（爱尔兰/卢森堡互惠基金·免美遗产税）"
-      : "方案一 · 香港券商可交易核心+卫星组合（剔除爱尔兰/卢森堡 ETF）"
-    : requireEuDomicile
-      ? "方案一 · 欧基核心+卫星优选组合（爱尔兰/卢森堡免美遗产税）"
-      : "方案一 · 核心+卫星量化优选组合";
-  const planATitleEn = isHkBroker
-    ? requireEuDomicile
-      ? "Plan A · HK Broker Mutual Fund Core-Satellite (IE/LU Mutual Funds, Estate-Tax Exempt)"
-      : "Plan A · HK Broker Core-Satellite (Excl. IE/LU ETFs)"
-    : requireEuDomicile
-      ? "Plan A · IE/LU UCITS Core-Satellite (US Estate-Tax Exempt)"
-      : "Plan A · Core-Satellite Quant Allocation";
-  const planASubtitleZh = isHkBroker
-    ? requireEuDomicile
-      ? "适配香港本地券商渠道，剔除爱尔兰/卢森堡注册 ETF，采用爱尔兰/卢森堡互惠基金规避美股遗产税"
-      : "适配香港大部分券商渠道：剔除无法直接买卖的爱尔兰/卢森堡注册 ETF，保留互惠基金与美/港/日 ETF"
-    : requireEuDomicile
-      ? "全仓采用爱尔兰/卢森堡注册欧洲 UCITS 基金，规避非美居民 6 万美元以上美股遗产税敞口，遵循核心 ≥70% 纪律"
-      : "遵循核心 ≥70%（Beta压舱）/ 卫星 ≤30%（Alpha分散）原则，优先纳入管理员核心推荐标的";
-  const planASubtitleEn = isHkBroker
-    ? requireEuDomicile
-      ? "Built for Hong Kong retail brokers: excludes IE/LU UCITS ETFs and uses IE/LU mutual funds to avoid US estate tax"
-      : "Tailored for Hong Kong brokers: removes IE/LU UCITS ETFs while retaining mutual funds and US/HK/JP ETFs"
-    : requireEuDomicile
-      ? "100% Ireland/Luxembourg domiciled UCITS ETFs shielding non-US residents from US-situs estate tax"
-      : "Core ≥70% / Satellite ≤30% discipline prioritizing Admin Core Picks";
+  const planATitleZh = isHkBrokerEtfOnly
+    ? "方案一 · 香港券商纯低费 ETF 核心+卫星组合（剔除爱尔兰/卢森堡 ETF）"
+    : isHkBroker
+      ? requireEuDomicile
+        ? "方案一 · 香港券商互惠基金优选组合（爱尔兰/卢森堡互惠基金·免美遗产税）"
+        : "方案一 · 香港券商可交易核心+卫星组合（剔除爱尔兰/卢森堡 ETF）"
+      : requireEuDomicile
+        ? "方案一 · 欧基核心+卫星优选组合（爱尔兰/卢森堡免美遗产税）"
+        : "方案一 · 核心+卫星量化优选组合";
+  const planATitleEn = isHkBrokerEtfOnly
+    ? "Plan A · HK Broker Pure Low-Fee ETF Core-Satellite (Excl. IE/LU ETFs)"
+    : isHkBroker
+      ? requireEuDomicile
+        ? "Plan A · HK Broker Mutual Fund Core-Satellite (IE/LU Mutual Funds, Estate-Tax Exempt)"
+        : "Plan A · HK Broker Core-Satellite (Excl. IE/LU ETFs)"
+      : requireEuDomicile
+        ? "Plan A · IE/LU UCITS Core-Satellite (US Estate-Tax Exempt)"
+        : "Plan A · Core-Satellite Quant Allocation";
+  const planASubtitleZh = isHkBrokerEtfOnly
+    ? "纯低费美/港/日 ETF 组合：严禁爱尔兰/卢森堡注册 ETF 及互惠基金，100% 适配香港主流券商直接下单"
+    : isHkBroker
+      ? requireEuDomicile
+        ? "适配香港本地券商渠道，剔除爱尔兰/卢森堡注册 ETF，采用爱尔兰/卢森堡互惠基金规避美股遗产税"
+        : "适配香港大部分券商渠道：剔除无法直接买卖的爱尔兰/卢森堡注册 ETF，保留互惠基金与美/港/日 ETF"
+      : requireEuDomicile
+        ? "全仓采用爱尔兰/卢森堡注册欧洲 UCITS 基金，规避非美居民 6 万美元以上美股遗产税敞口，遵循核心 ≥70% 纪律"
+        : "遵循核心 ≥70%（Beta压舱）/ 卫星 ≤30%（Alpha分散）原则，优先纳入管理员核心推荐标的";
+  const planASubtitleEn = isHkBrokerEtfOnly
+    ? "Pure low-fee US/HK/JP ETFs only: strictly excludes IE/LU UCITS ETFs and mutual funds for direct HK broker execution"
+    : isHkBroker
+      ? requireEuDomicile
+        ? "Built for Hong Kong retail brokers: excludes IE/LU UCITS ETFs and uses IE/LU mutual funds to avoid US estate tax"
+        : "Tailored for Hong Kong brokers: removes IE/LU UCITS ETFs while retaining mutual funds and US/HK/JP ETFs"
+      : requireEuDomicile
+        ? "100% Ireland/Luxembourg domiciled UCITS ETFs shielding non-US residents from US-situs estate tax"
+        : "Core ≥70% / Satellite ≤30% discipline prioritizing Admin Core Picks";
 
   const coreBasket = buildSingleBasket(
     scoped,
@@ -2171,20 +2224,24 @@ export function buildCustomFundBaskets(
   const excludeForAlt = new Set(excludeSource.map((h) => h.slug));
   const useDefensiveAlt = envelope.income_focus || envelope.risk_level === "conservative";
 
-  const planBSuffixZh = isHkBroker
-    ? requireEuDomicile
-      ? "（香港券商·欧基互惠基金）"
-      : "（香港券商平台）"
-    : requireEuDomicile
-      ? "（欧基免遗产税）"
-      : "";
-  const planBSuffixEn = isHkBroker
-    ? requireEuDomicile
-      ? " (HK Broker · IE/LU Mutual Funds)"
-      : " (HK Broker)"
-    : requireEuDomicile
-      ? " (IE/LU UCITS)"
-      : "";
+  const planBSuffixZh = isHkBrokerEtfOnly
+    ? "（香港券商纯低费 ETF）"
+    : isHkBroker
+      ? requireEuDomicile
+        ? "（香港券商·欧基互惠基金）"
+        : "（香港券商平台）"
+      : requireEuDomicile
+        ? "（欧基免遗产税）"
+        : "";
+  const planBSuffixEn = isHkBrokerEtfOnly
+    ? " (HK Broker Pure ETFs)"
+    : isHkBroker
+      ? requireEuDomicile
+        ? " (HK Broker · IE/LU Mutual Funds)"
+        : " (HK Broker)"
+      : requireEuDomicile
+        ? " (IE/LU UCITS)"
+        : "";
 
   const altBasket = buildSingleBasket(
     scoped,
@@ -2234,12 +2291,15 @@ export function buildTacticalCandidatePool(
   const universeMode = resolveBasketUniverseMode(profile, currentHoldings, catalogRows);
   const wantIlas = universeMode === "ilas";
   const isHkBroker = universeMode === "hk_broker";
+  const isHkBrokerEtfOnly = !wantIlas && scope === "hk_broker_etf";
   const universeRows = isHkBroker
     ? catalogRows.filter((r) => isHkBrokerEligibleFund(r))
     : catalogRows.filter((r) => isIlasFund(r) === wantIlas);
-  const requireEuDomicile = !wantIlas && hasUsEstateTaxConcern(profile);
+  const requireEuDomicile = !wantIlas && !isHkBrokerEtfOnly && hasUsEstateTaxConcern(profile);
   let effectiveUniverse = universeRows;
-  if (isHkBroker && requireEuDomicile) {
+  if (isHkBrokerEtfOnly) {
+    effectiveUniverse = universeRows.filter((r) => isHkBrokerLowFeeEtf(r));
+  } else if (isHkBroker && requireEuDomicile) {
     const euMutualFunds = universeRows.filter((r) => isIrelandOrLuxembourgFund(r) && !isIrelandOrLuxembourgEtf(r));
     effectiveUniverse = euMutualFunds.length >= 4 ? euMutualFunds : universeRows;
   } else if (!isHkBroker && requireEuDomicile) {

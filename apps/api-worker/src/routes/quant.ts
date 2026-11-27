@@ -726,9 +726,11 @@ quantRouter.post("/recommend/explain", async (c) => {
   ]);
   const macroBlock = formatMacroPromptBlock(macroSnap);
   const effectiveProfile =
-    rec?.universe_mode === "hk_broker" && !profile?.product_scope
-      ? { ...profile, product_scope: "hk_broker" }
-      : profile;
+    rec?.hk_broker_etf_only && !profile?.product_scope
+      ? { ...profile, product_scope: "hk_broker_etf" }
+      : rec?.universe_mode === "hk_broker" && !profile?.product_scope
+        ? { ...profile, product_scope: "hk_broker" }
+        : profile;
   const candidatePool = buildTacticalCandidatePool(
     catalogData.rows,
     effectiveProfile,
@@ -773,20 +775,24 @@ quantRouter.post("/recommend/explain", async (c) => {
         );
   const isIlasMode = recUniverse === "ilas";
   const isHkBrokerMode = recUniverse === "hk_broker";
-  const estateTaxShield = !isIlasMode && hasUsEstateTaxConcern(effectiveProfile);
+  const isHkBrokerEtfOnly =
+    !isIlasMode && (effectiveProfile?.product_scope === "hk_broker_etf" || Boolean(rec?.hk_broker_etf_only));
+  const estateTaxShield = !isIlasMode && !isHkBrokerEtfOnly && hasUsEstateTaxConcern(effectiveProfile);
   const ilasConstraintRule = isIlasMode
     ? "4. 【纯投连险平台硬约束】本组合为纯投连险（AIA 卓达智悦2）组合，严禁混入任何平台外非投连险基金/ETF，且所有保留或新增标的的 `adjusted_weight_pct` 必须为 >= 10 的整数（或设为 0 表示剔除）；"
-    : isHkBrokerMode
-      ? `4. 【香港券商平台硬约束】本组合面向香港本地主流券商渠道，严禁推荐或换入任何爱尔兰或卢森堡注册的 UCITS ETF（如 CSPX/VWRA/IWDA/IB01/CSH2/AGGU/LQDA 等欧交所挂牌 ETF）；仅允许保留或增配香港券商可交易的互惠基金（Mutual Fund / SICAV，含爱尔兰/卢森堡注册互惠基金）与美/港/日/中港通 ETF；单只保留或新增标的建议权重 >= 5%；${
-          estateTaxShield
-            ? "\n4b. 【香港券商 + 美国遗产税隔离硬约束】客户同时关注美国遗产税风险（非美居民持有美国本土 ETF 免税额仅 6 万美元），因香港券商无法直接购买爱尔兰/卢森堡 ETF，请优先且仅选用爱尔兰/卢森堡注册互惠基金（Mutual Fund / SICAV）来规避美国遗产税，严禁建议美国本土 ETF 或爱尔兰/卢森堡 ETF；"
-            : ""
-        }`
-      : `4. 【纯非投连险硬约束】本组合为纯平台外基金/ETF 组合，严禁混入任何投连险（AIA/ILAS）平台基金；单只保留或新增标的建议权重 >= 5%，避免过于零碎；${
-          estateTaxShield
-            ? "\n4b. 【美国遗产税隔离硬约束】客户关注美国遗产税风险（非美税务居民持有美国本土 US-Situs ETF 免税额仅 6 万美元，超额税率最高 40%）。本组合为非投连险平台架构，所有保留或替换标的必须 100% 采用爱尔兰（IE）或卢森堡（LU）注册的欧洲 UCITS 基金，严禁建议任何美国本土注册 ETF，并在报告第二章阐明爱尔兰/卢森堡 UCITS 架构在规避美股遗产税及股息预扣税协定上的核心优势；"
-            : ""
-        }`;
+    : isHkBrokerEtfOnly
+      ? "4. 【香港券商纯低费 ETF 硬约束】本组合为纯低费 ETF 方案（适配香港主流券商），严禁推荐或换入任何爱尔兰/卢森堡注册 ETF（如 CSPX/VWRA/IWDA/IB01/CSH2/AGGU/LQDA 等）以及任何互惠基金（含投连险基金与美股互惠基金）；仅允许保留或增配香港券商可直接交易的美/港/日低费 ETF，单只权重建议 >= 5%；"
+      : isHkBrokerMode
+        ? `4. 【香港券商平台硬约束】本组合面向香港本地主流券商渠道，严禁推荐或换入任何爱尔兰或卢森堡注册的 UCITS ETF（如 CSPX/VWRA/IWDA/IB01/CSH2/AGGU/LQDA 等欧交所挂牌 ETF）；仅允许保留或增配香港券商可交易的互惠基金（Mutual Fund / SICAV，含爱尔兰/卢森堡注册互惠基金）与美/港/日/中港通 ETF；单只保留或新增标的建议权重 >= 5%；${
+            estateTaxShield
+              ? "\n4b. 【香港券商 + 美国遗产税隔离硬约束】客户同时关注美国遗产税风险（非美居民持有美国本土 ETF 免税额仅 6 万美元），因香港券商无法直接购买爱尔兰/卢森堡 ETF，请优先且仅选用爱尔兰/卢森堡注册互惠基金（Mutual Fund / SICAV）来规避美国遗产税，严禁建议美国本土 ETF 或爱尔兰/卢森堡 ETF；"
+              : ""
+          }`
+        : `4. 【纯非投连险硬约束】本组合为纯平台外基金/ETF 组合，严禁混入任何投连险（AIA/ILAS）平台基金；单只保留或新增标的建议权重 >= 5%，避免过于零碎；${
+            estateTaxShield
+              ? "\n4b. 【美国遗产税隔离硬约束】客户关注美国遗产税风险（非美税务居民持有美国本土 US-Situs ETF 免税额仅 6 万美元，超额税率最高 40%）。本组合为非投连险平台架构，所有保留或替换标的必须 100% 采用爱尔兰（IE）或卢森堡（LU）注册的欧洲 UCITS 基金，严禁建议任何美国本土注册 ETF，并在报告第二章阐明爱尔兰/卢森堡 UCITS 架构在规避美股遗产税及股息预扣税协定上的核心优势；"
+              : ""
+          }`;
 
   const metricsSummary = rec.metrics
     ? `预期3Y年化: ${rec.metrics.est_cagr_pct}%, 年化波动率: ${rec.metrics.est_vol_pct}%, 夏普比率: ${rec.metrics.est_sharpe}, 参考股息率: ${rec.metrics.est_div_yield_pct}%, 加权年费率: ${rec.metrics.weighted_fee_pct || 0}%`
@@ -806,9 +812,11 @@ quantRouter.post("/recommend/explain", async (c) => {
 - 架构平台: ${
   isIlasMode
     ? "纯投连险架构 (AIA 卓达智悦2)"
-    : isHkBrokerMode
-      ? "香港券商平台（保留互惠基金与美/港/日 ETF，剔除爱尔兰/卢森堡 ETF）"
-      : "纯平台外非投连险基金/ETF"
+    : isHkBrokerEtfOnly
+      ? "香港券商 · 纯低费 ETF（美/港/日 ETF，剔除爱尔兰/卢森堡 ETF 与互惠基金）"
+      : isHkBrokerMode
+        ? "香港券商平台（保留互惠基金与美/港/日 ETF，剔除爱尔兰/卢森堡 ETF）"
+        : "纯平台外非投连险基金/ETF"
 }（${profile.product_scope || "strict"}）
 - 【重要】客户补充背景与特别诉求:
 ${profile.extra_notes ? profile.extra_notes : "无特别补充事项"}
