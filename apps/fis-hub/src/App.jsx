@@ -438,18 +438,24 @@ function App() {
       clientName: profile?.client_name || basket?.title_zh || '客户配置方案',
       goal: profile?.primary_goal || 'balanced',
     });
+    const isHkBroker =
+      profile?.product_scope === 'hk_broker' || basket?.universe_mode === 'hk_broker';
     let acc = 0;
     const allocArray = holdings.map((h, idx) => {
+      const assetKey =
+        isHkBroker && String(h.ilas_platform || '').startsWith('AIA') && h.isin
+          ? h.isin
+          : h.lab_id;
       if (idx === holdings.length - 1) {
         return {
-          isin: h.lab_id,
+          isin: assetKey,
           weight: Number(Math.max(0, 1 - acc).toFixed(4)),
           manual_price: '',
         };
       }
       const dec = Number((Number(h.weight_pct || 0) / 100).toFixed(4));
       acc += dec;
-      return { isin: h.lab_id, weight: dec, manual_price: '' };
+      return { isin: assetKey, weight: dec, manual_price: '' };
     });
     const clientPrefix = profile?.client_name ? `${profile.client_name} · ` : '';
     const isIncome =
@@ -457,9 +463,10 @@ function App() {
       profile?.primary_goal === 'retirement' ||
       (basket?.metrics?.distributing_pct || 0) >= 50;
     const isAiaBasket =
-      Boolean(profile?.ilp_planned) ||
-      profile?.product_scope === 'aia_tmp2' ||
-      holdings.some((h) => String(h.ilas_platform || '').startsWith('AIA'));
+      !isHkBroker &&
+      (Boolean(profile?.ilp_planned) ||
+        profile?.product_scope === 'aia_tmp2' ||
+        holdings.some((h) => String(h.ilas_platform || '').startsWith('AIA')));
     setNewPf({
       name: `${clientPrefix}${basket.key === 'core' ? '核心推荐组合' : '备选配置组合'}`,
       budget: Number(profile?.initial_capital || 500000),

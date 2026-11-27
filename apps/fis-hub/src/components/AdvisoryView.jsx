@@ -95,6 +95,7 @@ const GOALS = [
 
 const SCOPES = [
   { id: 'all', zh: '非投连险全市场基金 / ETF（纯平台外）', en: 'All Non-ILAS Funds & ETFs (Off-Platform)' },
+  { id: 'hk_broker', zh: '香港券商平台（剔除爱尔兰/卢森堡 ETF，保留互惠基金与美/港/日 ETF）', en: 'HK Broker Platform (Mutual Funds & US/HK/JP ETFs, Excl. IE/LU ETFs)' },
   { id: 'aia_tmp2', zh: 'AIA 卓达智悦2 投连险池（纯投连险）', en: 'AIA TMP2 ILAS Pool (Pure ILAS)' },
   { id: 'eu_ucits', zh: '非投连险 · 欧洲基金（爱尔兰/卢森堡 UCITS，免美遗产税）', en: 'Non-ILAS · European UCITS (IE/LU, US Estate-Tax Exempt)' },
   { id: 'global_etf', zh: '非投连险 · 全球 / 美日低费 ETF', en: 'Non-ILAS · Global ETFs' },
@@ -198,14 +199,27 @@ const AdvisoryView = ({
     setProductScope(nextScope);
     if (nextScope === 'aia_tmp2') {
       setIlpPlanned(true);
-    } else if (nextScope === 'all' || nextScope === 'eu_ucits' || nextScope === 'global_etf' || nextScope === 'cn_hk_dividend') {
+    } else if (
+      nextScope === 'all' ||
+      nextScope === 'hk_broker' ||
+      nextScope === 'eu_ucits' ||
+      nextScope === 'global_etf' ||
+      nextScope === 'cn_hk_dividend'
+    ) {
       setIlpPlanned(false);
     }
   };
 
   const handleIlpToggle = (checked) => {
     setIlpPlanned(checked);
-    if (checked && (productScope === 'all' || productScope === 'eu_ucits' || productScope === 'global_etf' || productScope === 'cn_hk_dividend')) {
+    if (
+      checked &&
+      (productScope === 'all' ||
+        productScope === 'hk_broker' ||
+        productScope === 'eu_ucits' ||
+        productScope === 'global_etf' ||
+        productScope === 'cn_hk_dividend')
+    ) {
       setProductScope('aia_tmp2');
     } else if (!checked && productScope === 'aia_tmp2') {
       setProductScope('all');
@@ -867,9 +881,13 @@ const AdvisoryView = ({
                 </div>
               </div>
               <div style={{ fontSize: '0.73rem', color: 'var(--text-muted)', marginTop: '-6px' }}>
-                {isEn
-                  ? 'Strict Isolation: ILAS platform funds and off-platform funds never mix within the same portfolio.'
-                  : '硬约束：投连险平台基金与平台外基金严格隔离，同一组合内不混配（要么纯血投连险，要么纯非投连险）。'}
+                {productScope === 'hk_broker'
+                  ? (isEn
+                      ? 'HK Broker Mode: Automatically excludes Ireland/Luxembourg UCITS ETFs unavailable on most HK retail brokers, while keeping SFC-authorized mutual funds (incl. IE/LU mutual funds) and US/HK/JP ETFs.'
+                      : '香港券商模式：已自动剔除大部分香港券商无法买入的爱尔兰/卢森堡注册 ETF，保留证监会认可互惠基金（含爱尔兰/卢森堡互惠基金）与美/港/日 ETF。')
+                  : (isEn
+                      ? 'Strict Isolation: ILAS platform funds and off-platform funds never mix within the same portfolio.'
+                      : '硬约束：投连险平台基金与平台外基金严格隔离，同一组合内不混配（要么纯血投连险，要么纯非投连险）。')}
               </div>
             </section>
 
@@ -1155,14 +1173,26 @@ const AdvisoryView = ({
                           fontSize: '0.68rem',
                           padding: '2px 6px',
                           borderRadius: '4px',
-                          background: basket.universe_mode === 'ilas' ? 'rgba(245, 158, 11, 0.14)' : 'rgba(59, 130, 246, 0.12)',
-                          color: basket.universe_mode === 'ilas' ? '#d97706' : 'var(--info)',
+                          background:
+                            basket.universe_mode === 'ilas'
+                              ? 'rgba(245, 158, 11, 0.14)'
+                              : basket.universe_mode === 'hk_broker'
+                                ? 'rgba(13, 148, 136, 0.14)'
+                                : 'rgba(59, 130, 246, 0.12)',
+                          color:
+                            basket.universe_mode === 'ilas'
+                              ? '#d97706'
+                              : basket.universe_mode === 'hk_broker'
+                                ? '#0f766e'
+                                : 'var(--info)',
                           fontWeight: 700,
                         }}
                       >
                         {basket.universe_mode === 'ilas'
                           ? (isEn ? 'Pure ILAS' : '纯投连险 · AIA')
-                          : (isEn ? 'Pure Non-ILAS' : '纯非投连险')}
+                          : basket.universe_mode === 'hk_broker'
+                            ? (isEn ? 'HK Broker · Excl. IE/LU ETFs' : '香港券商 · 剔除 IE/LU ETF')
+                            : (isEn ? 'Pure Non-ILAS' : '纯非投连险')}
                       </span>
                       {basket.us_estate_tax_shield && (
                         <span
@@ -1175,7 +1205,9 @@ const AdvisoryView = ({
                             fontWeight: 700,
                           }}
                         >
-                          {isEn ? 'IE/LU UCITS · Estate-Tax Exempt' : '爱尔兰/卢森堡 UCITS · 免美遗产税'}
+                          {basket.universe_mode === 'hk_broker'
+                            ? (isEn ? 'IE/LU Mutual Funds · Estate-Tax Exempt' : '爱尔兰/卢森堡互惠基金 · 免美遗产税')
+                            : (isEn ? 'IE/LU UCITS · Estate-Tax Exempt' : '爱尔兰/卢森堡 UCITS · 免美遗产税')}
                         </span>
                       )}
                       {basket.metrics?.core_pct != null && (
@@ -1250,6 +1282,20 @@ const AdvisoryView = ({
                                   <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, color: 'var(--accent-color)' }}>
                                     {h.lab_id}
                                   </span>
+                                  {basket.universe_mode === 'hk_broker' && h.isin && h.isin !== h.lab_id && (
+                                    <span
+                                      style={{
+                                        fontSize: '0.64rem',
+                                        padding: '1px 5px',
+                                        borderRadius: '3px',
+                                        fontFamily: 'var(--font-mono)',
+                                        background: 'var(--surface-subtle)',
+                                        color: 'var(--text-muted)',
+                                      }}
+                                    >
+                                      {h.isin}
+                                    </span>
+                                  )}
                                   {h.core_role && (
                                     <span
                                       style={{

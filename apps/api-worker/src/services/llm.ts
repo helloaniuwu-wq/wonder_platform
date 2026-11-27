@@ -1,7 +1,9 @@
 import type { Env } from "../types";
 import {
   hasUsEstateTaxConcern,
+  isHkBrokerEligibleFund,
   isIlasFund,
+  isIrelandOrLuxembourgEtf,
   isIrelandOrLuxembourgFund,
   resolveBasketUniverseMode,
   type TacticalCandidateFund,
@@ -901,10 +903,11 @@ export function extractAndNormalizeTacticalJson(
     };
 
     const basketUniverseMode =
-      rec?.universe_mode === "ilas" || rec?.universe_mode === "non_ilas"
+      rec?.universe_mode === "ilas" || rec?.universe_mode === "non_ilas" || rec?.universe_mode === "hk_broker"
         ? rec.universe_mode
         : resolveBasketUniverseMode(profile || {}, baseHoldings);
     const basketIsIlas = basketUniverseMode === "ilas";
+    const isHkBroker = basketUniverseMode === "hk_broker";
     const requireEuUcits = !basketIsIlas && hasUsEstateTaxConcern(profile || {});
 
     const combined: CombinedEntry[] = baseHoldings.map((h, i) => {
@@ -949,9 +952,14 @@ export function extractAndNormalizeTacticalJson(
       if (!key || baseKeySet.has(key)) continue;
       const cand = candLookup.get(key);
       if (!cand || seenAddedSlugs.has(cand.slug)) continue;
-      // 硬约束：严禁跨平台混配（投连险与非投连险互不越界）；若关注美国遗产税则非投连险仅限 IE/LU UCITS
-      if (isIlasFund(cand) !== basketIsIlas) continue;
-      if (requireEuUcits && !isIrelandOrLuxembourgFund(cand)) continue;
+      // 硬约束：严禁跨平台混配（投连险与非投连险互不越界）；香港券商模式严禁换入 IE/LU UCITS ETF；若关注美国遗产税则限 IE/LU 合规标的
+      if (isHkBroker) {
+        if (!isHkBrokerEligibleFund(cand) || isIrelandOrLuxembourgEtf(cand)) continue;
+        if (requireEuUcits && !isIrelandOrLuxembourgFund(cand)) continue;
+      } else {
+        if (isIlasFund(cand) !== basketIsIlas) continue;
+        if (requireEuUcits && !isIrelandOrLuxembourgFund(cand)) continue;
+      }
       const rawW = Number(item?.adjusted_weight_pct);
       if (!Number.isFinite(rawW) || rawW <= 0) continue;
       seenAddedSlugs.add(cand.slug);

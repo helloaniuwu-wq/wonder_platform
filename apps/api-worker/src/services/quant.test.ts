@@ -23,10 +23,13 @@ import {
   getRiskEnvelope,
   hasUsEstateTaxConcern,
   inferFundRole,
+  isHkBrokerEligibleFund,
   isIlasFund,
+  isIrelandOrLuxembourgEtf,
   isIrelandOrLuxembourgFund,
   matchClassicTemplates,
   normalizeProfile,
+  resolveBasketUniverseMode,
   resolveEffectiveFundRole,
 } from "./advisoryEngine";
 import { DEFAULT_MACRO_SNAPSHOT, formatMacroPromptBlock } from "./macroStore";
@@ -1838,5 +1841,236 @@ describe("Core-Satellite, Homogeneous Deduplication, Hard Caps & AI Fund Swappin
     const poolCspx = pool.find((c) => c.code === "CSPX");
     expect(poolCspx?.is_admin_core_pick).toBe(true);
     expect(poolCspx?.admin_core_reasons).toEqual(["核心美国", "低波动增强"]);
+  });
+});
+
+describe("HK Broker platform product scope (hk_broker)", () => {
+  it("distinguishes IE/LU UCITS ETFs from IE/LU mutual funds and US/HK/JP ETFs", () => {
+    // IE/LU UCITS ETFs -> true (excluded in hk_broker)
+    expect(isIrelandOrLuxembourgEtf({ code: "CSPX", yahoo_ticker: "CSPX.L", isin: "IE00B5BMR087", name: "iShares Core S&P 500 UCITS ETF" })).toBe(true);
+    expect(isIrelandOrLuxembourgEtf({ code: "VWRA", yahoo_ticker: "VWRA.L", isin: "IE00BK5BQT80", name: "Vanguard FTSE All-World UCITS ETF" })).toBe(true);
+    expect(isIrelandOrLuxembourgEtf({ code: "IB01", yahoo_ticker: "IB01.L", isin: "IE00BGSF1X88", name: "iShares $ Treasury Bond 0-1yr UCITS ETF" })).toBe(true);
+    expect(isIrelandOrLuxembourgEtf({ code: "CSH2", yahoo_ticker: "CSH2.L", isin: "LU1230136894", name: "短期美债" })).toBe(true);
+    expect(isIrelandOrLuxembourgEtf({ code: "PRIP", yahoo_ticker: "PRIP.DE", isin: "LU2089238203", name: "Amundi Prime US Corporates" })).toBe(true);
+    expect(isIrelandOrLuxembourgEtf({ code: "I37MXN", yahoo_ticker: "I37MXN.MX", isin: "IE00BD8PGZ49", name: "iShares $ Treasury Bond 3-7yr" })).toBe(true);
+    expect(
+      isIrelandOrLuxembourgEtf({
+        code: "USHY",
+        yahoo_ticker: "USHY",
+        isin: null,
+        name: "Amundi Index Solution - Amundi USD High Yield Corporate Bond ESG UCITS ETF Dis",
+      })
+    ).toBe(true);
+
+    // IE/LU Mutual Funds (SICAV / Unit Trust) -> false (eligible on HK brokers)
+    expect(
+      isIrelandOrLuxembourgEtf({
+        code: "CG9",
+        isin: "LU1746179297",
+        yahoo_ticker: null,
+        name: "Capital International 基金 - 資本集團全球公司債券基金（盧森堡）B 美元類別",
+      })
+    ).toBe(false);
+    expect(
+      isIrelandOrLuxembourgEtf({
+        code: "L51",
+        isin: "IE00B2Q1FD82",
+        yahoo_ticker: null,
+        name: "Franklin Templeton Global Funds plc - FTGF Western Asset Asian Opportunities Fund - Class A ACC",
+      })
+    ).toBe(false);
+    expect(
+      isIrelandOrLuxembourgEtf({
+        code: "I17",
+        isin: "LU0265550359",
+        yahoo_ticker: null,
+        name: "貝萊德系統分析環球股票高息基金 A2 美元",
+      })
+    ).toBe(false);
+
+    // US / HK / JP ETFs -> false (eligible on HK brokers)
+    expect(isIrelandOrLuxembourgEtf({ code: "VOO", isin: "US9229083632", yahoo_ticker: "VOO", name: "Vanguard S&P 500 ETF" })).toBe(false);
+    expect(isIrelandOrLuxembourgEtf({ code: "SCHD", isin: "US8085247976", yahoo_ticker: "SCHD", name: "Schwab US Dividend Equity ETF" })).toBe(false);
+    expect(isIrelandOrLuxembourgEtf({ code: "9096.HK", isin: "HK0000849809", yahoo_ticker: "9096.HK", name: "CSOP USD Money Market ETF" })).toBe(false);
+    expect(isIrelandOrLuxembourgEtf({ code: "1306.T", isin: "JP3027630007", yahoo_ticker: "1306.T", name: "NEXT FUNDS TOPIX ETF" })).toBe(false);
+
+    // Non-public ILAS-only code without public ISIN -> ineligible for hk_broker
+    expect(isHkBrokerEligibleFund({ code: "A22", aia_code: "A22", isin: null, ilas_platform: "AIA 卓达智悦2", name: "AIA 内部专享基金" })).toBe(false);
+    expect(isHkBrokerEligibleFund({ code: "CG9", aia_code: "CG9", isin: "LU1746179297", ilas_platform: "AIA 卓达智悦2", name: "Capital Group Global Corporate Bond (LUX)" })).toBe(true);
+  });
+
+  it("buildCustomFundBaskets and buildTacticalCandidatePool exclude IE/LU UCITS ETFs while retaining IE/LU mutual funds and US/HK ETFs", () => {
+    const catalog = [
+      // IE/LU UCITS ETFs (even admin core pick must be strictly excluded!)
+      {
+        slug: "IE_CSPX", code: "CSPX", isin: "IE00B5BMR087", yahoo_ticker: "CSPX.L",
+        name: "iShares Core S&P 500 UCITS ETF", asset_class: "股票", ilas_platform: "非投连险-国际股票",
+        currency: "USD", fee_pct: 0.07, data_tier: "A", quant_score: 99, quant_grade: "A",
+        ret_3y_ann: 0.16, vol_3y: 0.14, sharpe_3y: 1.1, is_distributing: false, tags: [],
+        is_admin_core_pick: true, admin_core_reasons: ["核心美国"],
+      },
+      {
+        slug: "IE_IB01", code: "IB01", isin: "IE00BGSF1X88", yahoo_ticker: "IB01.L",
+        name: "iShares $ Treasury Bond 0-1yr UCITS ETF", asset_class: "固定收益", ilas_platform: "非投连险-债券基金比较",
+        currency: "USD", fee_pct: 0.07, data_tier: "A", quant_score: 98, quant_grade: "A",
+        ret_3y_ann: 0.05, vol_3y: 0.01, sharpe_3y: 2.0, is_distributing: false, tags: [],
+        is_admin_core_pick: true, admin_core_reasons: ["低波动增强"],
+      },
+      {
+        slug: "BD_USHY", code: "USHY", isin: null, yahoo_ticker: "USHY",
+        name: "Amundi Index Solution - Amundi USD High Yield Corporate Bond ESG UCITS ETF Dis", asset_class: "固定收益", ilas_platform: "非投连险-债券基金比较",
+        currency: "USD", fee_pct: 0.30, data_tier: "A", quant_score: 90, quant_grade: "A",
+        ret_3y_ann: 0.07, vol_3y: 0.07, sharpe_3y: 0.8, is_distributing: true, tags: [],
+      },
+      // Eligible US & HK ETFs
+      {
+        slug: "US_VOO", code: "VOO", isin: "US9229083632", yahoo_ticker: "VOO",
+        name: "Vanguard S&P 500 ETF", asset_class: "股票", ilas_platform: "非投连险-国际股票",
+        currency: "USD", fee_pct: 0.03, data_tier: "A", quant_score: 96, quant_grade: "A",
+        ret_3y_ann: 0.16, vol_3y: 0.14, sharpe_3y: 1.05, is_distributing: false, tags: [],
+      },
+      {
+        slug: "US_AGG", code: "AGG", isin: "US4642872265", yahoo_ticker: "AGG",
+        name: "iShares Core U.S. Aggregate Bond ETF", asset_class: "固定收益", ilas_platform: "非投连险-债券基金比较",
+        currency: "USD", fee_pct: 0.03, data_tier: "A", quant_score: 88, quant_grade: "B",
+        ret_3y_ann: 0.04, vol_3y: 0.06, sharpe_3y: 0.5, is_distributing: true, tags: [],
+      },
+      {
+        slug: "HK_9096", code: "9096.HK", isin: "HK0000849809", yahoo_ticker: "9096.HK",
+        name: "CSOP USD Money Market ETF", asset_class: "固定收益", ilas_platform: "非投连险-货币基金",
+        currency: "USD", fee_pct: 0.35, data_tier: "A", quant_score: 86, quant_grade: "B",
+        ret_3y_ann: 0.05, vol_3y: 0.005, sharpe_3y: 2.1, is_distributing: false, tags: [],
+      },
+      // Eligible LU/IE Mutual Funds (SFC-authorized retail funds)
+      {
+        slug: "CG9_F", code: "CG9", aia_code: "CG9", isin: "LU1746179297",
+        name: "Capital International 基金 - 資本集團全球公司債券基金（盧森堡）B 美元類別",
+        asset_class: "固定收益", ilas_platform: "AIA 卓达智悦2",
+        currency: "USD", fee_pct: 1.04, data_tier: "A", quant_score: 89, quant_grade: "B",
+        ret_3y_ann: 0.05, vol_3y: 0.05, sharpe_3y: 0.65, is_distributing: false, tags: [],
+      },
+      {
+        slug: "I17_F", code: "I17", aia_code: "I17", isin: "LU0265550359",
+        name: "貝萊德系統分析環球股票高息基金 A2 美元",
+        asset_class: "股票", ilas_platform: "AIA 卓达智悦2",
+        currency: "USD", fee_pct: 1.50, data_tier: "A", quant_score: 91, quant_grade: "A",
+        ret_3y_ann: 0.12, vol_3y: 0.13, sharpe_3y: 0.85, is_distributing: true, tags: [],
+      },
+      {
+        slug: "M11_F", code: "M11", aia_code: "M11", isin: "LU0261946288",
+        name: "富達基金 - 環球債券基金 A類別股份 - 累積 - 美元",
+        asset_class: "固定收益", ilas_platform: "AIA 卓达智悦2",
+        currency: "USD", fee_pct: 0.71, data_tier: "A", quant_score: 85, quant_grade: "B",
+        ret_3y_ann: 0.04, vol_3y: 0.05, sharpe_3y: 0.55, is_distributing: false, tags: [],
+      },
+      {
+        slug: "L51_F", code: "L51", aia_code: "L51", isin: "IE00B2Q1FD82",
+        name: "Franklin Templeton Global Funds plc - FTGF Western Asset Asian Opportunities Fund - Class A ACC",
+        asset_class: "固定收益", ilas_platform: "AIA 卓达智悦2",
+        currency: "USD", fee_pct: 1.15, data_tier: "A", quant_score: 80, quant_grade: "B",
+        ret_3y_ann: 0.04, vol_3y: 0.06, sharpe_3y: 0.45, is_distributing: false, tags: [],
+      },
+    ];
+
+    const hkProf = normalizeProfile({
+      product_scope: "hk_broker",
+      ilp_planned: false,
+      risk_level: "balanced",
+      horizon_years: 10,
+      primary_goal: "balanced",
+    });
+    expect(hkProf.product_scope).toBe("hk_broker");
+
+    const res = buildCustomFundBaskets(catalog as any, hkProf, getRiskEnvelope(hkProf));
+    expect(res.baskets.length).toBeGreaterThanOrEqual(1);
+    for (const b of res.baskets) {
+      expect(b.universe_mode).toBe("hk_broker");
+      const codes = b.holdings.map((h) => h.code);
+      expect(codes).not.toContain("CSPX");
+      expect(codes).not.toContain("IB01");
+      expect(codes).not.toContain("USHY");
+      expect(b.holdings.some((h) => h.code === "CG9" || h.code === "I17" || h.code === "VOO")).toBe(true);
+    }
+
+    // resolveBasketUniverseMode preserves hk_broker even when basket contains AIA-tagged LU mutual fund
+    expect(
+      resolveBasketUniverseMode(hkProf, res.baskets[0].holdings as any, catalog as any)
+    ).toBe("hk_broker");
+
+    const pool = buildTacticalCandidatePool(catalog as any, hkProf, [{ code: "VOO" }], 14);
+    const poolCodes = pool.map((c) => c.code);
+    expect(poolCodes).not.toContain("CSPX");
+    expect(poolCodes).not.toContain("IB01");
+    expect(poolCodes).not.toContain("USHY");
+    expect(poolCodes.some((c) => c === "CG9" || c === "I17" || c === "AGG")).toBe(true);
+
+    // Combined hk_broker + US estate tax concern: keeps IE/LU mutual funds only, excludes BOTH IE/LU ETFs AND US ETFs
+    const hkTaxProf = normalizeProfile({
+      product_scope: "hk_broker",
+      ilp_planned: false,
+      risk_level: "balanced",
+      horizon_years: 10,
+      extra_notes: "关注美国遗产税风险（非美居民6万美元免税额上限）",
+    });
+    const taxRes = buildCustomFundBaskets(catalog as any, hkTaxProf, getRiskEnvelope(hkTaxProf));
+    const taxCodes = taxRes.baskets[0].holdings.map((h) => h.code);
+    expect(taxRes.baskets[0].us_estate_tax_shield).toBe(true);
+    expect(taxCodes).not.toContain("CSPX");
+    expect(taxCodes).not.toContain("IB01");
+    expect(taxCodes).not.toContain("VOO");
+    expect(taxCodes).not.toContain("AGG");
+    expect(taxCodes.some((c) => c === "CG9" || c === "I17" || c === "M11")).toBe(true);
+  });
+
+  it("extractAndNormalizeTacticalJson rejects IE/LU UCITS ETF swaps under hk_broker mode", () => {
+    const baseRec = {
+      universe_mode: "hk_broker",
+      holdings: [
+        { lab_id: "VOO", slug: "US_VOO", code: "VOO", name: "Vanguard S&P 500 ETF", asset_class: "股票", core_role: "core", weight_pct: 60 },
+        { lab_id: "CG9", slug: "CG9_F", code: "CG9", isin: "LU1746179297", name: "Capital Group Global Corporate Bond (LUX)", asset_class: "固定收益", core_role: "core", ilas_platform: "AIA 卓达智悦2", weight_pct: 40 },
+      ],
+    };
+    const pool: any[] = [
+      {
+        slug: "IE_CSPX", lab_id: "CSPX", code: "CSPX", isin: "IE00B5BMR087", yahoo_ticker: "CSPX.L",
+        name: "iShares Core S&P 500 UCITS ETF", asset_class: "股票", sleeve: "equity", core_role: "core",
+        homogeneity_cluster: "us_large_cap", ilas_platform: "非投连险-国际股票", currency: "USD",
+        fee_pct: 0.07, alpha_3y: 0, r2_3y: 1, beta_3y: 1, vol_3y: 0.14, div_yield_ttm: 0.01, quant_grade: "A", is_distributing: false,
+      },
+      {
+        slug: "HK_9096", lab_id: "9096.HK", code: "9096.HK", isin: "HK0000849809", yahoo_ticker: "9096.HK",
+        name: "CSOP USD Money Market ETF", asset_class: "固定收益", sleeve: "bond", core_role: "core",
+        homogeneity_cluster: "usd_mmf", ilas_platform: "非投连险-货币基金", currency: "USD",
+        fee_pct: 0.35, alpha_3y: 0, r2_3y: 0.9, beta_3y: 0, vol_3y: 0.005, div_yield_ttm: 0.04, quant_grade: "B", is_distributing: false,
+      },
+    ];
+    const llmReply = `报告正文
+
+\`\`\`json
+{
+  "tactical_summary_zh": "测试调仓",
+  "adjusted_holdings": [
+    { "lab_id": "VOO", "adjusted_weight_pct": 50, "reason_zh": "保留美股" },
+    { "lab_id": "CG9", "adjusted_weight_pct": 30, "reason_zh": "保留卢森堡互惠债基" },
+    { "lab_id": "CSPX", "adjusted_weight_pct": 10, "reason_zh": "试图换入爱尔兰ETF" },
+    { "lab_id": "9096.HK", "adjusted_weight_pct": 10, "reason_zh": "增配港币/美元货币ETF" }
+  ],
+  "lab_directives": { "rebalance_freq": "Q" }
+}
+\`\`\``;
+
+    const { tacticalAdjustment } = extractAndNormalizeTacticalJson(
+      llmReply,
+      { product_scope: "hk_broker" },
+      baseRec,
+      pool
+    );
+    const outIds = tacticalAdjustment.adjusted_holdings
+      .filter((h) => h.adjusted_weight_pct > 0)
+      .map((h) => h.lab_id);
+    expect(outIds).not.toContain("CSPX");
+    expect(outIds).toContain("9096.HK");
+    expect(outIds).toContain("CG9");
+    expect(outIds).toContain("VOO");
   });
 });
